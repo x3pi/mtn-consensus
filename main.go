@@ -95,11 +95,11 @@ func main() {
 		for {
 			payload := <-process.Delivered
 			batch := &mtn_proto.Batch{}
-			err := proto.Unmarshal(payload, batch)
+			err := proto.Unmarshal(payload.Payload, batch)
 			if err == nil {
-				logger.Info("\n[APPLICATION] Node %d Delivered Batch for Block %d from Proposer %x\n> ", process.ID, batch.BlockNumber, batch.ProposerId)
+				logger.Info("\n[APPLICATION] Node %d Delivered Batch for Block %d from Proposer %x\n> ", process.ID, payload.Priority, payload.SenderID)
 			} else {
-				logger.Info("\n[APPLICATION] Node %d Delivered: %s\n> ", process.ID, string(payload))
+				logger.Info("\n[APPLICATION] Node %d Delivered: %s\n> ", process.ID, string(payload.Payload))
 			}
 		}
 	}()

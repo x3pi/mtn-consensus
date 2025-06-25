@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/meta-node-blockchain/meta-node/pkg/aleaqueues"
 	"github.com/meta-node-blockchain/meta-node/pkg/bls"
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
 	pb "github.com/meta-node-blockchain/meta-node/pkg/mtn_proto"
@@ -31,21 +32,31 @@ type broadcastState struct {
 	payload    []byte
 }
 
+// ProposalNotification được giữ nguyên
+type ProposalNotification struct {
+	SenderID int32
+	Priority int64
+	Payload  []byte
+}
+
 // Process is updated to use the network module and include the KeyPair
 type Process struct {
 	ID        int32
-	Peers     map[int32]string // Still used for initial addresses
+	Peers     map[int32]string
 	N         int
 	F         int
-	Delivered chan []byte
-	KeyPair   *bls.KeyPair // The missing KeyPair field
+	Delivered chan *ProposalNotification
+	KeyPair   *bls.KeyPair
 
 	server      t_network.SocketServer
-	connections map[int32]t_network.Connection // Manages active connections by peer ID
+	connections map[int32]t_network.Connection
 	connMutex   sync.RWMutex
 
 	logs   map[string]*broadcastState
 	logsMu sync.RWMutex
+
+	// Thay thế map và mutex bằng con trỏ đến QueueManager
+	queueManager *aleaqueues.QueueManager
 }
 
 // NewProcess is updated to initialize network module components and store the KeyPair.
@@ -56,9 +67,14 @@ func NewProcess(id int32, peers map[int32]string, keyPair *bls.KeyPair) (*Proces
 		return nil, fmt.Errorf("system cannot tolerate failures with n=%d, f=%d. Requires n > 3f", n, f)
 	}
 
-	// If no keypair is provided, create a dummy one. The network module requires it.
 	if keyPair == nil {
 		keyPair = bls.GenerateKeyPair()
+	}
+
+	// Lấy danh sách ID của các peer để khởi tạo QueueManager
+	var peerIDs []int32
+	for peerID := range peers {
+		peerIDs = append(peerIDs, peerID)
 	}
 
 	p := &Process{
@@ -66,29 +82,27 @@ func NewProcess(id int32, peers map[int32]string, keyPair *bls.KeyPair) (*Proces
 		Peers:       peers,
 		N:           n,
 		F:           f,
-		Delivered:   make(chan []byte, 1024),
+		Delivered:   make(chan *ProposalNotification, 1024),
 		logs:        make(map[string]*broadcastState),
 		connections: make(map[int32]t_network.Connection),
-		KeyPair:     keyPair, // Store the keypair in the process struct
+		KeyPair:     keyPair,
+		// Khởi tạo QueueManager
+		queueManager: aleaqueues.NewQueueManager(peerIDs),
 	}
 
-	// Create a handler for incoming RBC messages
+	// Phần còn lại của hàm không đổi
 	handler := network.NewHandler(
 		map[string]func(t_network.Request) error{
 			RBC_COMMAND: p.handleNetworkRequest,
 		},
-		nil, // No rate limits
+		nil,
 	)
-
 	connectionsManager := network.NewConnectionsManager()
-
 	var err error
 	p.server, err = network.NewSocketServer(keyPair, connectionsManager, handler, "validator", "0.0.1")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create socket server: %v", err)
 	}
-
-	// Add callbacks for when connections are established or dropped
 	p.server.AddOnConnectedCallBack(p.onConnect)
 	p.server.AddOnDisconnectedCallBack(p.onDisconnect)
 
@@ -302,7 +316,32 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 		if len(state.readyRecvd) > 2*p.F && !state.delivered {
 			state.delivered = true
 			logger.Info("Node %d has DELIVERED message %s", p.ID, key)
-			p.Delivered <- state.payload
+			proposerID := msg.OriginalSenderId
+
+			batch := &pb.Batch{}
+			if err := proto.Unmarshal(state.payload, batch); err != nil {
+				notification := &ProposalNotification{
+					SenderID: proposerID,
+					Priority: -1,
+					Payload:  state.payload,
+				}
+				p.Delivered <- notification
+				return
+			}
+
+			priority := int64(batch.BlockNumber)
+
+			// Sử dụng QueueManager để thêm vào hàng đợi một cách an toàn
+			p.queueManager.Enqueue(proposerID, priority, state.payload)
+			logger.Info("Node %d delegated to QueueManager to ENQUEUE proposal from node %d with priority %d", p.ID, proposerID, priority)
+
+			// Gửi thông báo lên tầng ứng dụng (không đổi)
+			notification := &ProposalNotification{
+				SenderID: proposerID,
+				Priority: priority,
+				Payload:  state.payload,
+			}
+			p.Delivered <- notification
 		}
 	}
 }
