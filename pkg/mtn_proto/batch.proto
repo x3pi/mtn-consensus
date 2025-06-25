@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package mtn_proto;
+
+import "transaction.proto";
+
+option go_package = "/mtn_proto";
+
+// Batch chứa một tập hợp các giao dịch được đề xuất bởi một node.
+// Message này được sử dụng để chuẩn bị cho thuật toán đồng thuận Alea-BFT.
+message Batch {
+    bytes hash = 1; // Hash của header batch (ví dụ: Merkle root của các giao dịch, block_number, proposer_id)
+    repeated transaction.Transaction transactions = 2;
+    uint64 block_number = 3;
+    bytes proposer_id = 4; // Public key của người đề xuất
+}

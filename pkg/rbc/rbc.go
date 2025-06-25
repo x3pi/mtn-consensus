@@ -6,11 +6,8 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/meta-node-blockchain/meta-node/pkg/logger"
-	"github.com/meta-node-blockchain/meta-node/pkg/mtn_proto"
-
-	// Imports for the network module
 	"github.com/meta-node-blockchain/meta-node/pkg/bls"
+	"github.com/meta-node-blockchain/meta-node/pkg/logger"
 	pb "github.com/meta-node-blockchain/meta-node/pkg/mtn_proto"
 	"github.com/meta-node-blockchain/meta-node/pkg/network"
 	t_network "github.com/meta-node-blockchain/meta-node/types/network"
@@ -34,25 +31,24 @@ type broadcastState struct {
 	payload    []byte
 }
 
-// Process is updated to use the network module
+// Process is updated to use the network module and include the KeyPair
 type Process struct {
 	ID        int32
 	Peers     map[int32]string // Still used for initial addresses
 	N         int
 	F         int
 	Delivered chan []byte
+	KeyPair   *bls.KeyPair // The missing KeyPair field
 
 	server      t_network.SocketServer
 	connections map[int32]t_network.Connection // Manages active connections by peer ID
 	connMutex   sync.RWMutex
 
 	logs   map[string]*broadcastState
-	logsMu sync.Mutex
+	logsMu sync.RWMutex
 }
 
-// NewProcess is updated to initialize network module components.
-// It now accepts a bls.KeyPair, which is required by the network.SocketServer.
-// For this standalone example, we allow it to be nil and create a dummy one.
+// NewProcess is updated to initialize network module components and store the KeyPair.
 func NewProcess(id int32, peers map[int32]string, keyPair *bls.KeyPair) (*Process, error) {
 	n := len(peers)
 	f := (n - 1) / 3
@@ -73,6 +69,7 @@ func NewProcess(id int32, peers map[int32]string, keyPair *bls.KeyPair) (*Proces
 		Delivered:   make(chan []byte, 1024),
 		logs:        make(map[string]*broadcastState),
 		connections: make(map[int32]t_network.Connection),
+		KeyPair:     keyPair, // Store the keypair in the process struct
 	}
 
 	// Create a handler for incoming RBC messages
@@ -83,9 +80,6 @@ func NewProcess(id int32, peers map[int32]string, keyPair *bls.KeyPair) (*Proces
 		nil, // No rate limits
 	)
 
-	// The network module's ConnectionsManager is not used here to avoid forcing
-	// the use of Ethereum addresses as keys. A simple map is used instead.
-	// In a full integration, the ConnectionsManager would be appropriate.
 	connectionsManager := network.NewConnectionsManager()
 
 	var err error
@@ -124,8 +118,6 @@ func (p *Process) Start() error {
 
 		// Create a new connection object
 		conn := network.NewConnection(
-			// The network module is based on Ethereum addresses, but we don't use them here.
-			// The real address string is what matters for connection.
 			common.HexToAddress("0x0"),
 			RBC_COMMAND, // Set a type for clarity
 		)
@@ -137,8 +129,6 @@ func (p *Process) Start() error {
 			logger.Warn("Node %d failed to connect to Node %d: %v", p.ID, peerID, err)
 			continue
 		}
-		// The onConnect callback will handle adding the connection to the map
-		// but we can add it here preemptively
 		p.addConnection(peerID, conn)
 		go p.server.HandleConnection(conn) // Start handling the connection
 	}
@@ -147,10 +137,8 @@ func (p *Process) Start() error {
 }
 
 // onConnect is a callback for the SocketServer when a new connection is accepted.
-// This is primarily for INCOMING connections.
 func (p *Process) onConnect(conn t_network.Connection) {
 	logger.Info("Node %d sees a new connection from %s", p.ID, conn.RemoteAddrSafe())
-	// We don't know the peer's ID yet. It will be mapped when the first message arrives.
 }
 
 // onDisconnect is a callback for when a connection is lost.
@@ -182,44 +170,37 @@ func (p *Process) addConnection(peerID int32, conn t_network.Connection) {
 
 // handleNetworkRequest is the entry point for messages from the network module.
 func (p *Process) handleNetworkRequest(req t_network.Request) error {
-	// Unmarshal the outer message body to get the inner RBCMessage
-	var msg mtn_proto.RBCMessage
+	var msg pb.RBCMessage
 	if err := proto.Unmarshal(req.Message().Body(), &msg); err != nil {
 		logger.Info("Error unmarshalling RBCMessage: %v", err)
 		return err
 	}
 
-	// Associate the connection with the sender's ID if not already done
 	senderID := msg.NetworkSenderId
 	p.addConnection(senderID, req.Connection())
 
-	// Process the message using the original RBC logic
 	go p.handleMessage(&msg)
 	return nil
 }
 
 // send uses the network module to send a message to a specific peer.
-func (p *Process) send(targetID int32, msg *mtn_proto.RBCMessage) {
+func (p *Process) send(targetID int32, msg *pb.RBCMessage) {
 	p.connMutex.RLock()
 	conn, ok := p.connections[targetID]
 	p.connMutex.RUnlock()
 
 	if !ok || !conn.IsConnect() {
-		// logger.Warn("Node %d: No active connection to peer %d. Message not sent.", p.ID, targetID)
 		return
 	}
 
-	// Set the network sender ID before sending
 	msg.NetworkSenderId = p.ID
 
-	// Marshal the RBCMessage to be the body of the network message
 	body, err := proto.Marshal(msg)
 	if err != nil {
 		logger.Info("Node %d: Failed to marshal message for peer %d: %v", p.ID, targetID, err)
 		return
 	}
 
-	// Create the network module's message wrapper
 	netMsg := network.NewMessage(&pb.Message{
 		Header: &pb.Header{
 			Command: RBC_COMMAND,
@@ -228,29 +209,24 @@ func (p *Process) send(targetID int32, msg *mtn_proto.RBCMessage) {
 	})
 
 	if err := conn.SendMessage(netMsg); err != nil {
-		// logger.Warn("Node %d: Failed to send message to peer %d: %v", p.ID, targetID, err)
 	}
 }
 
 // broadcast sends a message to all peers, including itself.
-func (p *Process) broadcast(msg *mtn_proto.RBCMessage) {
+func (p *Process) broadcast(msg *pb.RBCMessage) {
 	p.connMutex.RLock()
-	// Create a snapshot of the connections to avoid holding the lock during send operations
 	connsSnapshot := make(map[int32]t_network.Connection, len(p.connections))
 	for id, conn := range p.connections {
 		connsSnapshot[id] = conn
 	}
 	p.connMutex.RUnlock()
 
-	// Set the network sender ID, which is the current process's ID
 	msg.NetworkSenderId = p.ID
 
 	for id := range p.Peers {
 		if id == p.ID {
-			// Handle message for self locally
 			go p.handleMessage(msg)
 		} else {
-			// Send to remote peers
 			go p.send(id, msg)
 		}
 	}
@@ -274,7 +250,7 @@ func (p *Process) getOrCreateState(key string, payload []byte) *broadcastState {
 }
 
 // handleMessage is the original, unmodified RBC protocol logic.
-func (p *Process) handleMessage(msg *mtn_proto.RBCMessage) {
+func (p *Process) handleMessage(msg *pb.RBCMessage) {
 	key := fmt.Sprintf("%d-%s", msg.OriginalSenderId, msg.MessageId)
 	state := p.getOrCreateState(key, msg.Payload)
 
@@ -282,12 +258,12 @@ func (p *Process) handleMessage(msg *mtn_proto.RBCMessage) {
 	defer state.mu.Unlock()
 
 	switch msg.Type {
-	case mtn_proto.MessageType_INIT:
+	case pb.MessageType_INIT:
 		if !state.sentEcho {
 			state.sentEcho = true
 			logger.Info("Node %d received INIT, sending ECHO for message %s", p.ID, key)
-			echoMsg := &mtn_proto.RBCMessage{
-				Type:             mtn_proto.MessageType_ECHO,
+			echoMsg := &pb.RBCMessage{
+				Type:             pb.MessageType_ECHO,
 				OriginalSenderId: msg.OriginalSenderId,
 				MessageId:        msg.MessageId,
 				Payload:          msg.Payload,
@@ -295,13 +271,13 @@ func (p *Process) handleMessage(msg *mtn_proto.RBCMessage) {
 			p.broadcast(echoMsg)
 		}
 
-	case mtn_proto.MessageType_ECHO:
+	case pb.MessageType_ECHO:
 		state.echoRecvd[msg.NetworkSenderId] = true
 		if len(state.echoRecvd) > (p.N+p.F)/2 && !state.sentReady {
 			state.sentReady = true
 			logger.Info("Node %d has enough ECHOs, sending READY for message %s", p.ID, key)
-			readyMsg := &mtn_proto.RBCMessage{
-				Type:             mtn_proto.MessageType_READY,
+			readyMsg := &pb.RBCMessage{
+				Type:             pb.MessageType_READY,
 				OriginalSenderId: msg.OriginalSenderId,
 				MessageId:        msg.MessageId,
 				Payload:          msg.Payload,
@@ -309,14 +285,14 @@ func (p *Process) handleMessage(msg *mtn_proto.RBCMessage) {
 			p.broadcast(readyMsg)
 		}
 
-	case mtn_proto.MessageType_READY:
+	case pb.MessageType_READY:
 		state.readyRecvd[msg.NetworkSenderId] = true
 
 		if len(state.readyRecvd) > p.F && !state.sentReady {
 			state.sentReady = true
 			logger.Info("Node %d received f+1 READYs, amplifying READY for message %s", p.ID, key)
-			readyMsg := &mtn_proto.RBCMessage{
-				Type:             mtn_proto.MessageType_READY,
+			readyMsg := &pb.RBCMessage{
+				Type:             pb.MessageType_READY,
 				OriginalSenderId: msg.OriginalSenderId,
 				MessageId:        msg.MessageId,
 				Payload:          msg.Payload,
@@ -336,8 +312,8 @@ func (p *Process) handleMessage(msg *mtn_proto.RBCMessage) {
 func (p *Process) StartBroadcast(payload []byte) {
 	messageID := fmt.Sprintf("%d-%d", p.ID, time.Now().UnixNano())
 	logger.Info("Node %d starting broadcast for message %s", p.ID, messageID)
-	initMsg := &mtn_proto.RBCMessage{
-		Type:             mtn_proto.MessageType_INIT,
+	initMsg := &pb.RBCMessage{
+		Type:             pb.MessageType_INIT,
 		OriginalSenderId: p.ID,
 		MessageId:        messageID,
 		Payload:          payload,
