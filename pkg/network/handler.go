@@ -4,19 +4,18 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
+
+	"golang.org/x/time/rate" // Thêm import cho gói rate
 
 	"github.com/meta-node-blockchain/meta-node/types/network"
 )
 
 // Handler chịu trách nhiệm xử lý các request đến dựa trên các route đã đăng ký.
-// Nó cũng hỗ trợ giới hạn tần suất (rate limiting) cho mỗi route.
+// Nó cũng hỗ trợ giới hạn tần suất (rate limiting) hiệu quả bằng thuật toán token bucket.
 type Handler struct {
 	routes   map[string]func(network.Request) error // routes ánh xạ tên lệnh tới hàm xử lý tương ứng.
-	limits   map[string]int                         // limits ánh xạ tên lệnh tới số lần gọi tối đa mỗi giây.
-	requests map[string]int                         // requests theo dõi số lần gọi hiện tại cho mỗi lệnh trong khoảng thời gian 1 giây.
-	mutex    sync.Mutex                             // mutex bảo vệ truy cập đồng thời vào map 'requests'.
-	// Cân nhắc thêm một context cho Handler để có thể dừng các goroutine của rate limiter khi Handler không còn dùng nữa.
+	limiters map[string]*rate.Limiter               // limiters ánh xạ tên lệnh tới một đối tượng rate limiter.
+	mutex    sync.Mutex                             // mutex bảo vệ truy cập đồng thời vào map 'limiters'.
 }
 
 // NewHandler tạo một instance mới của Handler.
@@ -29,14 +28,23 @@ func NewHandler(
 	if routes == nil {
 		routes = make(map[string]func(network.Request) error)
 	}
-	if limits == nil {
-		limits = make(map[string]int)
-	}
-	return &Handler{
+
+	h := &Handler{
 		routes:   routes,
-		limits:   limits,
-		requests: make(map[string]int),
+		limiters: make(map[string]*rate.Limiter),
 	}
+
+	// Khởi tạo rate limiter cho mỗi lệnh có trong map limits.
+	// Mỗi limiter sẽ cho phép 'limit' sự kiện mỗi giây, với dung lượng bùng nổ (burst) cũng là 'limit'.
+	if limits != nil {
+		for command, limitPerSecond := range limits {
+			if limitPerSecond > 0 {
+				h.limiters[command] = rate.NewLimiter(rate.Limit(limitPerSecond), limitPerSecond)
+			}
+		}
+	}
+
+	return h
 }
 
 // HandleRequest xử lý một request đến.
@@ -56,35 +64,18 @@ func (h *Handler) HandleRequest(r network.Request) error {
 		return errors.New("lệnh không được để trống")
 	}
 
-	// Kiểm tra giới hạn số lần gọi
+	// Kiểm tra giới hạn số lần gọi một cách hiệu quả
 	h.mutex.Lock()
-	limit, limitExists := h.limits[cmd]
-	if limitExists {
-		currentRequests := h.requests[cmd]
-		if currentRequests >= limit {
-			h.mutex.Unlock()
-			return fmt.Errorf("vượt quá giới hạn tần suất cho lệnh: %s (giới hạn %d req/s)", cmd, limit)
-		}
-		h.requests[cmd] = currentRequests + 1
-	}
+	limiter, exists := h.limiters[cmd]
 	h.mutex.Unlock()
 
-	if limitExists {
-		// TODO: Cân nhắc sử dụng một Ticker toàn cục thay vì một goroutine cho mỗi request để quản lý rate limiting.
-		// Điều này sẽ hiệu quả hơn với lượng request lớn.
-		go func(commandToDecrement string) {
-			time.Sleep(time.Second)
-			h.mutex.Lock()
-			// Chỉ giảm nếu giá trị vẫn lớn hơn 0
-			if val, ok := h.requests[commandToDecrement]; ok && val > 0 {
-				h.requests[commandToDecrement]--
-			}
-			// Nếu giá trị là 0, có thể xóa key khỏi map để tiết kiệm bộ nhớ nếu lệnh không thường xuyên được gọi.
-			// else if ok && val == 0 {
-			// delete(h.requests, commandToDecrement)
-			// }
-			h.mutex.Unlock()
-		}(cmd)
+	if exists {
+		// Phương thức Allow() của limiter sẽ kiểm tra và tiêu thụ một token
+		// mà không cần bất kỳ goroutine hay cơ chế sleep nào.
+		// Nó an toàn cho việc gọi đồng thời.
+		if !limiter.Allow() {
+			return fmt.Errorf("vượt quá giới hạn tần suất cho lệnh: %s", cmd)
+		}
 	}
 
 	// Xử lý request

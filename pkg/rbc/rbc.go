@@ -107,14 +107,11 @@ func NewProcess(config *NodeConfig) (*Process, error) {
 
 	peers := make(map[int32]string)
 	for _, nodeConf := range config.Peers {
-		logger.Info(nodeConf)
 		peers[int32(nodeConf.Id)] = nodeConf.ConnectionAddress
 	}
 	peerIDs := make([]int32, 0, len(config.Peers))
 	for _, nodeConf := range config.Peers {
-		logger.Info(nodeConf)
 		peers[int32(nodeConf.Id)] = nodeConf.ConnectionAddress
-		// Dòng cần thêm
 		peerIDs = append(peerIDs, int32(nodeConf.Id))
 	}
 

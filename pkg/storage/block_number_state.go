@@ -1,7 +1,6 @@
 package storage
 
 import (
-	fmt "fmt"
 	"sync/atomic"
 )
 
@@ -16,12 +15,12 @@ var (
 
 // Định nghĩa các trạng thái cập nhật
 const (
-	DoneSubscribe         uint32 = 1 // Đăng ký hoàn thành
-	StateLoadingSnapshot  uint32 = 2 // Đang tải snapshot
-	StateSnapshotLoaded   uint32 = 3 // Đã tải xong snapshot
-	StateDBReadCompleted  uint32 = 4 // Đọc xong tất cả dữ liệu trong DB
-	StateRAMReadCompleted uint32 = 5 // Đọc xong dữ liệu trong RAM
-
+	_ uint32 = iota // Bỏ qua giá trị 0
+	DoneSubscribe
+	StateLoadingSnapshot
+	StateSnapshotLoaded
+	StateDBReadCompleted
+	StateRAMReadCompleted
 )
 
 var StateChangeChan = make(chan uint32)
@@ -33,17 +32,14 @@ var commitLock uint32 // 0 = false, 1 = true
 func SetCommitLock(lock bool) {
 	if lock {
 		atomic.StoreUint32(&commitLock, 1)
-		fmt.Println("CommitLock set to: true")
 	} else {
 		atomic.StoreUint32(&commitLock, 0)
-		fmt.Println("CommitLock set to: false")
 	}
 }
 
 // Lấy trạng thái CommitLock và in debug log
 func GetCommitLock() bool {
 	val := atomic.LoadUint32(&commitLock) == 1
-	// logger.Info("CommitLock get: %v\n", val)
 	return val
 }
 

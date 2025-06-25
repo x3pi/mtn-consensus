@@ -46,18 +46,6 @@ func main() {
 		log.Fatalf("Error loading config: %v", err)
 	}
 
-	// Xây dựng danh sách peers từ tệp cấu hình
-	peers := make(map[int32]string)
-	logger.Info(allConfig.Peers)
-	for _, nodeConf := range allConfig.Peers {
-		logger.Info(nodeConf)
-		peers[int32(nodeConf.Id)] = nodeConf.ConnectionAddress
-	}
-	logger.Info(peers)
-
-	// In ra danh sách peers để kiểm tra
-	logger.Info("Node %d initialized with peers: %v", int32(*&allConfig.ID), peers)
-
 	// Khởi tạo process với ID và danh sách peers đã được đọc từ config
 	process, err := rbc.NewProcess(allConfig)
 	if err != nil {

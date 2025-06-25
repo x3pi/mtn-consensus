@@ -16,6 +16,7 @@ require (
 	github.com/stretchr/testify v1.10.0
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7
 	golang.org/x/sync v0.15.0
+	golang.org/x/time v0.12.0
 	google.golang.org/protobuf v1.36.6
 )
 
