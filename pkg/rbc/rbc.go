@@ -98,6 +98,8 @@ func NewProcess(id int32, peers map[int32]string, keyPair *bls.KeyPair) (*Proces
 // Start now launches the SocketServer and connects to peers.
 func (p *Process) Start() error {
 	addr := p.Peers[p.ID]
+	logger.Info(p.Peers)
+	logger.Info(p.ID)
 
 	// Start listening for incoming connections in a separate goroutine
 	go func() {

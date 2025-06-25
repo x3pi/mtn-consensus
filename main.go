@@ -3,13 +3,13 @@ package main
 import (
 	"bufio"
 	"crypto/sha256"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
@@ -19,28 +19,66 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// PeerConfig represents the configuration for a peer node.
+type PeerConfig struct {
+	Id                int    `json:"id"`
+	ConnectionAddress string `json:"connection_address"`
+	PublicKey         string `json:"public_key"`
+}
+
+// ValidatorInfo contains public key of a validator.
+type ValidatorInfo struct {
+	PublicKey string `json:"public_key"`
+}
+type NodeConfig struct {
+	ID                int             `json:"id"`
+	KeyPair           string          `json:"key_pair"`
+	Master            PeerConfig      `json:"master"`
+	NodeType          string          `json:"node_type"`
+	Version           string          `json:"version"`
+	ConnectionAddress string          `json:"connection_address"`
+	Peers             []PeerConfig    `json:"peers"`
+	NumValidator      int             `json:"num_validator"`
+	Validator         []ValidatorInfo `json:"validator"`
+}
+
+func LoadConfigFromFile(filename string) (*NodeConfig, error) {
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("could not read config file: %w", err)
+	}
+	var config NodeConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("could not unmarshal json: %w", err)
+	}
+	return &config, nil
+}
+
 func main() {
-	id := flag.Int("id", 0, "ID of this node")
-	peersStr := flag.String("peers", "0:localhost:8000", "List of peers as id:addr,id:addr")
+	// Cờ lệnh giờ chỉ cần ID của node và đường dẫn tới file config
+	configFile := flag.String("config", "config.json", "Configuration file name")
 	flag.Parse()
 
-	peers := make(map[int32]string)
-	for _, pStr := range strings.Split(*peersStr, ",") {
-		parts := strings.SplitN(pStr, ":", 2)
-		if len(parts) != 2 {
-			log.Fatalf("Invalid peer format: %s. Must be 'id:host:port'", pStr)
-		}
-		pID, err := strconv.Atoi(parts[0])
-		if err != nil {
-			log.Fatalf("Invalid peer ID: %v", err)
-		}
-		peers[int32(pID)] = parts[1]
+	// Tải cấu hình chứa tất cả các node
+	allConfig, err := LoadConfigFromFile(*configFile)
+	if err != nil {
+		log.Fatalf("Error loading config: %v", err)
 	}
 
-	// In a real integration with the meta-node-blockchain, a bls.KeyPair would be
-	// created or loaded here and passed to NewProcess. For this example,
-	// we pass nil and the Process will handle it.
-	process, err := rbc.NewProcess(int32(*id), peers, nil)
+	// Xây dựng danh sách peers từ tệp cấu hình
+	peers := make(map[int32]string)
+	logger.Info(allConfig.Peers)
+	for _, nodeConf := range allConfig.Peers {
+		logger.Info(nodeConf)
+		peers[int32(nodeConf.Id)] = nodeConf.ConnectionAddress
+	}
+	logger.Info(peers)
+
+	// In ra danh sách peers để kiểm tra
+	logger.Info("Node %d initialized with peers: %v", int32(*&allConfig.ID), peers)
+
+	// Khởi tạo process với ID và danh sách peers đã được đọc từ config
+	process, err := rbc.NewProcess(int32(*&allConfig.ID), peers, nil)
 	if err != nil {
 		log.Fatalf("Failed to create process: %v", err)
 	}
@@ -52,19 +90,16 @@ func main() {
 		}
 	}()
 
-	// Goroutine to print delivered messages
+	// Goroutine to print delivered messages (giữ nguyên)
 	go func() {
 		for {
 			payload := <-process.Delivered
-
-			// Try to unmarshal as a Batch message to pretty-print
 			batch := &mtn_proto.Batch{}
 			err := proto.Unmarshal(payload, batch)
 			if err == nil {
 				logger.Info("\n[APPLICATION] Node %d Delivered Batch for Block %d from Proposer %x\n> ", process.ID, batch.BlockNumber, batch.ProposerId)
 			} else {
-				// If it's not a batch, print as a plain string
-				logger.Info("\n[APPLICATION] Node %d Delivered: %s\n> ", process.ID, batch)
+				logger.Info("\n[APPLICATION] Node %d Delivered: %s\n> ", process.ID, string(payload))
 			}
 		}
 	}()
@@ -73,65 +108,39 @@ func main() {
 	logger.Info("Waiting for network to initialize...")
 	time.Sleep(5 * time.Second)
 
-	// Goroutine to randomly broadcast a Batch message every second
+	// Goroutine to randomly broadcast a Batch message (giữ nguyên)
 	go func() {
-		// Seed the random number generator
 		rand.Seed(time.Now().UnixNano())
-
-		// Ticker for every second
-		ticker := time.NewTicker(100 * time.Millisecond)
+		ticker := time.NewTicker(10 * time.Second) // Tăng thời gian để dễ quan sát
 		defer ticker.Stop()
-
 		blockCounter := uint64(0)
-
 		for range ticker.C {
-			// 20% chance to send a message
 			if rand.Intn(100) < 20 {
 				blockCounter++
-
-				// 1. Create dummy transactions
-				tx1 := &mtn_proto.Transaction{
-					FromAddress: []byte("sender_address_1"),
-					ToAddress:   []byte("recipient_address_1"),
-					Data:        []byte("dummy transaction data 1"),
-				}
-				tx2 := &mtn_proto.Transaction{
-					FromAddress: []byte("sender_address_2"),
-					ToAddress:   []byte("recipient_address_2"),
-					Data:        []byte("dummy transaction data 2"),
-				}
-
+				tx1 := &mtn_proto.Transaction{FromAddress: []byte("sender_1"), ToAddress: []byte("recipient_1"), Data: []byte("tx_data_1")}
+				tx2 := &mtn_proto.Transaction{FromAddress: []byte("sender_2"), ToAddress: []byte("recipient_2"), Data: []byte("tx_data_2")}
 				proposerId := process.KeyPair.PublicKey().Bytes()
-
-				// Create a temporary header to hash.
-				// In a real scenario, this would be a Merkle root of the transactions.
 				headerData := fmt.Sprintf("%d:%x", blockCounter, proposerId)
 				batchHash := sha256.Sum256([]byte(headerData))
-
-				// 2. Create the Batch message
 				batch := &mtn_proto.Batch{
 					Hash:         batchHash[:],
 					Transactions: []*mtn_proto.Transaction{tx1, tx2},
 					BlockNumber:  blockCounter,
 					ProposerId:   proposerId,
 				}
-
-				// 3. Marshal the batch into bytes
 				payload, err := proto.Marshal(batch)
 				if err != nil {
 					logger.Error("Failed to marshal batch:", err)
 					continue
 				}
-
-				// 4. Broadcast the payload
 				logger.Info("\n[APPLICATION] Node %d broadcasting a batch for block %d...\n> ", process.ID, blockCounter)
 				process.StartBroadcast(payload)
 			}
 		}
 	}()
 
-	// Allow user to broadcast messages from stdin
-	logger.Info("Enter a message and press Enter to broadcast (or leave empty for random batch broadcast):")
+	// Allow user to broadcast messages from stdin (giữ nguyên)
+	logger.Info("Enter a message and press Enter to broadcast:")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
