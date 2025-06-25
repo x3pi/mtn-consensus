@@ -1,6 +1,7 @@
 package rbc
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/meta-node-blockchain/meta-node/pkg/aleaqueues"
 	"github.com/meta-node-blockchain/meta-node/pkg/bls"
+	m_common "github.com/meta-node-blockchain/meta-node/pkg/common"
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
 	pb "github.com/meta-node-blockchain/meta-node/pkg/mtn_proto"
 	"github.com/meta-node-blockchain/meta-node/pkg/network"
@@ -103,8 +105,23 @@ func NewProcess(config *NodeConfig) (*Process, error) {
 		keyPair = bls.GenerateKeyPair()
 	}
 
+	peers := make(map[int32]string)
+	for _, nodeConf := range config.Peers {
+		logger.Info(nodeConf)
+		peers[int32(nodeConf.Id)] = nodeConf.ConnectionAddress
+	}
+	peerIDs := make([]int32, 0, len(config.Peers))
+	for _, nodeConf := range config.Peers {
+		logger.Info(nodeConf)
+		peers[int32(nodeConf.Id)] = nodeConf.ConnectionAddress
+		// Dòng cần thêm
+		peerIDs = append(peerIDs, int32(nodeConf.Id))
+	}
+
 	p := &Process{
 		Config:           config,
+		ID:               int32(config.ID),
+		Peers:            peers,
 		N:                n,
 		F:                f,
 		Delivered:        make(chan *ProposalNotification, 1024),
@@ -115,29 +132,30 @@ func NewProcess(config *NodeConfig) (*Process, error) {
 		PoolTransactions: make(chan []*pb.Transaction, 1024),
 		blockNumberChan:  make(chan uint64, 1024),
 	}
+	p.queueManager = aleaqueues.NewQueueManager(peerIDs)
 
 	handler := network.NewHandler(
 		map[string]func(t_network.Request) error{
 			RBC_COMMAND: p.handleNetworkRequest,
-			// m_common.SendPoolTransactons: func(req t_network.Request) error {
-			// 	var transactionsPb pb.Transactions
-			// 	if err := proto.Unmarshal(req.Message().Body(), &transactionsPb); err != nil {
-			// 		logger.Error("❌ Failed to unmarshal pool transactions: %v", err)
-			// 		return err
-			// 	}
-			// 	p.PoolTransactions <- transactionsPb.GetTransactions()
-			// 	return nil
-			// },
-			// m_common.BlockNumber: func(req t_network.Request) error {
-			// 	responseData := req.Message().Body()
-			// 	if len(responseData) < 8 {
-			// 		logger.Error("❌ Dữ liệu phản hồi block number không hợp lệ: độ dài %d < 8", len(responseData))
-			// 		return fmt.Errorf("dữ liệu phản hồi block number không hợp lệ")
-			// 	}
-			// 	validatorBlockNumber := binary.BigEndian.Uint64(responseData)
-			// 	p.blockNumberChan <- validatorBlockNumber
-			// 	return nil
-			// },
+			m_common.SendPoolTransactons: func(req t_network.Request) error {
+				var transactionsPb pb.Transactions
+				if err := proto.Unmarshal(req.Message().Body(), &transactionsPb); err != nil {
+					logger.Error("❌ Failed to unmarshal pool transactions: %v", err)
+					return err
+				}
+				p.PoolTransactions <- transactionsPb.GetTransactions()
+				return nil
+			},
+			m_common.BlockNumber: func(req t_network.Request) error {
+				responseData := req.Message().Body()
+				if len(responseData) < 8 {
+					logger.Error("❌ Dữ liệu phản hồi block number không hợp lệ: độ dài %d < 8", len(responseData))
+					return fmt.Errorf("dữ liệu phản hồi block number không hợp lệ")
+				}
+				validatorBlockNumber := binary.BigEndian.Uint64(responseData)
+				p.blockNumberChan <- validatorBlockNumber
+				return nil
+			},
 		},
 		nil,
 	)
@@ -167,19 +185,19 @@ func (p *Process) Start() error {
 	// Allow some time for other nodes to start their listeners
 	time.Sleep(time.Second * 2)
 
-	// // Kết nối tới Master
-	// logger.Info("Node %d attempting to connect to Master at %s", p.Config.ID, p.Config.Master.ConnectionAddress)
-	// masterConn := network.NewConnection(common.HexToAddress("0x0"), m_common.MASTER_CONNECTION_TYPE)
-	// masterConn.SetRealConnAddr(p.Config.Master.ConnectionAddress)
-	// if err := masterConn.Connect(); err != nil {
-	// 	logger.Error("Node %d failed to connect to Master: %v", p.Config.ID, err)
-	// 	// Có thể quyết định dừng chương trình hoặc thử lại ở đây
-	// } else {
-	// 	p.MasterConn = masterConn
-	// 	p.addConnection(-1, masterConn)
-	// 	go p.server.HandleConnection(masterConn)
-	// 	logger.Info("Node %d connected to Master", p.Config.ID)
-	// }
+	// Kết nối tới Master
+	logger.Info("Node %d attempting to connect to Master at %s", p.Config.ID, p.Config.Master.ConnectionAddress)
+	masterConn := network.NewConnection(common.HexToAddress("0x0"), m_common.MASTER_CONNECTION_TYPE)
+	masterConn.SetRealConnAddr(p.Config.Master.ConnectionAddress)
+	if err := masterConn.Connect(); err != nil {
+		logger.Error("Node %d failed to connect to Master: %v", p.Config.ID, err)
+		// Có thể quyết định dừng chương trình hoặc thử lại ở đây
+	} else {
+		p.MasterConn = masterConn
+		p.addConnection(-1, masterConn)
+		go p.server.HandleConnection(masterConn)
+		logger.Info("Node %d connected to Master", p.Config.ID)
+	}
 
 	// Connect to all other peers
 	for peerID, peerAddr := range p.Peers {
@@ -205,32 +223,25 @@ func (p *Process) Start() error {
 	}
 
 	// Khởi chạy goroutine xử lý block number như yêu cầu
-	// go func() {
-	// 	for blockNumber := range p.blockNumberChan {
-	// 		logger.Info("New block number received: %d", blockNumber)
-	// 		p.UpdateBlockNumber(blockNumber)
-	// 		isMyTurn := (int(blockNumber) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
-	// 		logger.Info("blockNumber: %v", blockNumber)
-	// 		logger.Info("remainder: %v", int(blockNumber)%p.Config.NumValidator)
-	// 		logger.Info("isMyTurn: %v, %v, %v", isMyTurn, p.Config.NumValidator, p.Config.ID)
-	// 		time.Sleep(1000 * time.Millisecond)
-	// 		if isMyTurn {
-	// 			logger.Info("It's my turn (Node %d) to propose for block %d. Requesting transactions...", p.Config.ID, blockNumber)
-	// 			p.MessageSender.SendBytes(
-	// 				p.MasterConn,
-	// 				m_common.GetTransactionsPool,
-	// 				[]byte{},
-	// 			)
-	// 		}
-	// 	}
-	// }()
-	// time.Sleep(time.Second * 2)
-
-	// p.MessageSender.SendBytes(
-	// 	p.MasterConn,
-	// 	m_common.ValidatorGetBlockNumber,
-	// 	[]byte{},
-	// )
+	go func() {
+		for blockNumber := range p.blockNumberChan {
+			logger.Info("New block number received: %d", blockNumber)
+			p.UpdateBlockNumber(blockNumber)
+			isMyTurn := (int(blockNumber) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
+			logger.Info("blockNumber: %v", blockNumber)
+			logger.Info("remainder: %v", int(blockNumber)%p.Config.NumValidator)
+			logger.Info("isMyTurn: %v, %v, %v", isMyTurn, p.Config.NumValidator, p.Config.ID)
+			time.Sleep(50 * time.Millisecond)
+			if isMyTurn {
+				logger.Info("It's my turn (Node %d) to propose for block %d. Requesting transactions...", p.Config.ID, blockNumber)
+				p.MessageSender.SendBytes(
+					p.MasterConn,
+					m_common.GetTransactionsPool,
+					[]byte{},
+				)
+			}
+		}
+	}()
 
 	return nil
 }
