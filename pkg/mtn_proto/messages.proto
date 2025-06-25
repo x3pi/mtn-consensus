@@ -1,0 +1,13 @@
+syntax = "proto3";
+package messages;
+
+option go_package = "/mtn_proto";
+option java_package = "com.meta_node.protos.compiled.messages";
+
+message InitConnection {
+    bytes Address = 1;
+    string Type = 2;
+    string PublicConnectionAddress = 3;
+    bool Replace = 4;
+}
+

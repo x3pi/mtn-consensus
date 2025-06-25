@@ -1,0 +1,47 @@
+syntax = "proto3";
+package receipt;
+import "event_log.proto";
+
+option go_package = "/mtn_proto";
+option java_package = "com.meta_node.protos.compiled.receipt";
+
+enum RECEIPT_STATUS {
+    RETURNED = 0;
+    HALTED = 1;
+    THREW = 2;
+    TRANSACTION_ERROR = -1;
+}
+
+enum EXCEPTION {
+    ERR_OUT_OF_GAS = 0;
+    ERR_CODE_STORE_OUT_OF_GAS = 1;
+    ERR_DEPTH = 2;
+    ERR_INSUFFICIENT_BALANCE = 3;
+    ERR_CONTRACT_ADDRESS_COLLISION =4 ;
+    ERR_EXECUTION_REVERTED = 5;
+    ERR_MAX_CODE_SIZE_EXCEEDED = 6;
+    ERR_INVALID_JUMP = 7;
+    ERR_WRITE_PROTECTION = 8;
+    ERR_RETURN_DATA_OUT_OF_BOUNDS = 9;
+    ERR_GAS_UINT_OVERFLOW = 10;
+    ERR_INVALID_CODE = 11;
+    ERR_NONCE_UINT_OVERFLOW = 12;
+    ERR_OUT_OF_BOUNDS = 13;
+    ERR_OVERFLOW = 14;
+    ERR_ADDRESS_NOT_IN_RELATED = 15;
+    NONE = -1;
+}
+
+message Receipt {
+    bytes TransactionHash = 1;
+    bytes FromAddress = 2;
+    bytes ToAddress = 3;
+    bytes Amount = 4;
+    RECEIPT_STATUS Status = 6;
+    bytes Return = 7;
+    EXCEPTION Exception = 8;
+    uint64 GasUsed = 9;
+    uint64 GasFee = 10;
+    repeated event_log.EventLog EventLogs = 11;
+    uint64 TransactionIndex = 12;
+} 

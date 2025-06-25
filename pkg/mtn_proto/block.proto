@@ -1,0 +1,39 @@
+syntax = "proto3";
+package block;
+
+option go_package = "/mtn_proto";
+option java_package = "com.meta_node.protos.compiled.block";
+
+import "transaction.proto";
+import "receipt.proto";
+import "smart_contract.proto";
+
+message BlockHeader{
+  bytes LastBlockHash = 1;
+  uint64 BlockNumber = 2;
+  bytes AccountStatesRoot = 3;
+  bytes ReceiptRoot = 4;
+  bytes LeaderAddress = 5;
+  bytes AggregateSignature = 6;
+  uint64 TimeStamp = 7;
+  bytes TransactionsRoot = 8;
+}
+
+message Block {
+  BlockHeader Header = 1;
+  repeated bytes Transactions = 2; 
+  repeated smart_contract.ExecuteSCResult ExecuteSCResults = 3;
+}
+
+message ConfirmedBlockData {
+  BlockHeader Header = 1;
+  repeated receipt.Receipt Receipts = 2;
+  bytes BranchStateRoot = 3;
+  map<string, bytes> ValidatorSigns = 4;
+}
+
+
+message BlockWithTransactions {
+  Block block = 1;
+  repeated transaction.Transaction transactions = 2;
+}

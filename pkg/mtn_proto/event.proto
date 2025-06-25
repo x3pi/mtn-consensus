@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package event;
+
+option go_package = "/mtn_proto";
+
+
+message Event {
+  bytes creator_id = 2;             // ID node tạo event (public key hoặc hash)
+  bytes self_parent_id = 3;         // Hash event cha cùng node (self-parent)
+  repeated bytes other_parent_ids = 4; // Hash các event cha khác node (có thể nhiều root)
+
+  bytes payload = 5;                // Dữ liệu gốc của event (binary)
+
+  uint32 frame = 6;                 // Frame (vòng) mà event thuộc về
+  int64 timestamp = 7;              // Thời gian tạo event (Unix timestamp)
+    uint64 root_block_number = 8;     // Số thứ tự root block
+  bytes signature = 9;              // Chữ ký event
+}

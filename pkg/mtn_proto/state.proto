@@ -1,0 +1,98 @@
+syntax = "proto3";
+package account_state;
+
+option go_package = "/mtn_proto";
+option java_package = "com.meta_node.protos.compiled.account_state";
+
+enum STAKE_TYPE {
+    VALIDATOR = 0;
+    NODE = 1;
+    VERIFY_MINER = 2;
+    EXECUTE_MINER = 3;
+}  
+
+message StateChannelState {
+    repeated bytes ValidatorAddress = 1;
+}
+
+enum ACCOUNT_TYPE {
+    REGULAR_ACCOUNT = 0;
+    READ_WRITE_STRICT = 1;
+}
+
+message AccountState {
+    bytes Address = 1;
+    bytes LastHash = 2;
+    bytes Balance = 3;
+    bytes PendingBalance = 4;
+    SmartContractState SmartContractState = 5;
+    bytes DeviceKey = 6;
+    bytes Nonce = 7;
+    bytes PublicKeyBls = 8;
+    ACCOUNT_TYPE AccountType = 9;
+    // StateChannelState StateChannelState = 7; // DEPRECATED
+}
+
+message GetAccountStateWithIdRequest {
+  bytes Address = 1;
+  string Id = 2;
+}
+
+message AccountStateWithIdRequest {
+  AccountState AccountState = 1;
+  string Id = 2;
+}
+
+message SmartContractState {
+    bytes CreatorPublicKey = 1;
+    bytes CodeHash = 3; 
+    bytes StorageRoot = 4; 
+    bytes StorageAddress = 7; 
+
+    // string StorageHost = 2; // host that store smart contract state of account // DEPRECATED
+    // repeated bytes RelatedAddresses = 6; // address of smart contract relate to this smart contract, use for parrallel execute // DEPRECATED
+    // bytes LockingStateChannel = 8; // address of state channel that lock this smart contract // DEPRECATED
+    bytes LogsHash = 5; // hash of smart contract state // DEPRECATED
+    map<string, bytes> TrieDatabaseMap = 9;
+    bytes MapFullDbHash = 10;
+    bytes SimpleDbHash = 11;
+}
+
+message StorageData {
+  bytes Key = 1;
+  bytes Value = 2;
+}
+
+message StorageDatas {
+  repeated StorageData Datas = 1;
+}
+
+enum UPDATE_STATE_FIELD {
+  ADD_BALANCE = 0;
+  SUB_BALANCE = 1;
+  STORAGE_ROOT = 2;
+  CODE_HASH = 3;
+  STORAGE_ADDRESS = 4;
+  CREATOR_PUBKEY = 5;
+  LOGS_HASH = 6;
+}  
+
+message UpdateStateField {
+  UPDATE_STATE_FIELD Field = 1;
+  bytes Value = 2;
+}
+
+message UpdateStateFields{
+  bytes Address = 1;
+  repeated UpdateStateField Fields = 2;
+}
+
+message UpdateStateFieldsListWithBlockNumber{
+  repeated UpdateStateFields Fields = 1;
+  uint64 BlockNumber = 2;
+}
+
+message SCStatesWithBlockNumber{
+  map<string, SmartContractState> SCStates = 1;
+  uint64 BlockNumber = 2;
+}

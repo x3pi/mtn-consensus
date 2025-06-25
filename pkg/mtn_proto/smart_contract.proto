@@ -1,0 +1,83 @@
+syntax = "proto3";
+package smart_contract;
+option go_package = "/mtn_proto";
+
+import "receipt.proto";
+import "event_log.proto";
+import "state.proto";
+
+
+message SmartContractUpdateData {
+  bytes Code = 1;
+  map<string,bytes> Storage = 2;
+  repeated event_log.EventLog EventLogs = 3;
+}
+
+message SmartContractUpdateDatas {
+  uint64 BlockNumber = 1;
+  map<string, SmartContractUpdateData> Data = 2;
+}
+
+message GetSmartContractStorage {
+  bytes Address = 1;
+  uint64 BlockNumber = 2;
+  bytes Key = 3;
+}
+
+message GetSmartContractStorageResponse {
+  bytes Address = 1;
+  uint64 BlockNumber = 2;
+  bytes Key = 3;
+  bytes Value = 4;
+}
+
+message GetSmartContractCode {
+  bytes Address = 1;
+  uint64 BlockNumber = 2;
+}
+
+message GetSmartContractCodeResponse {
+  bytes Address = 1;
+  uint64 BlockNumber = 2;
+  bytes Code = 3;
+}
+
+message TouchedAddresses{
+  repeated bytes Addresses = 1;
+}
+
+message ExecuteSCResult {
+  bytes TransactionHash = 1;
+
+  map<string,bytes> MapAddBalance = 2; // addresses with add balance
+  map<string,bytes> MapSubBalance = 3;// addresses with sub balance
+  map<string,bytes> MapCodeHash = 4; // address were deployed by this transaction
+  map<string,bytes> MapStorageRoot = 5; // address were deployed by this transaction
+
+  bytes LogsHash = 6; 
+  receipt.RECEIPT_STATUS Status = 8; // returns (function had call return) or halted (function run complete with no return ) or threw (err) 
+  receipt.EXCEPTION Exception = 9; // Exception has been threw
+  bytes Return = 10; // result after call
+  uint64 GasUsed = 11;
+
+  // 
+  map<string, TouchedAddresses> MapStorageAddressTouchedAddresses = 12; // storage address => touched address 
+  // 
+  map<string, bytes> MapStorageAddress = 13; // storage address => touched address 
+  map<string, bytes> MapCreatorPubkey = 14; // storage address => touched address 
+
+  map<string, account_state.StorageDatas> MapNativeSmartContractUpdateStorage = 15;
+  repeated event_log.EventLog EventLogs = 16;
+}   
+
+message ExecuteSCResults {
+  repeated ExecuteSCResult Results = 1;
+  uint64 GroupId = 2; 
+  uint64 BlockNumber = 3; 
+}
+
+message TouchedAddressesData{
+  uint64 BlockNumber = 1;
+  repeated bytes Addresses = 2;
+}
+

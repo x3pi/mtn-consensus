@@ -1,0 +1,42 @@
+syntax = "proto3";
+package stats;
+option go_package = "/mtn_proto";
+option java_package = "com.meta_node.protos.compiled.stats";
+
+message Stats{
+    uint64 TotalMemory = 1;
+    uint64 HeapMemory = 2;
+    int32 NumGoroutines = 3;
+    uint64 Uptime = 4;
+
+    NetworkStats Network = 5;
+    repeated LevelDBStats DB = 6;
+}
+
+message NetworkStats {
+    map<string,int32> TotalConnectionByType = 1;
+}
+
+message LevelDBStats{
+    repeated uint64 LevelSizes = 1;
+    repeated uint64 LevelTablesCounts = 2;
+    repeated uint64 LevelRead= 3;
+    repeated uint64 LevelWrite= 4;
+    repeated uint64 LevelDurations= 5;
+
+    uint32 MemComp = 6;
+    uint32 Level0Comp = 7;
+    uint32 NonLevel0Comp = 8;
+    uint32 SeekComp = 9;
+
+    int32 AliveSnapshots = 10;
+	int32 AliveIterators =11;
+
+	uint64 IOWrite = 12; 
+	uint64 IORead = 13;
+
+    int32 BlockCacheSize = 14;
+	int32 OpenedTablesCount = 15; 
+
+    string Path = 16;
+}

@@ -1,0 +1,148 @@
+package storage
+
+import (
+	"encoding/hex"
+	"fmt"
+	"sync"
+
+	rocksdb "github.com/facebook/dns/dnsrocks/cgo-rocksdb"
+	"github.com/meta-node-blockchain/meta-node/pkg/logger"
+	"github.com/meta-node-blockchain/meta-node/pkg/loggerfile"
+)
+
+// Cấu trúc quản lý RocksDB với snapshot
+type ReplicatedRocksDB struct {
+	db              *rocksdb.RocksDB
+	path            string
+	mu              sync.Mutex
+	writeOptions    *rocksdb.WriteOptions
+	readOptions     *rocksdb.ReadOptions
+	currentSnapshot *rocksdb.Snapshot // Thêm trường để lưu trữ snapshot hiện tại
+
+}
+
+// Tạo mới `ReplicatedRocksDB`
+func NewReplicatedRocksDB(path string) *ReplicatedRocksDB {
+	r := &ReplicatedRocksDB{path: path}
+	r.writeOptions = rocksdb.NewWriteOptions(false, false, true, false, true)
+	// Tạo readOptions mặc định cho mỗi luồng hoặc mỗi truy vấn đọc
+	readOptions := rocksdb.NewDefaultReadOptions()
+
+	// Tắt fill cache để giảm tải bộ nhớ cache khi đọc dữ liệu lớn
+	readOptions.SetFillCache(false)
+
+	// Thiết lập kích thước readahead (ví dụ 2MB)
+	r.readOptions = readOptions
+	return r
+}
+
+// Mở RocksDB và tạo snapshot ban đầu
+func (r *ReplicatedRocksDB) Open(parallelism int) error {
+	// Tạo thư mục nếu chưa có
+	if err := createDirIfNotExists(r.path); err != nil {
+		return fmt.Errorf("không thể tạo thư mục DB: %v", err)
+	}
+
+	// Cấu hình RocksDB
+	options := rocksdb.NewOptions()
+	options.EnableCreateIfMissing()
+	options.SetParallelism(parallelism)
+
+	// Thiết lập mức độ song song cho hoạt động I/O
+
+	// Mở cơ sở dữ liệu
+	var err error
+	r.db, err = rocksdb.OpenDatabase(r.path, false, false, options)
+	if err != nil {
+		return fmt.Errorf("lỗi mở RocksDB: %v", err)
+	}
+
+	// Tạo snapshot ban đầu
+	r.currentSnapshot = rocksdb.NewSnapshot(r.db)
+
+	return nil
+}
+
+func (r *ReplicatedRocksDB) Get(key []byte) ([]byte, error) {
+	snapshotReadOptions := rocksdb.NewReadOptions(true, true)
+	defer snapshotReadOptions.FreeReadOptions()
+	snapshotReadOptions.SetSnapshot(r.currentSnapshot)
+	// Lấy giá trị từ database
+	value, err := r.db.Get(snapshotReadOptions, key)
+	if err != nil || value == nil {
+		// Log lỗi nếu có
+		// log.Printf("Lỗi khi lấy dữ liệu: key=%v, error=%v", key, err)
+		logger.Info("Get: err", err)
+		fileLogger, _ := loggerfile.NewFileLogger("error/getDb.log")
+		fileLogger.Info(fmt.Sprintf("getting key: %s value: %s", hex.EncodeToString(key), value))
+		return nil, err
+	}
+	// Log dữ liệu nếu lấy thành công
+	// log.Printf("Lấy dữ liệu thành công: key=%v, value=%v", hex.EncodeToString(key), hex.EncodeToString(value))
+	return value, nil
+}
+
+// Ghi dữ liệu vào RocksDB và cập nhật snapshot
+func (r *ReplicatedRocksDB) Put(key, value []byte) error {
+
+	fileLogger, _ := loggerfile.NewFileLogger("Put.log")
+	fileLogger.Info("Key: ", hex.EncodeToString(key))
+	fileLogger.Info("value: ", hex.EncodeToString(value))
+
+	if err := r.db.Put(r.writeOptions, key, value); err != nil {
+		return fmt.Errorf("lỗi khi ghi dữ liệu: %v", err)
+	}
+	r.currentSnapshot = rocksdb.NewSnapshot(r.db)
+
+	return nil
+}
+
+// Xóa key khỏi RocksDB và cập nhật snapshot
+func (r *ReplicatedRocksDB) Delete(key []byte) error {
+
+	writeOptions := rocksdb.NewDefaultWriteOptions()
+	defer writeOptions.FreeWriteOptions()
+
+	if err := r.db.Delete(writeOptions, key); err != nil {
+		return fmt.Errorf("lỗi khi xóa dữ liệu: %v", err)
+	}
+	r.currentSnapshot = rocksdb.NewSnapshot(r.db)
+
+	return nil
+}
+
+func (r *ReplicatedRocksDB) Close() error {
+	r.db.CloseDatabase()
+
+	return nil
+}
+
+func (r *ReplicatedRocksDB) BatchPut(kvs [][2][]byte) error {
+	// logger.Info("BatchPut RocksDB")
+	fileLogger, _ := loggerfile.NewFileLogger("BatchPut.log")
+
+	// Tạo một WriteBatch
+	batch := r.db.NewBatch()
+	defer batch.Destroy() // Giải phóng bộ nhớ tránh leak
+
+	// Thêm dữ liệu vào batch
+	for _, kv := range kvs {
+		fileLogger.Info("Key: ", hex.EncodeToString(kv[0]))
+		fileLogger.Info("value: ", hex.EncodeToString(kv[1]))
+		batch.Put(kv[0], kv[1])
+	}
+
+	// Kiểm tra số lượng phần tử trong batch
+	batchSize := len(kvs)
+	if itemCount := batch.GetCount(); itemCount != batchSize {
+		// log.Printf("Batch size mismatch: %d / %d", itemCount, batchSize) // Thêm log
+		return fmt.Errorf("Batch size mismatch: %d / %d", itemCount, batchSize)
+	}
+	if err := r.db.ExecuteBatch(batch, r.writeOptions); err != nil {
+		// log.Printf("Lỗi khi thực thi BatchPut: %v", err) // Thêm log
+		return fmt.Errorf("lỗi khi thực thi BatchPut: %v", err)
+	}
+	r.currentSnapshot = rocksdb.NewSnapshot(r.db)
+	// log.Printf("BatchPut thành công: %d items", batchSize) // Thêm log
+	return nil
+}

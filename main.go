@@ -6,49 +6,61 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"reliable-broadcast/rbc" // Đảm bảo đường dẫn import đúng
 	"strconv"
 	"strings"
-	"time" // Thêm import time cho StartBroadcast
+	"time"
+
+	"github.com/meta-node-blockchain/meta-node/pkg/logger"
+	"github.com/meta-node-blockchain/meta-node/pkg/rbc"
 )
 
 func main() {
-	id := flag.Int("id", 0, "ID của node này")
-	peersStr := flag.String("peers", "0:localhost:8000", "Danh sách các peer dạng id:addr,id:addr")
+	id := flag.Int("id", 0, "ID of this node")
+	peersStr := flag.String("peers", "0:localhost:8000", "List of peers as id:addr,id:addr")
 	flag.Parse()
 
 	peers := make(map[int32]string)
 	for _, pStr := range strings.Split(*peersStr, ",") {
-		// SỬA LỖI Ở ĐÂY: Dùng SplitN để chỉ tách tại dấu hai chấm đầu tiên
 		parts := strings.SplitN(pStr, ":", 2)
 		if len(parts) != 2 {
-			log.Fatalf("Định dạng peer không hợp lệ: %s. Phải là 'id:host:port'", pStr)
+			log.Fatalf("Invalid peer format: %s. Must be 'id:host:port'", pStr)
 		}
 		pID, err := strconv.Atoi(parts[0])
 		if err != nil {
-			log.Fatalf("ID peer không hợp lệ: %v", err)
+			log.Fatalf("Invalid peer ID: %v", err)
 		}
 		peers[int32(pID)] = parts[1]
 	}
 
-	process := rbc.NewProcess(int32(*id), peers)
+	// In a real integration with the meta-node-blockchain, a bls.KeyPair would be
+	// created or loaded here and passed to NewProcess. For this example,
+	// we pass nil and the Process will handle it.
+	process, err := rbc.NewProcess(int32(*id), peers, nil)
+	if err != nil {
+		log.Fatalf("Failed to create process: %v", err)
+	}
 
-	// Bắt đầu lắng nghe mạng trong một goroutine
-	go process.Start()
-
-	// Goroutine để in các thông điệp đã được giao
+	// Start the server and connect to peers
 	go func() {
-		for {
-			payload := <-process.Delivered
-			fmt.Printf("\n[ỨNG DỤNG] Node %d đã nhận: %s\n> ", process.ID, string(payload))
+		if err := process.Start(); err != nil {
+			log.Fatalf("Process failed to start: %v", err)
 		}
 	}()
 
-	// Đợi một chút để các node khác khởi động và lắng nghe
-	time.Sleep(2 * time.Second)
+	// Goroutine to print delivered messages
+	go func() {
+		for {
+			payload := <-process.Delivered
+			logger.Info("\n[APPLICATION] Node %d Delivered: %s\n> ", process.ID, string(payload))
+		}
+	}()
 
-	// Cho phép người dùng nhập từ stdin để bắt đầu broadcast
-	fmt.Println("Nhập tin nhắn và nhấn Enter để broadcast:")
+	// Wait for the network to initialize
+	logger.Info("Waiting for network to initialize...")
+	time.Sleep(5 * time.Second)
+
+	// Allow user to broadcast messages from stdin
+	logger.Info("Enter a message and press Enter to broadcast:")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
@@ -59,7 +71,7 @@ func main() {
 			}
 		} else {
 			if err := scanner.Err(); err != nil {
-				log.Printf("Lỗi đọc stdin: %v", err)
+				logger.Info("Error reading from stdin: %v", err)
 			}
 			break
 		}

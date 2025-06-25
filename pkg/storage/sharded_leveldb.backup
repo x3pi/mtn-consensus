@@ -1,0 +1,118 @@
+package storage
+
+import (
+	"crypto/md5"
+	"encoding/binary"
+	"fmt"
+	"sync"
+
+	"github.com/syndtr/goleveldb/leveldb"
+)
+
+// Cấu trúc quản lý nhiều instance LevelDB với sharding
+type ShardedLevelDB struct {
+	shards    []*ReplicatedLevelDB
+	numShards int
+}
+
+// Tạo mới `ShardedLevelDB`
+func NewShardedLevelDB(baseDir string, numShards int) (*ShardedLevelDB, error) {
+	shards := make([]*ReplicatedLevelDB, numShards)
+	for i := 0; i < numShards; i++ {
+		primaryPath := fmt.Sprintf("%s/db_shard_%d", baseDir, i)
+		shards[i] = NewReplicatedLevelDB(primaryPath)
+	}
+
+	return &ShardedLevelDB{
+		shards:    shards,
+		numShards: numShards,
+	}, nil
+}
+
+// Mở toàn bộ LevelDB shards
+func (s *ShardedLevelDB) Open() error {
+	for _, shard := range s.shards {
+		if err := shard.Open(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BatchPut: Ghi nhiều key-value vào đúng shard song song
+func (s *ShardedLevelDB) BatchPut(kvs [][2][]byte) error {
+	var wg sync.WaitGroup
+	errChan := make(chan error, s.numShards) // Kênh để thu thập lỗi từ các goroutine
+
+	batches := make(map[*ReplicatedLevelDB]*leveldb.Batch)
+	// Gom nhóm dữ liệu theo shard
+	for _, kv := range kvs {
+		key, value := kv[0], kv[1]
+		shard := s.getShard(key)
+		if _, exists := batches[shard]; !exists {
+			batches[shard] = new(leveldb.Batch)
+		}
+		batches[shard].Put(key, value)
+	}
+
+	// Ghi từng batch vào shard tương ứng song song
+	for shard, batch := range batches {
+		wg.Add(1)
+		go func(shard *ReplicatedLevelDB, batch *leveldb.Batch) {
+			defer wg.Done()
+			if err := shard.BatchPut(batch); err != nil {
+				errChan <- err // Gửi lỗi vào kênh
+			}
+		}(shard, batch)
+	}
+
+	wg.Wait() // Chờ tất cả goroutine hoàn thành
+
+	close(errChan) // Đóng kênh để báo hiệu không còn lỗi nào nữa
+
+	// Kiểm tra lỗi từ các goroutine
+	for err := range errChan {
+		return err // Trả về lỗi đầu tiên gặp phải
+	}
+
+	return nil
+}
+
+// Băm key để quyết định lưu vào shard nào
+func (s *ShardedLevelDB) getShard(key []byte) *ReplicatedLevelDB {
+	hash := md5.Sum(key)
+	index := binary.BigEndian.Uint32(hash[:4]) % uint32(s.numShards)
+	return s.shards[index]
+}
+
+// Ghi dữ liệu vào shard tương ứng
+func (s *ShardedLevelDB) Put(key, value []byte) error {
+	shard := s.getShard(key)
+	return shard.Put(key, value)
+}
+
+// Đọc dữ liệu từ snapshot thay vì replica
+func (s *ShardedLevelDB) Get(key []byte) ([]byte, error) {
+	shard := s.getShard(key)
+	return shard.GetFromSnapshot(key)
+}
+
+// Xóa key khỏi shard tương ứng
+func (s *ShardedLevelDB) Delete(key []byte) error {
+	shard := s.getShard(key)
+	return shard.Delete(key)
+}
+
+// Kiểm tra key có tồn tại không
+func (s *ShardedLevelDB) Has(key []byte) bool {
+	shard := s.getShard(key)
+	return shard.Has(key)
+}
+
+// Đóng toàn bộ database
+func (s *ShardedLevelDB) Close() error {
+	for _, shard := range s.shards {
+		shard.Close()
+	}
+	return nil
+}
