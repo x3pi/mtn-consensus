@@ -64,7 +64,7 @@ func main() {
 				logger.Info("\n[APPLICATION] Node %d Delivered Batch for Block %d from Proposer %x\n> ", process.ID, batch.BlockNumber, batch.ProposerId)
 			} else {
 				// If it's not a batch, print as a plain string
-				logger.Info("\n[APPLICATION] Node %d Delivered: %s\n> ", process.ID, string(payload))
+				logger.Info("\n[APPLICATION] Node %d Delivered: %s\n> ", process.ID, batch)
 			}
 		}
 	}()

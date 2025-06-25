@@ -302,7 +302,7 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 
 		if len(state.readyRecvd) > 2*p.F && !state.delivered {
 			state.delivered = true
-			logger.Info("Node %d has DELIVERED message %s: %s", p.ID, key, string(state.payload))
+			logger.Info("Node %d has DELIVERED message %s", p.ID, key)
 			p.Delivered <- state.payload
 		}
 	}
