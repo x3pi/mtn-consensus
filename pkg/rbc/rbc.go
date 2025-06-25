@@ -83,7 +83,7 @@ func NewProcess(id int32, peers map[int32]string, keyPair *bls.KeyPair) (*Proces
 	connectionsManager := network.NewConnectionsManager()
 
 	var err error
-	p.server, err = network.NewSocketServer(keyPair, connectionsManager, handler, "rbc-node", "0.0.1")
+	p.server, err = network.NewSocketServer(keyPair, connectionsManager, handler, "validator", "0.0.1")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create socket server: %v", err)
 	}
