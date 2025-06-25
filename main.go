@@ -13,41 +13,21 @@ import (
 	"time"
 
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
+
 	// Assuming this is the correct import path for your protobuf definitions
 	"github.com/meta-node-blockchain/meta-node/pkg/mtn_proto"
 	"github.com/meta-node-blockchain/meta-node/pkg/rbc"
 	"google.golang.org/protobuf/proto"
 )
 
-// PeerConfig represents the configuration for a peer node.
-type PeerConfig struct {
-	Id                int    `json:"id"`
-	ConnectionAddress string `json:"connection_address"`
-	PublicKey         string `json:"public_key"`
-}
-
 // ValidatorInfo contains public key of a validator.
-type ValidatorInfo struct {
-	PublicKey string `json:"public_key"`
-}
-type NodeConfig struct {
-	ID                int             `json:"id"`
-	KeyPair           string          `json:"key_pair"`
-	Master            PeerConfig      `json:"master"`
-	NodeType          string          `json:"node_type"`
-	Version           string          `json:"version"`
-	ConnectionAddress string          `json:"connection_address"`
-	Peers             []PeerConfig    `json:"peers"`
-	NumValidator      int             `json:"num_validator"`
-	Validator         []ValidatorInfo `json:"validator"`
-}
 
-func LoadConfigFromFile(filename string) (*NodeConfig, error) {
+func LoadConfigFromFile(filename string) (*rbc.NodeConfig, error) {
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("could not read config file: %w", err)
 	}
-	var config NodeConfig
+	var config rbc.NodeConfig
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("could not unmarshal json: %w", err)
 	}
@@ -78,7 +58,7 @@ func main() {
 	logger.Info("Node %d initialized with peers: %v", int32(*&allConfig.ID), peers)
 
 	// Khởi tạo process với ID và danh sách peers đã được đọc từ config
-	process, err := rbc.NewProcess(int32(*&allConfig.ID), peers, nil)
+	process, err := rbc.NewProcess(allConfig)
 	if err != nil {
 		log.Fatalf("Failed to create process: %v", err)
 	}
@@ -97,6 +77,7 @@ func main() {
 			batch := &mtn_proto.Batch{}
 			err := proto.Unmarshal(payload.Payload, batch)
 			if err == nil {
+				// err = process.MessageSender.SendBytes(process.MasterConn, common.PushFinalizeEvent, []byte{})
 				logger.Info("\n[APPLICATION] Node %d Delivered Batch for Block %d from Proposer %x\n> ", process.ID, payload.Priority, payload.SenderID)
 			} else {
 				logger.Info("\n[APPLICATION] Node %d Delivered: %s\n> ", process.ID, string(payload.Payload))
@@ -138,6 +119,27 @@ func main() {
 			}
 		}
 	}()
+
+	// go func() {
+	// 	for txs := range process.PoolTransactions {
+	// 		proposerId := process.KeyPair.PublicKey().Bytes()
+	// 		headerData := fmt.Sprintf("%d:%x", process.GetCurrentBlockNumber()+1, proposerId)
+	// 		batchHash := sha256.Sum256([]byte(headerData))
+	// 		batch := &mtn_proto.Batch{
+	// 			Hash:         batchHash[:],
+	// 			Transactions: txs,
+	// 			BlockNumber:  process.GetCurrentBlockNumber() + 1,
+	// 			ProposerId:   proposerId,
+	// 		}
+	// 		payload, err := proto.Marshal(batch)
+	// 		if err != nil {
+	// 			logger.Error("Failed to marshal batch:", err)
+	// 			continue
+	// 		}
+	// 		logger.Info("\n[APPLICATION] Node %d broadcasting a batch for block %d...\n> ", process.ID, process.GetCurrentBlockNumber()+1)
+	// 		process.StartBroadcast(payload)
+	// 	}
+	// }()
 
 	// Allow user to broadcast messages from stdin (giữ nguyên)
 	logger.Info("Enter a message and press Enter to broadcast:")

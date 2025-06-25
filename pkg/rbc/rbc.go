@@ -32,6 +32,13 @@ type broadcastState struct {
 	payload    []byte
 }
 
+// PeerConfig represents the configuration for a peer node.
+type PeerConfig struct {
+	Id                int    `json:"id"`
+	ConnectionAddress string `json:"connection_address"`
+	PublicKey         string `json:"public_key"`
+}
+
 // ProposalNotification được giữ nguyên
 type ProposalNotification struct {
 	SenderID int32
@@ -39,8 +46,25 @@ type ProposalNotification struct {
 	Payload  []byte
 }
 
+type ValidatorInfo struct {
+	PublicKey string `json:"public_key"`
+}
+type NodeConfig struct {
+	ID                int             `json:"id"`
+	KeyPair           string          `json:"key_pair"`
+	Master            PeerConfig      `json:"master"`
+	NodeType          string          `json:"node_type"`
+	Version           string          `json:"version"`
+	ConnectionAddress string          `json:"connection_address"`
+	Peers             []PeerConfig    `json:"peers"`
+	NumValidator      int             `json:"num_validator"`
+	Validator         []ValidatorInfo `json:"validator"`
+}
+
 // Process is updated to use the network module and include the KeyPair
 type Process struct {
+	Config *NodeConfig // Lưu cấu hình được truyền vào
+
 	ID        int32
 	Peers     map[int32]string
 	N         int
@@ -57,49 +81,69 @@ type Process struct {
 
 	// Thay thế map và mutex bằng con trỏ đến QueueManager
 	queueManager *aleaqueues.QueueManager
+
+	MasterConn    t_network.Connection    // Kết nối đến Master
+	MessageSender t_network.MessageSender // Để gửi message
+
+	// Channels for the new handlers
+	PoolTransactions   chan []*pb.Transaction
+	blockNumberChan    chan uint64
+	currentBlockNumber uint64
 }
 
-// NewProcess is updated to initialize network module components and store the KeyPair.
-func NewProcess(id int32, peers map[int32]string, keyPair *bls.KeyPair) (*Process, error) {
-	n := len(peers)
+// NewProcess được cập nhật để nhận RBC Config
+func NewProcess(config *NodeConfig) (*Process, error) {
+	n := len(config.Peers)
 	f := (n - 1) / 3
 	if n <= 3*f {
 		return nil, fmt.Errorf("system cannot tolerate failures with n=%d, f=%d. Requires n > 3f", n, f)
 	}
-
+	keyPair := bls.NewKeyPair(common.FromHex(config.KeyPair))
 	if keyPair == nil {
 		keyPair = bls.GenerateKeyPair()
 	}
 
-	// Lấy danh sách ID của các peer để khởi tạo QueueManager
-	var peerIDs []int32
-	for peerID := range peers {
-		peerIDs = append(peerIDs, peerID)
-	}
-
 	p := &Process{
-		ID:          id,
-		Peers:       peers,
-		N:           n,
-		F:           f,
-		Delivered:   make(chan *ProposalNotification, 1024),
-		logs:        make(map[string]*broadcastState),
-		connections: make(map[int32]t_network.Connection),
-		KeyPair:     keyPair,
-		// Khởi tạo QueueManager
-		queueManager: aleaqueues.NewQueueManager(peerIDs),
+		Config:           config,
+		N:                n,
+		F:                f,
+		Delivered:        make(chan *ProposalNotification, 1024),
+		logs:             make(map[string]*broadcastState),
+		connections:      make(map[int32]t_network.Connection),
+		KeyPair:          keyPair,
+		MessageSender:    network.NewMessageSender(""), // Khởi tạo MessageSender
+		PoolTransactions: make(chan []*pb.Transaction, 1024),
+		blockNumberChan:  make(chan uint64, 1024),
 	}
 
-	// Phần còn lại của hàm không đổi
 	handler := network.NewHandler(
 		map[string]func(t_network.Request) error{
 			RBC_COMMAND: p.handleNetworkRequest,
+			// m_common.SendPoolTransactons: func(req t_network.Request) error {
+			// 	var transactionsPb pb.Transactions
+			// 	if err := proto.Unmarshal(req.Message().Body(), &transactionsPb); err != nil {
+			// 		logger.Error("❌ Failed to unmarshal pool transactions: %v", err)
+			// 		return err
+			// 	}
+			// 	p.PoolTransactions <- transactionsPb.GetTransactions()
+			// 	return nil
+			// },
+			// m_common.BlockNumber: func(req t_network.Request) error {
+			// 	responseData := req.Message().Body()
+			// 	if len(responseData) < 8 {
+			// 		logger.Error("❌ Dữ liệu phản hồi block number không hợp lệ: độ dài %d < 8", len(responseData))
+			// 		return fmt.Errorf("dữ liệu phản hồi block number không hợp lệ")
+			// 	}
+			// 	validatorBlockNumber := binary.BigEndian.Uint64(responseData)
+			// 	p.blockNumberChan <- validatorBlockNumber
+			// 	return nil
+			// },
 		},
 		nil,
 	)
 	connectionsManager := network.NewConnectionsManager()
 	var err error
-	p.server, err = network.NewSocketServer(keyPair, connectionsManager, handler, "validator", "0.0.1")
+	p.server, err = network.NewSocketServer(bls.GenerateKeyPair(), connectionsManager, handler, "validator", "0.0.1")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create socket server: %v", err)
 	}
@@ -122,6 +166,20 @@ func (p *Process) Start() error {
 
 	// Allow some time for other nodes to start their listeners
 	time.Sleep(time.Second * 2)
+
+	// // Kết nối tới Master
+	// logger.Info("Node %d attempting to connect to Master at %s", p.Config.ID, p.Config.Master.ConnectionAddress)
+	// masterConn := network.NewConnection(common.HexToAddress("0x0"), m_common.MASTER_CONNECTION_TYPE)
+	// masterConn.SetRealConnAddr(p.Config.Master.ConnectionAddress)
+	// if err := masterConn.Connect(); err != nil {
+	// 	logger.Error("Node %d failed to connect to Master: %v", p.Config.ID, err)
+	// 	// Có thể quyết định dừng chương trình hoặc thử lại ở đây
+	// } else {
+	// 	p.MasterConn = masterConn
+	// 	p.addConnection(-1, masterConn)
+	// 	go p.server.HandleConnection(masterConn)
+	// 	logger.Info("Node %d connected to Master", p.Config.ID)
+	// }
 
 	// Connect to all other peers
 	for peerID, peerAddr := range p.Peers {
@@ -146,7 +204,44 @@ func (p *Process) Start() error {
 		go p.server.HandleConnection(conn) // Start handling the connection
 	}
 
+	// Khởi chạy goroutine xử lý block number như yêu cầu
+	// go func() {
+	// 	for blockNumber := range p.blockNumberChan {
+	// 		logger.Info("New block number received: %d", blockNumber)
+	// 		p.UpdateBlockNumber(blockNumber)
+	// 		isMyTurn := (int(blockNumber) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
+	// 		logger.Info("blockNumber: %v", blockNumber)
+	// 		logger.Info("remainder: %v", int(blockNumber)%p.Config.NumValidator)
+	// 		logger.Info("isMyTurn: %v, %v, %v", isMyTurn, p.Config.NumValidator, p.Config.ID)
+	// 		time.Sleep(1000 * time.Millisecond)
+	// 		if isMyTurn {
+	// 			logger.Info("It's my turn (Node %d) to propose for block %d. Requesting transactions...", p.Config.ID, blockNumber)
+	// 			p.MessageSender.SendBytes(
+	// 				p.MasterConn,
+	// 				m_common.GetTransactionsPool,
+	// 				[]byte{},
+	// 			)
+	// 		}
+	// 	}
+	// }()
+	// time.Sleep(time.Second * 2)
+
+	// p.MessageSender.SendBytes(
+	// 	p.MasterConn,
+	// 	m_common.ValidatorGetBlockNumber,
+	// 	[]byte{},
+	// )
+
 	return nil
+}
+
+// UpdateBlockNumber cập nhật số block hiện tại cho process
+func (p *Process) UpdateBlockNumber(blockNumber uint64) {
+	p.currentBlockNumber = blockNumber
+}
+
+func (p *Process) GetCurrentBlockNumber() uint64 {
+	return p.currentBlockNumber
 }
 
 // onConnect is a callback for the SocketServer when a new connection is accepted.
