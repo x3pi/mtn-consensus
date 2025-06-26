@@ -26,13 +26,15 @@ const (
 
 // broadcastState remains the same
 type broadcastState struct {
-	mu         sync.Mutex
-	echoRecvd  map[int32]bool
-	readyRecvd map[int32]bool
-	sentEcho   bool
-	sentReady  bool
-	delivered  bool
-	payload    []byte
+	mu          sync.Mutex
+	echoRecvd   map[int32]bool
+	readyRecvd  map[int32]bool
+	sentEcho    bool
+	sentReady   bool
+	delivered   bool
+	payload     []byte
+	BlockNumber uint64 // <-- Thêm dòng này
+
 }
 
 // PeerConfig represents the configuration for a peer node.
@@ -225,6 +227,7 @@ func (p *Process) Start() error {
 		for blockNumber := range p.blockNumberChan {
 			logger.Info("New block number received: %d", blockNumber)
 			p.UpdateBlockNumber(blockNumber)
+			p.CleanupOldMessages()
 			isMyTurn := (int(blockNumber) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
 			logger.Info("blockNumber: %v", blockNumber)
 			logger.Info("remainder: %v", int(blockNumber)%p.Config.NumValidator)
@@ -361,10 +364,19 @@ func (p *Process) getOrCreateState(key string, payload []byte) *broadcastState {
 
 	state, exists := p.logs[key]
 	if !exists {
+		// Trích xuất block number từ payload
+		batch := &pb.Batch{}
+		var blockNum uint64 = 0
+		// Bỏ qua lỗi, nếu payload không phải là batch thì blockNum sẽ là 0
+		if proto.Unmarshal(payload, batch) == nil {
+			blockNum = batch.GetBlockNumber()
+		}
+
 		state = &broadcastState{
-			echoRecvd:  make(map[int32]bool),
-			readyRecvd: make(map[int32]bool),
-			payload:    payload,
+			echoRecvd:   make(map[int32]bool),
+			readyRecvd:  make(map[int32]bool),
+			payload:     payload,
+			BlockNumber: blockNum, // <-- Gán block number
 		}
 		p.logs[key] = state
 	}
@@ -571,4 +583,30 @@ func (p *Process) RequestInitialBlockNumber() {
 			[]byte{},
 		)
 	}()
+}
+
+func (p *Process) CleanupOldMessages() {
+	p.logsMu.Lock()
+	defer p.logsMu.Unlock()
+
+	currentBlock := p.GetCurrentBlockNumber()
+	// Nếu chưa đủ block để dọn dẹp thì bỏ qua
+	if currentBlock <= 5 {
+		return
+	}
+
+	cleanupThreshold := currentBlock - 5
+	cleanedCount := 0
+
+	for key, state := range p.logs {
+		// Chỉ dọn dẹp những message đã được delivered và đủ cũ
+		if state.delivered && state.BlockNumber > 0 && state.BlockNumber < cleanupThreshold {
+			delete(p.logs, key)
+			cleanedCount++
+		}
+	}
+
+	if cleanedCount > 0 {
+		logger.Info("Node %d CLEANED UP %d old message states for blocks older than %d", p.ID, cleanedCount, cleanupThreshold)
+	}
 }
