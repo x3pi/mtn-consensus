@@ -62,7 +62,7 @@ func main() {
 		if scanner.Scan() {
 			line := scanner.Text()
 			if line != "" {
-				process.StartBroadcast([]byte(line))
+				process.StartBroadcast([]byte(line), "string")
 			}
 		} else {
 			if err := scanner.Err(); err != nil {

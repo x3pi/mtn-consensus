@@ -21,7 +21,9 @@ import (
 
 const (
 	// Command for RBC messages within the network module's protocol
-	RBC_COMMAND = "rbc_message"
+	RBC_COMMAND         = "rbc_message"
+	DataTypeBatch       = "batch"
+	DataTypeTransaction = "transaction"
 )
 
 // broadcastState remains the same
@@ -401,6 +403,7 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 				OriginalSenderId: msg.OriginalSenderId,
 				MessageId:        msg.MessageId,
 				Payload:          msg.Payload,
+				DataType:         msg.DataType,
 			}
 			p.broadcast(echoMsg)
 		}
@@ -415,6 +418,7 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 				OriginalSenderId: msg.OriginalSenderId,
 				MessageId:        msg.MessageId,
 				Payload:          msg.Payload,
+				DataType:         msg.DataType,
 			}
 			p.broadcast(readyMsg)
 		}
@@ -430,6 +434,7 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 				OriginalSenderId: msg.OriginalSenderId,
 				MessageId:        msg.MessageId,
 				Payload:          msg.Payload,
+				DataType:         msg.DataType,
 			}
 			p.broadcast(readyMsg)
 		}
@@ -439,36 +444,53 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 			logger.Info("Node %d has DELIVERED message %s", p.ID, key)
 			proposerID := msg.OriginalSenderId
 
-			batch := &pb.Batch{}
-			if err := proto.Unmarshal(state.payload, batch); err != nil {
-				notification := &ProposalNotification{
+			var notification *ProposalNotification
+			logger.Error(msg.DataType)
+			switch msg.DataType {
+			case DataTypeBatch:
+				batch := &pb.Batch{}
+				if err := proto.Unmarshal(state.payload, batch); err == nil {
+					priority := int64(batch.BlockNumber)
+					p.queueManager.Enqueue(proposerID, priority, state.payload)
+					notification = &ProposalNotification{
+						SenderID: proposerID,
+						Priority: priority,
+						Payload:  state.payload,
+					}
+				} else {
+					notification = &ProposalNotification{
+						SenderID: proposerID,
+						Priority: -1,
+						Payload:  state.payload,
+					}
+				}
+			case DataTypeTransaction:
+				tx := &pb.Transaction{}
+				if err := proto.Unmarshal(state.payload, tx); err == nil {
+					notification = &ProposalNotification{
+						SenderID: proposerID,
+						Priority: 0, // hoặc logic khác
+						Payload:  state.payload,
+					}
+				}
+			// Thêm các loại dữ liệu khác ở đây
+			default:
+				notification = &ProposalNotification{
 					SenderID: proposerID,
 					Priority: -1,
 					Payload:  state.payload,
 				}
+			}
+
+			if notification != nil {
 				p.Delivered <- notification
-				return
 			}
-
-			priority := int64(batch.BlockNumber)
-
-			// Sử dụng QueueManager để thêm vào hàng đợi một cách an toàn
-			p.queueManager.Enqueue(proposerID, priority, state.payload)
-			logger.Info("Node %d delegated to QueueManager to ENQUEUE proposal from node %d with priority %d", p.ID, proposerID, priority)
-
-			// Gửi thông báo lên tầng ứng dụng (không đổi)
-			notification := &ProposalNotification{
-				SenderID: proposerID,
-				Priority: priority,
-				Payload:  state.payload,
-			}
-			p.Delivered <- notification
 		}
 	}
 }
 
 // StartBroadcast is called by the application to initiate a new broadcast.
-func (p *Process) StartBroadcast(payload []byte) {
+func (p *Process) StartBroadcast(payload []byte, dataType string) {
 	messageID := fmt.Sprintf("%d-%d", p.ID, time.Now().UnixNano())
 	logger.Info("Node %d starting broadcast for message %s", p.ID, messageID)
 	initMsg := &pb.RBCMessage{
@@ -476,6 +498,7 @@ func (p *Process) StartBroadcast(payload []byte) {
 		OriginalSenderId: p.ID,
 		MessageId:        messageID,
 		Payload:          payload,
+		DataType:         dataType,
 	}
 	p.broadcast(initMsg)
 }
@@ -570,7 +593,7 @@ func (p *Process) HandlePoolTransactions() {
 			}
 
 			logger.Info("\n[APPLICATION] Node %d broadcasting a batch for block %d...\n> ", p.ID, p.GetCurrentBlockNumber()+1)
-			p.StartBroadcast(payload)
+			p.StartBroadcast(payload, "batch")
 		}
 	}()
 }

@@ -23,6 +23,7 @@ message RBCMessage {
   bytes payload = 4;
   // ID của node gửi thông điệp mạng này (quan trọng để theo dõi ai đã gửi ECHO/READY)
   int32 network_sender_id = 5;
+  string dataType = 6;
 }
 
 
