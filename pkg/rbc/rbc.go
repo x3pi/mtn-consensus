@@ -478,8 +478,23 @@ func (p *Process) HandleDelivered() {
 	var mu sync.Mutex
 
 	processBatch := func(payload *ProposalNotification) {
+		batch := &pb.Batch{}
+		err := proto.Unmarshal(payload.Payload, batch)
+
+		if err != nil {
+			logger.Error("Failed to Unmarshal Payload: %v", err)
+		}
+
 		logger.Info("\n[APPLICATION] Node %d Delivered Batch for Block %d from Proposer %x\n> ", p.ID, payload.Priority, payload.SenderID)
-		err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, []byte{})
+		transactionsPb := &pb.Transactions{
+			Transactions: batch.Transactions,
+		}
+		txBytes, err := proto.Marshal(transactionsPb)
+		if err != nil {
+			logger.Error("Failed to marshal transactions: %v", err)
+			return
+		}
+		err = p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, txBytes)
 		if err != nil {
 			logger.Error("Failed to send PushFinalizeEvent: %v", err)
 		}
