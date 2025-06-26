@@ -117,29 +117,6 @@ func main() {
 		}
 	}()
 
-	// Goroutine to periodically check for and process pending blocks
-	go func() {
-		ticker := time.NewTicker(200 * time.Millisecond) // Check every 200ms
-		defer ticker.Stop()
-
-		for range ticker.C {
-			mu.Lock()
-			// Check if we can process any pending blocks
-			currentExpectedBlock := process.GetCurrentBlockNumber() + 1
-			for {
-				if pendingPayload, found := pendingPayloads[currentExpectedBlock]; found {
-					logger.Info("[PENDING CHECKER] Processing pending block %d", currentExpectedBlock)
-					processBatch(pendingPayload) // No loop needed, process the single payload
-					delete(pendingPayloads, currentExpectedBlock)
-					currentExpectedBlock++ // Move to check the next block
-				} else {
-					break // No more sequential blocks to process from pending
-				}
-			}
-			mu.Unlock()
-		}
-	}()
-
 	// Wait for the network to initialize
 	logger.Info("Waiting for network to initialize...")
 	// time.Sleep(10 * time.Second)
