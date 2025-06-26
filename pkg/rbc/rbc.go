@@ -1,6 +1,7 @@
 package rbc
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"sync"
@@ -240,6 +241,9 @@ func (p *Process) Start() error {
 		}
 	}()
 
+	p.HandleDelivered()
+	p.HandlePoolTransactions()
+
 	return nil
 }
 
@@ -465,4 +469,79 @@ func (p *Process) StartBroadcast(payload []byte) {
 // Stop gracefully shuts down the server.
 func (p *Process) Stop() {
 	p.server.Stop()
+}
+
+func (p *Process) HandleDelivered() {
+	pendingPayloads := make(map[uint64]*ProposalNotification)
+	var mu sync.Mutex
+
+	processBatch := func(payload *ProposalNotification) {
+		logger.Info("\n[APPLICATION] Node %d Delivered Batch for Block %d from Proposer %x\n> ", p.ID, payload.Priority, payload.SenderID)
+		err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, []byte{})
+		if err != nil {
+			logger.Error("Failed to send PushFinalizeEvent: %v", err)
+		}
+	}
+
+	go func() {
+		for {
+			payload := <-p.Delivered
+			batch := &pb.Batch{}
+			err := proto.Unmarshal(payload.Payload, batch)
+
+			if err != nil {
+				logger.Info("\n[APPLICATION] Node %d Delivered: %s\n> ", p.ID, string(payload.Payload))
+				continue
+			}
+
+			mu.Lock()
+			currentExpectedBlock := p.GetCurrentBlockNumber() + 1
+			if payload.Priority == int64(currentExpectedBlock) {
+				processBatch(payload)
+				nextBlock := currentExpectedBlock + 1
+				for {
+					if pendingPayload, found := pendingPayloads[nextBlock]; found {
+						processBatch(pendingPayload)
+						delete(pendingPayloads, nextBlock)
+						nextBlock++
+					} else {
+						break
+					}
+				}
+			} else if payload.Priority > int64(currentExpectedBlock) {
+				priorityKey := uint64(payload.Priority)
+				if _, found := pendingPayloads[priorityKey]; !found {
+					logger.Info("\n[APPLICATION] Node %d received future block %d, pending.\n> ", p.ID, payload.Priority)
+					pendingPayloads[priorityKey] = payload
+				}
+			}
+			mu.Unlock()
+		}
+	}()
+}
+
+func (p *Process) HandlePoolTransactions() {
+	go func() {
+		for txs := range p.PoolTransactions {
+			proposerId := p.KeyPair.PublicKey().Bytes()
+			headerData := fmt.Sprintf("%d:%x", p.GetCurrentBlockNumber()+1, proposerId)
+			batchHash := sha256.Sum256([]byte(headerData))
+
+			batch := &pb.Batch{
+				Hash:         batchHash[:],
+				Transactions: txs,
+				BlockNumber:  p.GetCurrentBlockNumber() + 1,
+				ProposerId:   proposerId,
+			}
+
+			payload, err := proto.Marshal(batch)
+			if err != nil {
+				logger.Error("Failed to marshal batch:", err)
+				continue
+			}
+
+			logger.Info("\n[APPLICATION] Node %d broadcasting a batch for block %d...\n> ", p.ID, p.GetCurrentBlockNumber()+1)
+			p.StartBroadcast(payload)
+		}
+	}()
 }

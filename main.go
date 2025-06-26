@@ -2,23 +2,20 @@ package main
 
 import (
 	"bufio"
-	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/meta-node-blockchain/meta-node/pkg/common"
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
 
 	// Assuming this is the correct import path for your protobuf definitions
-	"github.com/meta-node-blockchain/meta-node/pkg/mtn_proto"
+
 	"github.com/meta-node-blockchain/meta-node/pkg/rbc"
-	"google.golang.org/protobuf/proto"
 )
 
 // ValidatorInfo contains public key of a validator.
@@ -52,21 +49,6 @@ func main() {
 		log.Fatalf("Failed to create process: %v", err)
 	}
 
-	// Create a map to hold payloads that arrive out of order.
-	// We only store ONE payload per block number (first-come, first-served) to prevent duplicates.
-	pendingPayloads := make(map[uint64]*rbc.ProposalNotification)
-	var mu sync.Mutex // Mutex to protect access to pendingPayloads
-
-	// Function to process a batch
-	processBatch := func(payload *rbc.ProposalNotification) {
-		logger.Info("\n[APPLICATION] Node %d Delivered Batch for Block %d from Proposer %x\n> ", process.ID, payload.Priority, payload.SenderID)
-		err := process.MessageSender.SendBytes(process.MasterConn, common.PushFinalizeEvent, []byte{})
-		if err != nil {
-			logger.Error("Failed to send PushFinalizeEvent: %v", err)
-		}
-		// This assumes that after sending PushFinalizeEvent, GetCurrentBlockNumber() will be incremented.
-	}
-
 	// Start the server and connect to peers
 	go func() {
 		if err := process.Start(); err != nil {
@@ -74,73 +56,6 @@ func main() {
 		}
 	}()
 
-	// Goroutine to handle delivered messages with ordering logic
-	go func() {
-		for {
-			payload := <-process.Delivered
-			batch := &mtn_proto.Batch{}
-			err := proto.Unmarshal(payload.Payload, batch)
-
-			if err != nil {
-				// Not a batch, process as a simple message
-				logger.Info("\n[APPLICATION] Node %d Delivered: %s\n> ", process.ID, string(payload.Payload))
-				continue
-			}
-
-			// It's a batch, handle it with ordering logic
-			mu.Lock()
-			currentExpectedBlock := process.GetCurrentBlockNumber() + 1
-			if payload.Priority == int64(currentExpectedBlock) {
-				processBatch(payload)
-
-				// After processing a block, check for subsequent blocks in the pending map
-				nextBlock := currentExpectedBlock + 1
-				for {
-					if pendingPayload, found := pendingPayloads[nextBlock]; found {
-						processBatch(pendingPayload) // No loop needed, process the single payload
-						delete(pendingPayloads, nextBlock)
-						nextBlock++
-					} else {
-						break // No more sequential blocks in pending
-					}
-				}
-			} else if payload.Priority > int64(currentExpectedBlock) {
-				// Arrived early, store it ONLY IF we haven't stored one for this block yet.
-				priorityKey := uint64(payload.Priority)
-				if _, found := pendingPayloads[priorityKey]; !found {
-					logger.Info("\n[APPLICATION] Node %d received future block %d, pending.\n> ", process.ID, payload.Priority)
-					pendingPayloads[priorityKey] = payload
-				}
-			}
-			// Ignore old or duplicate blocks (payload.Priority < currentExpectedBlock)
-			mu.Unlock()
-		}
-	}()
-
-	// Wait for the network to initialize
-	logger.Info("Waiting for network to initialize...")
-	// time.Sleep(10 * time.Second)
-
-	go func() {
-		for txs := range process.PoolTransactions {
-			proposerId := process.KeyPair.PublicKey().Bytes()
-			headerData := fmt.Sprintf("%d:%x", process.GetCurrentBlockNumber()+1, proposerId)
-			batchHash := sha256.Sum256([]byte(headerData))
-			batch := &mtn_proto.Batch{
-				Hash:         batchHash[:],
-				Transactions: txs,
-				BlockNumber:  process.GetCurrentBlockNumber() + 1,
-				ProposerId:   proposerId,
-			}
-			payload, err := proto.Marshal(batch)
-			if err != nil {
-				logger.Error("Failed to marshal batch:", err)
-				continue
-			}
-			logger.Info("\n[APPLICATION] Node %d broadcasting a batch for block %d...\n> ", process.ID, process.GetCurrentBlockNumber()+1)
-			process.StartBroadcast(payload)
-		}
-	}()
 	time.Sleep(time.Second * 20)
 
 	go func() {
