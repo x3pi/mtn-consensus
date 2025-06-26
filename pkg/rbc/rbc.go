@@ -244,6 +244,8 @@ func (p *Process) Start() error {
 	p.HandleDelivered()
 	p.HandlePoolTransactions()
 
+	time.Sleep(10 * time.Second)
+	p.RequestInitialBlockNumber()
 	return nil
 }
 
@@ -543,5 +545,15 @@ func (p *Process) HandlePoolTransactions() {
 			logger.Info("\n[APPLICATION] Node %d broadcasting a batch for block %d...\n> ", p.ID, p.GetCurrentBlockNumber()+1)
 			p.StartBroadcast(payload)
 		}
+	}()
+}
+
+func (p *Process) RequestInitialBlockNumber() {
+	go func() {
+		p.MessageSender.SendBytes(
+			p.MasterConn,
+			m_common.ValidatorGetBlockNumber,
+			[]byte{},
+		)
 	}()
 }

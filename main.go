@@ -8,9 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"time"
 
-	"github.com/meta-node-blockchain/meta-node/pkg/common"
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
 
 	// Assuming this is the correct import path for your protobuf definitions
@@ -54,17 +52,6 @@ func main() {
 		if err := process.Start(); err != nil {
 			log.Fatalf("Process failed to start: %v", err)
 		}
-	}()
-
-	time.Sleep(time.Second * 20)
-
-	go func() {
-
-		process.MessageSender.SendBytes(
-			process.MasterConn,
-			common.ValidatorGetBlockNumber,
-			[]byte{},
-		)
 	}()
 
 	// Allow user to broadcast messages from stdin (giữ nguyên)
