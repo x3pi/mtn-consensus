@@ -202,3 +202,7 @@ func (ba *BinaryAgreement[N, S]) GetDecision() (bool, bool) {
 	}
 	return false, false
 }
+
+func (ba *BinaryAgreement[N, S]) GetEpoch() uint64 {
+	return ba.epoch
+}
