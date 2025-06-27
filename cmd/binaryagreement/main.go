@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/meta-node-blockchain/meta-node/pkg/binaryagreement"
+	"github.com/meta-node-blockchain/meta-node/pkg/logger"
 )
 
 // MessageInTransit mô phỏng một thông điệp đang được gửi qua mạng.
@@ -23,9 +24,9 @@ func runSimulation(
 	byzantineNodes map[string]struct{},
 	proposals map[string]bool,
 ) {
-	fmt.Println("\n\n==============================================================")
-	fmt.Printf("🚀 KỊCH BẢN: %s (Mô phỏng bất đồng bộ)\n", scenarioTitle)
-	fmt.Println("==============================================================")
+	logger.Info("\n\n==============================================================")
+	logger.Info("🚀 KỊCH BẢN: %s (Mô phỏng bất đồng bộ)\n", scenarioTitle)
+	logger.Info("==============================================================")
 
 	// --- 1. Thiết lập mạng và các Node ---
 	nodes := make(map[string]*binaryagreement.BinaryAgreement[string, string])
@@ -52,14 +53,14 @@ func runSimulation(
 				case transitMsg := <-nodeChannels[nodeID]:
 					step, err := nodeInstance.HandleMessage(transitMsg.Sender, transitMsg.Message)
 					if err != nil {
-						fmt.Printf("  LỖI xử lý thông điệp tại nút %s: %v\n", nodeID, err)
+						logger.Info("  LỖI xử lý thông điệp tại nút %s: %v\n", nodeID, err)
 						continue
 					}
 					for _, msgToSend := range step.MessagesToSend {
 						networkOutgoing <- MessageInTransit[string]{Sender: nodeID, Message: msgToSend.Message}
 					}
 				case <-time.After(3 * time.Second): // Hết giờ nếu không có hoạt động
-					fmt.Printf("!!! CẢNH BÁO: Nút %s đã hết giờ !!!\n", nodeID)
+					logger.Info("!!! CẢNH BÁO: Nút %s đã hết giờ !!!\n", nodeID)
 					return
 				}
 			}
@@ -107,7 +108,7 @@ func runSimulation(
 		if _, isByzantine := byzantineNodes[id]; isByzantine {
 			continue
 		}
-		fmt.Printf("Nút trung thực %s đề xuất giá trị: %v\n", id, value)
+		logger.Info("Nút trung thực %s đề xuất giá trị: %v\n", id, value)
 		step, err := nodes[id].Propose(value)
 		if err != nil {
 			panic(fmt.Sprintf("Nút %s không thể đề xuất: %v", id, err))
@@ -116,7 +117,7 @@ func runSimulation(
 			networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}
 		}
 	}
-	fmt.Println("--- Các đề xuất ban đầu đã được gửi. Mô phỏng đang chạy... ---")
+	logger.Info("--- Các đề xuất ban đầu đã được gửi. Mô phỏng đang chạy... ---")
 
 	// --- 5. Đợi tất cả các node kết thúc hoặc hết giờ ---
 	wg.Wait()
@@ -124,14 +125,14 @@ func runSimulation(
 	<-networkDone
 
 	// --- 6. In kết quả cuối cùng ---
-	fmt.Println("\n\n--- KẾT QUẢ CUỐI CÙNG ---")
-	fmt.Println("Tất cả các goroutine của node đã kết thúc.")
+	logger.Info("\n\n--- KẾT QUẢ CUỐI CÙNG ---")
+	logger.Info("Tất cả các goroutine của node đã kết thúc.")
 
 	for id, node := range nodes {
 		if decision, ok := node.GetDecision(); ok {
-			fmt.Printf("Nút %s đã kết thúc và quyết định: %v\n", id, decision)
+			logger.Info("Nút %s đã kết thúc và quyết định: %v\n", id, decision)
 		} else {
-			fmt.Printf("Nút %s KHÔNG kết thúc hoặc không có quyết định.\n", id)
+			logger.Info("Nút %s KHÔNG kết thúc hoặc không có quyết định.\n", id)
 		}
 	}
 }
@@ -171,10 +172,12 @@ func runAllScenarios() {
 	)
 }
 
+const NUM_RUNS = 1
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
-	for i := 1; i <= 1000; i++ {
-		fmt.Printf("\n================= LẦN CHẠY %d/%d =================\n", i, 1000)
+	for i := 1; i <= NUM_RUNS; i++ {
+		logger.Info("\n================= LẦN CHẠY %d/%d =================\n", i, NUM_RUNS)
 		runAllScenarios()
 	}
 }

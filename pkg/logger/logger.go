@@ -2,14 +2,16 @@ package logger
 
 import (
 	"bytes"
-	"encoding/json" // Added for robust JSON string escaping
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
-	"strconv" // Added for int/uint to string conversion
+	"strconv"
+	"strings"
 	"time"
 )
 
+// --- Constants for log levels ---
 const (
 	FLAG_DEBUGP   = 0
 	FLAG_TELEGRAM = 6
@@ -18,7 +20,10 @@ const (
 	FLAG_INFO     = 3
 	FLAG_WARN     = 2
 	FLAG_ERROR    = 1
+)
 
+// --- ANSI color codes ---
+const (
 	Reset  = "\033[0m"
 	Red    = "\033[31m"
 	Green  = "\033[32m"
@@ -26,10 +31,9 @@ const (
 	Blue   = "\033[34m"
 	Purple = "\033[35m"
 	Cyan   = "\033[36m"
-	Gray   = "\033[37m"
-	White  = "\033[97m"
 )
 
+// --- Structs ---
 type LoggerConfig struct {
 	Flag             int
 	Identifier       string
@@ -43,246 +47,149 @@ type Logger struct {
 	Config *LoggerConfig
 }
 
+type telegramPayload struct {
+	ChatId          string `json:"chat_id"`
+	MessageThreadId string `json:"message_thread_id,omitempty"`
+	Text            string `json:"text"`
+}
+
+// --- Global state ---
 var config = &LoggerConfig{
-	Flag:             FLAG_INFO,
-	Outputs:          []*os.File{os.Stdout},
-	TelegramChatId:   0,
-	TelegramToken:    "",
-	TelegramThreadId: 0, // Default
-	// TelegramThreadId: 6010, // Devnet
-	// TelegramThreadId: 6759, // Testnet
-	// TelegramThreadId: 1, // worknet
+	Flag:    FLAG_INFO,
+	Outputs: []*os.File{os.Stdout},
 }
 
-var logger = &Logger{
-	Config: config,
-}
+var logger = &Logger{Config: config}
 
-func SetConfig(newConfig *LoggerConfig) {
-	config = newConfig
-}
-
-func SetOutputs(outputs []*os.File) {
-	config.Outputs = outputs
-}
-
-func SetFlag(flag int) {
-	config.Flag = flag
-}
-
+// --- Configuration ---
+func SetConfig(newConfig *LoggerConfig) { *config = *newConfig; logger.Config = config }
+func SetOutputs(outputs []*os.File)     { config.Outputs = outputs }
+func SetFlag(flag int)                  { config.Flag = flag }
+func SetIdentifier(identifier string)   { config.Identifier = identifier }
 func SetTelegramInfo(token string, chatId int) {
-	config.TelegramToken = token
-	config.TelegramChatId = chatId
-	config.TelegramThreadId = 0
+	config.TelegramToken, config.TelegramChatId = token, chatId
 }
-
 func SetTelegramGroupInfo(token string, chatId int, threadId uint) {
-	config.TelegramToken = token
-	config.TelegramChatId = chatId
-	config.TelegramThreadId = threadId
+	config.TelegramToken, config.TelegramChatId, config.TelegramThreadId = token, chatId, threadId
 }
 
-func SetIdentifier(identifier string) {
-	config.Identifier = identifier
-}
+// --- Public Log API ---
+func DebugP(msg interface{}, a ...interface{}) { log(FLAG_DEBUGP, Purple, "DEBUG_P", msg, a...) }
+func Trace(msg interface{}, a ...interface{})  { log(FLAG_TRACE, Blue, "TRACE", msg, a...) }
+func Debug(msg interface{}, a ...interface{})  { log(FLAG_DEBUG, Cyan, "DEBUG", msg, a...) }
+func Info(msg interface{}, a ...interface{})   { log(FLAG_INFO, Green, "INFO", msg, a...) }
+func Warn(msg interface{}, a ...interface{})   { log(FLAG_WARN, Yellow, "WARN", msg, a...) }
 
-func DebugP(message interface{}, a ...interface{}) {
-	if config.Flag < FLAG_DEBUGP {
-		return
-	}
-	logger.writeToOutputs(
-		getLogBuffer(Purple, "DEBUG_P", message, a),
-	)
-}
-
-func Trace(message interface{}, a ...interface{}) {
-	if config.Flag < FLAG_TRACE {
-		return
-	}
-	logger.writeToOutputs(
-		getLogBuffer(Blue, "TRACE", message, a),
-	)
-}
-
-func Debug(message interface{}, a ...interface{}) {
-	if config.Flag < FLAG_DEBUG {
-		return
-	}
-	logger.writeToOutputs(
-		getLogBuffer(Cyan, "DEBUG", message, a),
-	)
-}
-
-func Info(message interface{}, a ...interface{}) {
-	if config.Flag < FLAG_INFO {
-		return
-	}
-	logger.writeToOutputs(
-		getLogBuffer(Green, "INFO", message, a),
-	)
-}
-
-func Warn(message interface{}, a ...interface{}) {
-	if config.Flag < FLAG_WARN {
-		return
-	}
-	logger.writeToOutputs(
-		getLogBuffer(Yellow, "WARN", message, a),
-	)
-}
-
-func Error(message interface{}, a ...interface{}) {
+func Error(msg interface{}, a ...interface{}) {
 	if config.Flag < FLAG_ERROR {
 		return
 	}
-	logBytes := getLogBuffer("", "ERROR", message, a) // Get log bytes without console colors for Telegram
+	logger.writeToError(formatConsoleLog(Red, "ERROR", msg, a...))
 	if config.TelegramToken != "" && config.TelegramChatId != 0 {
-		sendToTelegram(logBytes)
+		sendToTelegram(formatPlainLog("ERROR", msg, a...))
 	}
-	// For console output, use the version with color
-	logger.writeToError(getLogBuffer(Red, "ERROR", message, a))
 }
 
-func Telegram(message interface{}, a ...interface{}) {
-	if config.Flag < FLAG_TELEGRAM {
-		return
+func Telegram(msg interface{}, a ...interface{}) {
+	if config.Flag >= FLAG_TELEGRAM {
+		sendToTelegram(formatPlainLog("TELE", msg, a...))
 	}
-	sendToTelegram(
-		getLogBuffer("", "TELE", message, a), // Send without console colors
-	)
 }
 
-func sendToTelegram(messageContent []byte) {
-	var jsonPayload bytes.Buffer
-	jsonPayload.WriteString(`{"chat_id": "`)
-	jsonPayload.WriteString(strconv.Itoa(config.TelegramChatId))
-	jsonPayload.WriteString(`", `)
+// --- Internal Logging Logic ---
+func log(level int, color, prefix string, msg interface{}, a ...interface{}) {
+	if config.Flag >= level {
+		logger.writeToOutputs(formatConsoleLog(color, prefix, msg, a...))
+	}
+}
+
+func (l *Logger) writeToOutputs(buffer []byte) {
+	for _, out := range l.Config.Outputs {
+		if out != nil {
+			out.Write(buffer)
+		}
+	}
+}
+
+func (l *Logger) writeToError(buffer []byte) {
+	os.Stderr.Write(buffer)
+}
+
+func sendToTelegram(content []byte) {
+	payload := telegramPayload{
+		ChatId: strconv.Itoa(config.TelegramChatId),
+		Text:   string(content),
+	}
 
 	if config.TelegramThreadId > 0 {
-		jsonPayload.WriteString(`"message_thread_id": "`)
-		jsonPayload.WriteString(strconv.FormatUint(uint64(config.TelegramThreadId), 10))
-		jsonPayload.WriteString(`", `)
+		payload.MessageThreadId = strconv.FormatUint(uint64(config.TelegramThreadId), 10)
 	}
 
-	jsonPayload.WriteString(`"text": `)
-	// Use json.Marshal to correctly escape the message content for JSON.
-	// This will also add the surrounding quotes to the message string.
-	escapedMessage, err := json.Marshal(string(messageContent))
+	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		// Fallback or log error if marshalling fails, though unlikely for a string.
-		// For simplicity, writing the raw string (less safe for complex content).
-		// A more robust solution would log this marshalling error.
-		fmt.Printf("Error marshalling telegram message content: %v. Sending raw.\n", err)
-		jsonPayload.WriteString(`"`)
-		jsonPayload.Write(messageContent) // Might be problematic if content has unescaped quotes
-		jsonPayload.WriteString(`"`)
-	} else {
-		jsonPayload.Write(escapedMessage)
+		fmt.Fprintf(os.Stderr, "Marshal Telegram payload lỗi: %v\n", err)
+		return
 	}
 
-	jsonPayload.WriteString(`}`)
-
-	apiUrl := "https://api.telegram.org/bot" + config.TelegramToken + "/sendMessage"
-	resp, err := http.Post(
-		apiUrl,
-		"application/json",
-		bytes.NewBuffer(jsonPayload.Bytes()),
-	)
-
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", config.TelegramToken)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
-		// Use your logger here if it's safe and won't cause a loop,
-		// otherwise fmt.Println for critical network errors.
-		fmt.Printf("Error sending message to Telegram: %v\n", err)
-		if resp != nil {
-			resp.Body.Close()
-		}
+		fmt.Fprintf(os.Stderr, "Gửi Telegram thất bại: %v\n", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		var body bytes.Buffer
-		_, readErr := body.ReadFrom(resp.Body)
-		responseText := body.String()
-		if readErr != nil {
-			responseText = "could not read error response body"
-		}
-		// Use your logger here if safe.
-		fmt.Printf("Error response from Telegram API: %s, Body: %s\n", resp.Status, responseText)
+		body.ReadFrom(resp.Body)
+		fmt.Fprintf(os.Stderr, "Lỗi từ Telegram API: %s - %s\n", resp.Status, body.String())
 	}
 }
 
-func getLogBuffer(color string, prefix string, message interface{}, a []interface{}) []byte {
-	var buffer bytes.Buffer        // This will hold the final log entry metadata + content
-	var contentBuffer bytes.Buffer // This will hold just the formatted message content
-
-	// Add color if specified (only for console, Telegram messages get "" for color)
-	if color != "" {
-		buffer.WriteString(color)
-	}
-
-	// Add Identifier if specified
+func formatPlainLog(prefix string, msg interface{}, a ...interface{}) []byte {
+	var buffer bytes.Buffer
 	if config.Identifier != "" {
-		buffer.WriteString("[")
-		buffer.WriteString(config.Identifier)
-		buffer.WriteString("]")
+		buffer.WriteString(fmt.Sprintf("[%s] ", config.Identifier))
 	}
+	buffer.WriteString(fmt.Sprintf("[%s] ", prefix))
 
-	// Add log level prefix and timestamp
-	buffer.WriteString("[")
-	buffer.WriteString(prefix)
-	buffer.WriteString("][")
-	buffer.WriteString(time.Now().Format(time.Stamp))
-	buffer.WriteString("] ") // Space after the timestamp and metadata
-
-	// --- Content Formatting Logic ---
-	if formatStr, ok := message.(string); ok && len(a) > 0 {
-		// If 'message' is a string and there are additional arguments in 'a',
-		// treat 'message' as a format string for those arguments.
-		contentBuffer.WriteString(fmt.Sprintf(formatStr, a...))
+	if str, ok := msg.(string); ok && len(a) > 0 {
+		buffer.WriteString(fmt.Sprintf(str, a...))
 	} else {
-		// Otherwise (if 'message' is not a string, or 'a' is empty),
-		// print 'message' as is.
-		contentBuffer.WriteString(fmt.Sprintf("%v", message))
-		// And if there are any arguments in 'a' (this case primarily occurs if 'message' was not a string but 'a' is populated),
-		// print them, each prefixed by a newline.
-		for _, v_item := range a {
-			contentBuffer.WriteString("\n") // Start additional items on a new line
-			contentBuffer.WriteString(fmt.Sprintf("%v", v_item))
+		fmt.Fprint(&buffer, msg)
+		for _, item := range a {
+			fmt.Fprintf(&buffer, " %v", item)
 		}
 	}
-
-	// Add a space after the main content, unless the content itself ends with a newline from multi-line 'a' arguments.
-	// The original `fmt.Sprintf("%v ", message)` effectively added a space.
-	// The new `WriteString(" ")` aims to replicate this for single-line formatted messages.
-	// Multi-line messages (from the `else` block with `a` items) will naturally have newlines.
-	// This ensures a space separates the content from potential color reset codes or the final newline.
-	// Check if contentBuffer already ends with a newline.
-	contentBytes := contentBuffer.Bytes()
-	if len(contentBytes) > 0 && contentBytes[len(contentBytes)-1] != '\n' {
-		buffer.WriteString(" ") // Add trailing space if not ending with newline
-	}
-
-	buffer.Write(contentBytes) // Write the formatted content to the main buffer
-
-	// Add color reset if color was used
-	if color != "" && color != Reset { // Avoid double Reset if "" was passed and Reset is also ""
-		buffer.WriteString(Reset)
-	}
-
-	// Add final newline for the log entry
-	buffer.WriteString("\n")
 	return buffer.Bytes()
 }
 
-func (l *Logger) writeToOutputs(buffer []byte) {
-	for i := range l.Config.Outputs { // Corrected from config.Outputs to l.Config.Outputs
-		if l.Config.Outputs[i] != nil {
-			l.Config.Outputs[i].Write(buffer)
+func formatConsoleLog(color, prefix string, msg interface{}, a ...interface{}) []byte {
+	var contentBuffer bytes.Buffer
+	if config.Identifier != "" {
+		fmt.Fprintf(&contentBuffer, "[%s] ", config.Identifier)
+	}
+
+	if str, ok := msg.(string); ok && len(a) > 0 {
+		fmt.Fprintf(&contentBuffer, str, a...)
+	} else {
+		fmt.Fprint(&contentBuffer, msg)
+		for _, item := range a {
+			fmt.Fprintf(&contentBuffer, " %v", item)
 		}
 	}
-}
 
-func (l *Logger) writeToError(buffer []byte) { // Corrected from logger to l
-	os.Stderr.Write(buffer)
+	lines := strings.Split(contentBuffer.String(), "\n")
+	var buffer bytes.Buffer
+	header := fmt.Sprintf(" %s ", time.Now().Format("15:04:05"))
+	buffer.WriteString(color)
+	fmt.Fprintf(&buffer, "┌─[%s]%s\n", prefix, header)
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			fmt.Fprintf(&buffer, "│  %s\n", line)
+		}
+	}
+	buffer.WriteString("└" + strings.Repeat("─", len(prefix)+len(header)+3))
+	buffer.WriteString(Reset + "\n")
+	return buffer.Bytes()
 }
