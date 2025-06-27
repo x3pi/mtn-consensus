@@ -281,8 +281,10 @@ func runSimulation(
 	fmt.Println("\n--- Summary ---")
 	if !allHonestTerminated {
 		fmt.Println("❌ FAILURE: Not all honest nodes terminated.")
+		panic("FAILURE")
 	} else if !allAgree {
 		fmt.Println("❌ FAILURE: Honest nodes did not agree on a common value!")
+		panic("FAILURE")
 	} else if finalDecision != nil {
 		fmt.Printf("✅ SUCCESS: All %d honest nodes terminated and agreed on the value: %v\n", correctNodeCount, *finalDecision)
 	} else {
@@ -290,10 +292,7 @@ func runSimulation(
 	}
 }
 
-func main() {
-	// Khởi tạo seed cho bộ sinh số ngẫu nhiên
-	rand.Seed(time.Now().UnixNano())
-
+func runAllScenarios() {
 	const NUM_NODES = 4
 	const F = 1 // Số nút lỗi tối đa có thể chịu được
 
@@ -308,7 +307,7 @@ func main() {
 		map[int]struct{}{}, // Không có nút Byzantine
 		map[int]bool{0: true, 1: true, 2: true, 3: true},
 	)
-	time.Sleep(2 * time.Second) // Nghỉ giữa các kịch bản
+	// time.Sleep(2 * time.Second) // Nghỉ giữa các kịch bản
 
 	//==============================================================
 	// Kịch bản 2: Các nút trung thực bị chia rẽ
@@ -321,17 +320,27 @@ func main() {
 		map[int]struct{}{}, // Không có nút Byzantine
 		map[int]bool{0: true, 1: true, 2: false, 3: false},
 	)
-	time.Sleep(2 * time.Second)
+	// time.Sleep(2 * time.Second)
 
 	//==============================================================
 	// Kịch bản 3: Có 1 nút Byzantine (f=1)
 	//==============================================================
-	fmt.Println("\n\n=================================================")
-	fmt.Printf("🚀 SCENARIO 3: %d HONEST NODES + 1 BYZANTINE NODE\n", NUM_NODES-1)
-	fmt.Println("=================================================")
-	runSimulation(
-		NUM_NODES, F,
-		map[int]struct{}{3: {}},                  // Nút 3 là Byzantine
-		map[int]bool{0: true, 1: false, 2: true}, // Đề xuất của các nút trung thực
-	)
+	// fmt.Println("\n\n=================================================")
+	// fmt.Printf("🚀 SCENARIO 3: %d HONEST NODES + 1 BYZANTINE NODE\n", NUM_NODES-1)
+	// fmt.Println("=================================================")
+	// runSimulation(
+	// 	NUM_NODES, F,
+	// 	map[int]struct{}{3: {}},                  // Nút 3 là Byzantine
+	// 	map[int]bool{0: true, 1: false, 2: true}, // Đề xuất của các nút trung thực
+	// )
+}
+
+func main() {
+	rand.Seed(time.Now().UnixNano())
+	const NUM_RUNS = 500
+
+	for i := 1; i <= NUM_RUNS; i++ {
+		fmt.Printf("\n================= LẦN CHẠY %d/%d =================\n", i, NUM_RUNS)
+		runAllScenarios()
+	}
 }
