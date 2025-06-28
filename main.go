@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
+	"github.com/meta-node-blockchain/meta-node/pkg/mtn_proto"
 
 	// Assuming this is the correct import path for your protobuf definitions
 
@@ -62,7 +63,7 @@ func main() {
 		if scanner.Scan() {
 			line := scanner.Text()
 			if line != "" {
-				process.StartBroadcast([]byte(line), "string")
+				process.StartBroadcast([]byte(line), "string", mtn_proto.MessageType_INIT)
 			}
 		} else {
 			if err := scanner.Err(); err != nil {

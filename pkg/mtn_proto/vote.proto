@@ -1,0 +1,23 @@
+// Chỉ định phiên bản cú pháp proto3
+syntax = "proto3";
+
+// Khai báo package, giúp tránh xung đột tên
+package rbc;
+
+// Tùy chọn quan trọng: chỉ định package Go sẽ được tạo ra
+option go_package = "./mtn_proto";
+
+// Định nghĩa thông điệp cho một yêu cầu bỏ phiếu (VoteRequest)
+// Đây là cấu trúc dữ liệu chính của chúng ta.
+message VoteRequest {
+  // ID của cuộc bỏ phiếu hoặc đề xuất
+  uint64 block_number = 1;
+
+  // ID của người bỏ phiếu
+  int32 node_id = 2;
+
+  // Lá phiếu, là kiểu boolean.
+  // true: đồng ý (YES/FOR)
+  // false: không đồng ý (NO/AGAINST)
+  bool vote = 3;
+}

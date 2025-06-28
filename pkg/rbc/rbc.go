@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math/rand"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ const (
 	RBC_COMMAND         = "rbc_message"
 	DataTypeBatch       = "batch"
 	DataTypeTransaction = "transaction"
+	DataTypeVote        = "vote"
 )
 
 // Thêm struct ProposalEvent
@@ -104,6 +106,7 @@ type Process struct {
 	PoolTransactions   chan []*pb.Transaction
 	blockNumberChan    chan uint64
 	currentBlockNumber uint64
+	proposalChannel    chan ProposalEvent
 }
 
 // NewProcess được cập nhật để nhận RBC Config
@@ -141,6 +144,7 @@ func NewProcess(config *NodeConfig) (*Process, error) {
 		MessageSender:    network.NewMessageSender(""), // Khởi tạo MessageSender
 		PoolTransactions: make(chan []*pb.Transaction, 1024),
 		blockNumberChan:  make(chan uint64, 1024),
+		proposalChannel:  make(chan ProposalEvent, 1024),
 	}
 	p.queueManager = aleaqueues.NewQueueManager(peerIDs)
 
@@ -248,32 +252,44 @@ func (p *Process) Start() error {
 			logger.Error("playload: ", playload)
 			logger.Error("err: ", err)
 
-			time.Sleep(5000 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			nodeIDs := []string{"A", "B", "C", "D", "E"}
 			numFaulty := 1
 
 			//==============================================================
 			// Kịch bản 1: Tất cả các nút đều trung thực
 			//==============================================================
-			//==============================================================
 			proposalChannel1 := make(chan ProposalEvent, 10)
+
 			go func() {
 				// Gửi các proposals cho kịch bản 1
 				proposalChannel1 <- ProposalEvent{NodeID: "A", Value: true}
 				time.Sleep(100 * time.Millisecond)
 				proposalChannel1 <- ProposalEvent{NodeID: "B", Value: true}
 				time.Sleep(100 * time.Millisecond)
-				proposalChannel1 <- ProposalEvent{NodeID: "C", Value: false}
+				proposalChannel1 <- ProposalEvent{NodeID: "C", Value: true}
 				time.Sleep(100 * time.Millisecond)
+				proposalChannel1 <- ProposalEvent{NodeID: "D", Value: true}
 				close(proposalChannel1)
 			}()
-			value := err == nil
 			runSimulation(
 				"Tất cả các nút đều trung thực",
 				nodeIDs, numFaulty,
 				map[string]struct{}{},
 				proposalChannel1,
 			)
+			value := err == nil
+			vote := &pb.VoteRequest{
+				BlockNumber: blockNumber + 1,
+				NodeId:      int32(p.Config.ID),
+				Vote:        value,
+			}
+			voteBytes, err := proto.Marshal(vote)
+			if err != nil {
+				log.Fatalf("Lỗi khi marshal (serialize): %v", err)
+			}
+			p.StartBroadcast(voteBytes, DataTypeVote, pb.MessageType_SEND)
+
 			if value {
 				logger.Info("batch: ")
 				batch := &pb.Batch{}
@@ -588,6 +604,15 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 	defer state.mu.Unlock()
 
 	switch msg.Type {
+
+	case pb.MessageType_SEND:
+		if msg.DataType == DataTypeVote {
+			receivedVote := &pb.VoteRequest{}
+			if err := proto.Unmarshal(msg.Payload, receivedVote); err != nil {
+				log.Fatalf("Lỗi khi unmarshal (deserialize): %v", err)
+			}
+			logger.Error("receivedVote: %v", receivedVote)
+		}
 	case pb.MessageType_INIT:
 		if !state.sentEcho {
 			state.sentEcho = true
@@ -684,11 +709,11 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 }
 
 // StartBroadcast is called by the application to initiate a new broadcast.
-func (p *Process) StartBroadcast(payload []byte, dataType string) {
+func (p *Process) StartBroadcast(payload []byte, dataType string, messageType pb.MessageType) {
 	messageID := fmt.Sprintf("%d-%d", p.ID, time.Now().UnixNano())
 	logger.Info("Node %d starting broadcast for message %s", p.ID, messageID)
 	initMsg := &pb.RBCMessage{
-		Type:             pb.MessageType_INIT,
+		Type:             messageType,
 		OriginalSenderId: p.ID,
 		MessageId:        messageID,
 		Payload:          payload,
@@ -787,7 +812,7 @@ func (p *Process) HandlePoolTransactions() {
 			}
 
 			logger.Info("\n[APPLICATION] Node %d broadcasting a batch for block %d...\n> ", p.ID, p.GetCurrentBlockNumber()+1)
-			p.StartBroadcast(payload, "batch")
+			p.StartBroadcast(payload, "batch", pb.MessageType_INIT)
 		}
 	}()
 }

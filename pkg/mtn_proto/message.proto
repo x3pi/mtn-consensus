@@ -10,6 +10,7 @@ enum MessageType {
   INIT = 0;
   ECHO = 1;
   READY = 2;
+  SEND = 3;
 }
 
 // Cấu trúc thông điệp RBC
