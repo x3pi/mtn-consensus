@@ -1,6 +1,10 @@
 package binaryagreement
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/meta-node-blockchain/meta-node/pkg/logger"
+)
 
 type BinaryAgreement[N NodeIdT, S SessionIdT] struct {
 	netinfo       *NetworkInfo[N]
@@ -185,6 +189,7 @@ func (ba *BinaryAgreement[N, S]) updateEpoch(newEstimate bool) (Step[N], error) 
 }
 
 func (ba *BinaryAgreement[N, S]) getCoinValue() bool {
+	logger.Error("getCoinValue", ba.epoch%2 == 0)
 	// Logic đồng xu đơn giản hóa: epoch chẵn coin=true, epoch lẻ coin=false
 	if ba.epoch%2 == 0 {
 		return true

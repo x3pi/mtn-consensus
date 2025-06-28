@@ -4,11 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/meta-node-blockchain/meta-node/pkg/aleaqueues"
+	"github.com/meta-node-blockchain/meta-node/pkg/binaryagreement"
 	"github.com/meta-node-blockchain/meta-node/pkg/bls"
 	m_common "github.com/meta-node-blockchain/meta-node/pkg/common"
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
@@ -25,6 +27,12 @@ const (
 	DataTypeBatch       = "batch"
 	DataTypeTransaction = "transaction"
 )
+
+// Thêm struct ProposalEvent
+type ProposalEvent struct {
+	NodeID string
+	Value  bool
+}
 
 // broadcastState remains the same
 type broadcastState struct {
@@ -229,12 +237,50 @@ func (p *Process) Start() error {
 		for blockNumber := range p.blockNumberChan {
 			logger.Info("New block number received: %d", blockNumber)
 			p.UpdateBlockNumber(blockNumber)
-			p.CleanupOldMessages()
-			isMyTurn := (int(blockNumber) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
+			isMyTurn := ((int(blockNumber) + p.Config.NumValidator - 1) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
 			logger.Info("blockNumber: %v", blockNumber)
-			logger.Info("remainder: %v", int(blockNumber)%p.Config.NumValidator)
 			logger.Info("isMyTurn: %v, %v, %v", isMyTurn, p.Config.NumValidator, p.Config.ID)
-			time.Sleep(50 * time.Millisecond)
+			remainder := int(blockNumber)%p.Config.NumValidator + 1
+			logger.Info("remainder: %v", remainder)
+
+			logger.Info(remainder)
+			playload, err := p.queueManager.Dequeue(int32(remainder))
+			logger.Error("playload: ", playload)
+			logger.Error("err: ", err)
+
+			time.Sleep(5000 * time.Millisecond)
+			nodeIDs := []string{"A", "B", "C", "D", "E"}
+			numFaulty := 1
+
+			//==============================================================
+			// Kịch bản 1: Tất cả các nút đều trung thực
+			//==============================================================
+			//==============================================================
+			proposalChannel1 := make(chan ProposalEvent, 10)
+			go func() {
+				// Gửi các proposals cho kịch bản 1
+				proposalChannel1 <- ProposalEvent{NodeID: "A", Value: true}
+				time.Sleep(100 * time.Millisecond)
+				proposalChannel1 <- ProposalEvent{NodeID: "B", Value: true}
+				time.Sleep(100 * time.Millisecond)
+				proposalChannel1 <- ProposalEvent{NodeID: "C", Value: false}
+				time.Sleep(100 * time.Millisecond)
+				close(proposalChannel1)
+			}()
+			value := err == nil
+			runSimulation(
+				"Tất cả các nút đều trung thực",
+				nodeIDs, numFaulty,
+				map[string]struct{}{},
+				proposalChannel1,
+			)
+			if value {
+				logger.Info("batch: ")
+				batch := &pb.Batch{}
+				err = proto.Unmarshal(playload, batch)
+				logger.Info(batch)
+				logger.Info(err)
+			}
 			if isMyTurn {
 				logger.Info("It's my turn (Node %d) to propose for block %d. Requesting transactions...", p.Config.ID, blockNumber)
 				p.MessageSender.SendBytes(
@@ -243,6 +289,8 @@ func (p *Process) Start() error {
 					[]byte{},
 				)
 			}
+			p.CleanupOldMessages()
+
 		}
 	}()
 
@@ -252,6 +300,152 @@ func (p *Process) Start() error {
 	time.Sleep(10 * time.Second)
 	p.RequestInitialBlockNumber()
 	return nil
+}
+
+// MessageInTransit mô phỏng một thông điệp đang được gửi qua mạng.
+type MessageInTransit[N binaryagreement.NodeIdT] struct {
+	Sender  N
+	Message binaryagreement.Message
+}
+
+// Thay đổi signature của hàm runSimulation
+func runSimulation(
+	scenarioTitle string,
+	nodeIDs []string,
+	numFaulty int,
+	byzantineNodes map[string]struct{},
+	proposalChannel <-chan ProposalEvent, // Thay thế proposals bằng channel
+) {
+	logger.Info("\n\n==============================================================")
+	logger.Info("🚀 KỊCH BẢN: %s (Mô phỏng bất đồng bộ)\n", scenarioTitle)
+	logger.Info("==============================================================")
+
+	// --- 1. Thiết lập mạng và các Node ---
+	nodes := make(map[string]*binaryagreement.BinaryAgreement[string, string])
+	nodeChannels := make(map[string]chan MessageInTransit[string])
+	var wg sync.WaitGroup
+	networkOutgoing := make(chan MessageInTransit[string], len(nodeIDs)*10)
+	sessionID := "session-1"
+
+	for _, id := range nodeIDs {
+		netinfo := binaryagreement.NewNetworkInfo(id, nodeIDs, numFaulty, true)
+		nodes[id] = binaryagreement.NewBinaryAgreement[string, string](netinfo, sessionID)
+		nodeChannels[id] = make(chan MessageInTransit[string], 100)
+	}
+
+	// --- 2. Khởi chạy các Node trên các Goroutine riêng biệt ---
+	for _, id := range nodeIDs {
+		wg.Add(1)
+		go func(nodeID string) {
+			defer wg.Done()
+			nodeInstance := nodes[nodeID]
+
+			for !nodeInstance.Terminated() {
+				transitMsg := <-nodeChannels[nodeID]
+				step, err := nodeInstance.HandleMessage(transitMsg.Sender, transitMsg.Message)
+				if err != nil {
+					logger.Info("  LỖI xử lý thông điệp tại nút %s: %v\n", nodeID, err)
+					continue
+				}
+				for _, msgToSend := range step.MessagesToSend {
+					networkOutgoing <- MessageInTransit[string]{Sender: nodeID, Message: msgToSend.Message}
+				}
+			}
+		}(id)
+	}
+
+	// --- 3. Khởi chạy Goroutine mạng để định tuyến thông điệp bất đồng bộ ---
+	networkDone := make(chan struct{})
+	go func() {
+		for transitMsg := range networkOutgoing {
+			originalMessage := transitMsg.Message
+			senderID := transitMsg.Sender
+
+			// Gửi thông điệp đến tất cả các node khác
+			for _, recipientID := range nodeIDs {
+				messageToDeliver := originalMessage
+
+				// Mô phỏng hành vi Byzantine
+				if _, isByzantine := byzantineNodes[senderID]; isByzantine {
+					if content, ok := originalMessage.Content.(binaryagreement.SbvMessage); ok && content.Type == "BVal" {
+						if recipientID == "A" || recipientID == "B" {
+							invertedContent := binaryagreement.SbvMessage{Value: !content.Value, Type: content.Type}
+							messageToDeliver.Content = invertedContent
+						}
+					}
+				}
+
+				// Gửi với độ trễ ngẫu nhiên
+				go func(recID string, msg MessageInTransit[string]) {
+					if nodes[recID].Terminated() {
+						return
+					}
+					latency := time.Duration(10+rand.Intn(50)) * time.Millisecond
+					time.Sleep(latency)
+					nodeChannels[recID] <- msg
+				}(recipientID, MessageInTransit[string]{Sender: senderID, Message: messageToDeliver})
+			}
+		}
+		close(networkDone)
+	}()
+
+	// --- 4. Lắng nghe proposals từ channel bên ngoài ---
+	proposalDone := make(chan struct{})
+	var proposalWg sync.WaitGroup
+	proposalWg.Add(1)
+	go func() {
+		defer proposalWg.Done()
+		for proposalEvent := range proposalChannel {
+			id := proposalEvent.NodeID
+			value := proposalEvent.Value
+
+			if _, isByzantine := byzantineNodes[id]; isByzantine {
+				logger.Info("Bỏ qua proposal từ nút Byzantine %s\n", id)
+				continue
+			}
+
+			logger.Info("Nhận proposal từ channel - Nút %s đề xuất giá trị: %v\n", id, value)
+			step, err := nodes[id].Propose(value)
+			if err != nil {
+				logger.Error("Nút %s không thể đề xuất: %v\n", id, err)
+				continue
+			}
+
+			for _, msgToSend := range step.MessagesToSend {
+				select {
+				case networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}:
+					// Gửi thành công
+				case <-proposalDone:
+					// Channel đã bị đóng, thoát
+					return
+				}
+			}
+		}
+	}()
+
+	logger.Info("--- Đang lắng nghe proposals từ channel. Mô phỏng đang chạy... ---")
+
+	// --- 5. Đợi tất cả các node kết thúc hoặc hết giờ ---
+	wg.Wait()
+
+	// Đóng proposal channel và đợi goroutine proposal kết thúc
+	close(proposalDone)
+	proposalWg.Wait()
+
+	close(networkOutgoing)
+	<-networkDone
+
+	// --- 6. In kết quả cuối cùng ---
+	logger.Info("\n\n--- KẾT QUẢ CUỐI CÙNG ---")
+	logger.Info("Tất cả các goroutine của node đã kết thúc.")
+
+	for id, node := range nodes {
+		if decision, ok := node.GetDecision(); ok {
+			logger.Info("Nút %s đã kết thúc và quyết định: %v\n", id, decision)
+		} else {
+			logger.Info("Nút %s KHÔNG kết thúc hoặc không có quyết định.\n", id)
+		}
+	}
 }
 
 // UpdateBlockNumber cập nhật số block hiện tại cho process
@@ -457,6 +651,9 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 						Priority: priority,
 						Payload:  state.payload,
 					}
+					if notification != nil {
+						p.Delivered <- notification
+					}
 				} else {
 					notification = &ProposalNotification{
 						SenderID: proposerID,
@@ -482,9 +679,6 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 				}
 			}
 
-			if notification != nil {
-				p.Delivered <- notification
-			}
 		}
 	}
 }
@@ -614,11 +808,11 @@ func (p *Process) CleanupOldMessages() {
 
 	currentBlock := p.GetCurrentBlockNumber()
 	// Nếu chưa đủ block để dọn dẹp thì bỏ qua
-	if currentBlock <= 5 {
+	if currentBlock <= 50 {
 		return
 	}
 
-	cleanupThreshold := currentBlock - 5
+	cleanupThreshold := currentBlock - 50
 	cleanedCount := 0
 
 	for key, state := range p.logs {

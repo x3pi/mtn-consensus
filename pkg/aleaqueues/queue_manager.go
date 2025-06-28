@@ -4,6 +4,8 @@ import (
 	"container/heap"
 	"fmt"
 	"sync"
+
+	"github.com/meta-node-blockchain/meta-node/pkg/logger"
 )
 
 // QueueManager quản lý một tập hợp các hàng đợi ưu tiên, mỗi hàng đợi cho một peer.
@@ -65,5 +67,9 @@ func (qm *QueueManager) Dequeue(proposerID int32) ([]byte, error) {
 	}
 
 	i := heap.Pop(q).(*item)
+	logger.Info("Dequeue: ")
+	logger.Info(i.index)
+	logger.Info(i.Priority)
+
 	return i.Value, nil
 }
