@@ -1,5 +1,7 @@
 package binaryagreement
 
+import "sync"
+
 // BoolSet là một biểu diễn hiệu quả cho một tập hợp các giá trị bool.
 type BoolSet uint8
 
@@ -47,7 +49,9 @@ func (bs BoolSet) Definite() (bool, bool) {
 }
 
 // BoolMultimap ánh xạ một giá trị bool tới một tập hợp các Node ID.
+// It is now safe for concurrent use.
 type BoolMultimap[N NodeIdT] struct {
+	mu       sync.Mutex // Add a mutex to protect the maps
 	falseSet map[N]struct{}
 	trueSet  map[N]struct{}
 }
@@ -59,6 +63,8 @@ func NewBoolMultimap[N NodeIdT]() *BoolMultimap[N] {
 	}
 }
 
+// Get is not safe to be used concurrently as it exposes the underlying map.
+// It is kept here as it was in the original code but should be used with caution.
 func (bmm *BoolMultimap[N]) Get(b bool) map[N]struct{} {
 	if b {
 		return bmm.trueSet
@@ -67,7 +73,11 @@ func (bmm *BoolMultimap[N]) Get(b bool) map[N]struct{} {
 }
 
 // Insert thêm một cặp (giá trị, ID) vào map.
+// It is now safe to be called from multiple goroutines.
 func (bmm *BoolMultimap[N]) Insert(val bool, id N) bool {
+	bmm.mu.Lock()         // Lock the mutex before accessing the map
+	defer bmm.mu.Unlock() // Defer unlocking until the function returns
+
 	set := bmm.Get(val)
 	if _, exists := set[id]; exists {
 		return false // Đã tồn tại, không thay đổi

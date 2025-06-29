@@ -1,11 +1,11 @@
 package rbc
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"log"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -239,6 +239,7 @@ func (p *Process) Start() error {
 	// Khởi chạy goroutine xử lý block number như yêu cầu
 	go func() {
 		for blockNumber := range p.blockNumberChan {
+
 			logger.Info("New block number received: %d", blockNumber)
 			p.UpdateBlockNumber(blockNumber)
 			isMyTurn := ((int(blockNumber) + p.Config.NumValidator - 1) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
@@ -252,32 +253,74 @@ func (p *Process) Start() error {
 			logger.Error("playload: ", playload)
 			logger.Error("err: ", err)
 
-			time.Sleep(50 * time.Millisecond)
+			// time.Sleep(20 * time.Millisecond)
 			nodeIDs := []string{"1", "2", "3", "4", "5"}
 			numFaulty := 1
+			ctx, cancel := context.WithCancel(context.Background())
+			proposalChannel1 := make(chan ProposalEvent, len(nodeIDs))
+			// =================================================================
+			// == START: Sửa đổi để lắng nghe sự kiện từ bên ngoài
+			// =================================================================
 
-			//==============================================================
-			// Kịch bản 1: Tất cả các nút đều trung thực
-			//==============================================================
-			proposalChannel1 := make(chan ProposalEvent, 10)
+			// Kênh để ra hiệu cho goroutine cầu nối dừng lại
+			// stopBridge := make(chan struct{})
 
+			// Goroutine cầu nối: đọc từ kênh chung và chuyển đến kênh cục bộ
+			// go func() {
+			// 	// Đảm bảo kênh cục bộ được đóng khi goroutine này thoát
+			// 	defer close(proposalChannelForSim)
+			// 	for {
+			// 		select {
+			// 		case event := <-p.proposalChannel: // Đọc từ kênh chung
+			// 			logger.Info("Forwarding event to simulation: NodeID=%s", event.NodeID)
+			// 			proposalChannelForSim <- event // Chuyển tiếp đến kênh cục bộ
+			// 		case <-stopBridge: // Nhận tín hiệu dừng
+			// 			logger.Info("Stopping proposal bridge for block %d", blockNumber)
+			// 			return
+			// 		}
+			// 	}
+			// }()
+			// Goroutine để gửi proposals
 			go func() {
-				// Gửi các proposals cho kịch bản 1
-				proposalChannel1 <- ProposalEvent{NodeID: "1", Value: true}
-				time.Sleep(100 * time.Millisecond)
-				proposalChannel1 <- ProposalEvent{NodeID: "2", Value: true}
-				time.Sleep(100 * time.Millisecond)
-				proposalChannel1 <- ProposalEvent{NodeID: "3", Value: true}
-				time.Sleep(100 * time.Millisecond)
-				proposalChannel1 <- ProposalEvent{NodeID: "4", Value: true}
-				close(proposalChannel1)
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("Goroutine gửi proposal panic (send vào channel đã đóng?): %v", r)
+					}
+				}()
+
+				proposals := []ProposalEvent{
+					{NodeID: "1", Value: true},
+					{NodeID: "2", Value: false},
+					{NodeID: "3", Value: false},
+					{NodeID: "4", Value: false},
+					{NodeID: "5", Value: true},
+				}
+				for _, p := range proposals {
+					select {
+					case <-ctx.Done():
+						logger.Info("Goroutine gửi proposal dừng lại do context bị huỷ")
+						return
+					case proposalChannel1 <- p:
+						time.Sleep(50 * time.Millisecond)
+					}
+				}
+				logger.Info("Đã gửi xong tất cả proposals.")
 			}()
+
 			runSimulation(
+				ctx, cancel, // Truyền context và hàm cancel vào
 				"Tất cả các nút đều trung thực",
 				nodeIDs, numFaulty,
-				map[string]struct{}{},
 				proposalChannel1,
 			)
+
+			// Sau khi `runSimulation` hoàn tất, gửi tín hiệu để dừng goroutine cầu nối
+			// close(stopBridge)
+
+			// =================================================================
+			// == END: Sửa đổi để lắng nghe sự kiện từ bên ngoài
+			// =================================================================
+
 			value := err == nil
 			vote := &pb.VoteRequest{
 				BlockNumber: blockNumber + 1,
@@ -319,30 +362,48 @@ func (p *Process) Start() error {
 	return nil
 }
 
+// =================================================================
+// == START: Thêm phương thức để đẩy sự kiện từ bên ngoài
+// =================================================================
+
+// PushProposalEvent là phương thức công khai để đẩy sự kiện vào kênh proposal chung
+func (p *Process) PushProposalEvent(event ProposalEvent) {
+	logger.Info("Received external proposal event via PushProposalEvent: NodeID=%s, Value=%v", event.NodeID, event.Value)
+	p.proposalChannel <- event
+}
+
+// =================================================================
+// == END: Thêm phương thức để đẩy sự kiện từ bên ngoài
+// =================================================================
+
 // MessageInTransit mô phỏng một thông điệp đang được gửi qua mạng.
 type MessageInTransit[N binaryagreement.NodeIdT] struct {
 	Sender  N
 	Message binaryagreement.Message
 }
 
-// Thay đổi signature của hàm runSimulation
 func runSimulation(
+	ctx context.Context, // Sử dụng context để quản lý vòng đời
+	cancel context.CancelFunc, // Hàm để hủy context
 	scenarioTitle string,
 	nodeIDs []string,
 	numFaulty int,
-	byzantineNodes map[string]struct{},
-	proposalChannel <-chan ProposalEvent, // Thay thế proposals bằng channel
+	proposalChannel chan ProposalEvent,
 ) {
+	// Khi hàm runSimulation kết thúc, đảm bảo context được hủy
+	// để dọn dẹp các goroutine liên quan (ví dụ: goroutine gửi proposal).
+	defer cancel()
+
 	logger.Info("\n\n==============================================================")
 	logger.Info("🚀 KỊCH BẢN: %s (Mô phỏng bất đồng bộ)\n", scenarioTitle)
 	logger.Info("==============================================================")
 
-	// --- 1. Thiết lập mạng và các Node ---
 	nodes := make(map[string]*binaryagreement.BinaryAgreement[string, string])
 	nodeChannels := make(map[string]chan MessageInTransit[string])
-	var wg sync.WaitGroup
+	var nodeWg sync.WaitGroup
 	networkOutgoing := make(chan MessageInTransit[string], len(nodeIDs)*10)
 	sessionID := "session-1"
+	var closeOnce sync.Once // Dùng để đảm bảo việc đóng các channel chỉ thực hiện 1 lần
 
 	for _, id := range nodeIDs {
 		netinfo := binaryagreement.NewNetworkInfo(id, nodeIDs, numFaulty, true)
@@ -350,78 +411,112 @@ func runSimulation(
 		nodeChannels[id] = make(chan MessageInTransit[string], 100)
 	}
 
+	// Hàm dọn dẹp và kết thúc mô phỏng
+	cleanupAndShutdown := func() {
+		closeOnce.Do(func() {
+			logger.Info("🎉 Đạt được đồng thuận! Bắt đầu quá trình kết thúc mô phỏng.")
+			// 1. Hủy context để báo cho các goroutine bên ngoài (như proposal sender) dừng lại
+			cancel()
+			// 2. Đóng proposal channel để goroutine xử lý proposal kết thúc
+			close(proposalChannel)
+			// 3. Đóng network channel
+			close(networkOutgoing)
+		})
+	}
+
 	// --- 2. Khởi chạy các Node trên các Goroutine riêng biệt ---
 	for _, id := range nodeIDs {
-		wg.Add(1)
+		nodeWg.Add(1)
 		go func(nodeID string) {
-			defer wg.Done()
+			defer nodeWg.Done()
 			nodeInstance := nodes[nodeID]
 
-			for !nodeInstance.Terminated() {
-				transitMsg := <-nodeChannels[nodeID]
-				step, err := nodeInstance.HandleMessage(transitMsg.Sender, transitMsg.Message)
-				if err != nil {
-					logger.Info("  LỖI xử lý thông điệp tại nút %s: %v\n", nodeID, err)
-					continue
-				}
-				for _, msgToSend := range step.MessagesToSend {
-					networkOutgoing <- MessageInTransit[string]{Sender: nodeID, Message: msgToSend.Message}
+			for {
+				select {
+				case <-ctx.Done(): // Nếu context bị hủy, kết thúc goroutine
+					return
+				case transitMsg, ok := <-nodeChannels[nodeID]:
+					if !ok { // Nếu channel đã đóng, kết thúc
+						return
+					}
+					step, err := nodeInstance.HandleMessage(transitMsg.Sender, transitMsg.Message)
+					if err != nil {
+						continue
+					}
+					// rbc.go
+					for _, msgToSend := range step.MessagesToSend {
+						select {
+						case networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}:
+							// Gửi thành công
+						case <-ctx.Done():
+							// Ngữ cảnh đã bị hủy, dừng việc gửi và thoát khỏi goroutine
+							logger.Info("Proposal handler stopping send because context is done.")
+							return
+						}
+					}
 				}
 			}
 		}(id)
 	}
 
-	// --- 3. Khởi chạy Goroutine mạng để định tuyến thông điệp bất đồng bộ ---
-	networkDone := make(chan struct{})
+	// --- 3. Goroutine mạng để định tuyến thông điệp ---
+	var networkWg sync.WaitGroup
+	networkWg.Add(1)
 	go func() {
+		defer networkWg.Done()
 		for transitMsg := range networkOutgoing {
-			originalMessage := transitMsg.Message
-			senderID := transitMsg.Sender
-
-			// Gửi thông điệp đến tất cả các node khác
 			for _, recipientID := range nodeIDs {
-				messageToDeliver := originalMessage
-
-				// Mô phỏng hành vi Byzantine
-				if _, isByzantine := byzantineNodes[senderID]; isByzantine {
-					if content, ok := originalMessage.Content.(binaryagreement.SbvMessage); ok && content.Type == "BVal" {
-						if recipientID == "A" || recipientID == "B" {
-							invertedContent := binaryagreement.SbvMessage{Value: !content.Value, Type: content.Type}
-							messageToDeliver.Content = invertedContent
-						}
-					}
-				}
-
-				// Gửi với độ trễ ngẫu nhiên
+				// Tạo bản sao để tránh race condition khi gửi bất đồng bộ
+				msgCopy := transitMsg
 				go func(recID string, msg MessageInTransit[string]) {
-					if nodes[recID].Terminated() {
+					defer func() {
+						if r := recover(); r != nil {
+							logger.Error("Gửi vào nodeChannels[%s] bị panic: %v", recID, r)
+						}
+					}()
+
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+
+					if nodes[recID] == nil || nodes[recID].Terminated() {
 						return
 					}
-					latency := time.Duration(10+rand.Intn(50)) * time.Millisecond
-					time.Sleep(latency)
-					nodeChannels[recID] <- msg
-				}(recipientID, MessageInTransit[string]{Sender: senderID, Message: messageToDeliver})
+
+					// latency := time.Duration(10+rand.Intn(50)) * time.Millisecond
+					// time.Sleep(latency)
+
+					select {
+					case nodeChannels[recID] <- msg:
+					case <-ctx.Done():
+						return
+					}
+				}(recipientID, msgCopy)
 			}
 		}
-		close(networkDone)
+		// Khi networkOutgoing đóng, đóng tất cả các channel của node để chúng kết thúc
+		for _, ch := range nodeChannels {
+			close(ch)
+		}
 	}()
 
-	// --- 4. Lắng nghe proposals từ channel bên ngoài ---
-	proposalDone := make(chan struct{})
+	// --- 4. Goroutine xử lý các proposal đến ---
+	logger.Info("--- Đang lắng nghe proposals từ channel. Mô phỏng đang chạy... ---")
 	var proposalWg sync.WaitGroup
 	proposalWg.Add(1)
 	go func() {
 		defer proposalWg.Done()
-		for proposalEvent := range proposalChannel {
+		for proposalEvent := range proposalChannel { // Dừng khi proposalChannel được đóng
 			id := proposalEvent.NodeID
 			value := proposalEvent.Value
+			logger.Info("Nhận proposal từ channel - Nút %s đề xuất giá trị: %v\n", id, value)
 
-			if _, isByzantine := byzantineNodes[id]; isByzantine {
-				logger.Info("Bỏ qua proposal từ nút Byzantine %s\n", id)
+			if nodes[id] == nil || nodes[id].Terminated() {
 				continue
 			}
 
-			logger.Info("Nhận proposal từ channel - Nút %s đề xuất giá trị: %v\n", id, value)
 			step, err := nodes[id].Propose(value)
 			if err != nil {
 				logger.Error("Nút %s không thể đề xuất: %v\n", id, err)
@@ -429,38 +524,52 @@ func runSimulation(
 			}
 
 			for _, msgToSend := range step.MessagesToSend {
-				select {
-				case networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}:
-					// Gửi thành công
-				case <-proposalDone:
-					// Channel đã bị đóng, thoát
-					return
-				}
+				networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}
 			}
 		}
 	}()
 
-	logger.Info("--- Đang lắng nghe proposals từ channel. Mô phỏng đang chạy... ---")
+	// --- 5. Goroutine giám sát trạng thái đồng thuận ---
+	var monitorWg sync.WaitGroup
+	monitorWg.Add(1)
+	go func() {
+		defer monitorWg.Done()
+		requiredDecisions := len(nodeIDs) - numFaulty
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
 
-	// --- 5. Đợi tất cả các node kết thúc hoặc hết giờ ---
-	wg.Wait()
+		for {
+			select {
+			case <-ticker.C:
+				decidedCount := 0
+				for _, node := range nodes {
+					if node.Terminated() {
+						decidedCount++
+					}
+				}
+				if decidedCount >= requiredDecisions {
+					cleanupAndShutdown()
+					return // Kết thúc goroutine giám sát
+				}
+			case <-ctx.Done(): // Nếu context bị hủy từ bên ngoài, cũng kết thúc
+				return
+			}
+		}
+	}()
 
-	// Đóng proposal channel và đợi goroutine proposal kết thúc
-	close(proposalDone)
-	proposalWg.Wait()
+	// --- 6. Chờ các tiến trình hoàn tất ---
+	proposalWg.Wait() // Chờ xử lý proposal xong (khi channel đóng)
+	nodeWg.Wait()     // Chờ các node goroutine kết thúc
+	networkWg.Wait()  // Chờ goroutine mạng kết thúc
+	monitorWg.Wait()  // Chờ goroutine giám sát kết thúc
 
-	close(networkOutgoing)
-	<-networkDone
-
-	// --- 6. In kết quả cuối cùng ---
+	// --- 7. In kết quả cuối cùng ---
 	logger.Info("\n\n--- KẾT QUẢ CUỐI CÙNG ---")
-	logger.Info("Tất cả các goroutine của node đã kết thúc.")
-
 	for id, node := range nodes {
 		if decision, ok := node.GetDecision(); ok {
-			logger.Info("Nút %s đã kết thúc và quyết định: %v\n", id, decision)
+			logger.Info("✅ Nút %s đã kết thúc và quyết định: %v\n", id, decision)
 		} else {
-			logger.Info("Nút %s KHÔNG kết thúc hoặc không có quyết định.\n", id)
+			logger.Warn("❌ Nút %s KHÔNG kết thúc hoặc không có quyết định.\n", id)
 		}
 	}
 }
