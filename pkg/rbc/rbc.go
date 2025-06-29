@@ -253,31 +253,43 @@ func (p *Process) Start() error {
 			logger.Error("playload: ", playload)
 			logger.Error("err: ", err)
 
+			vote := &pb.VoteRequest{
+				BlockNumber: blockNumber + 1,
+				NodeId:      int32(p.Config.ID),
+				Vote:        err != nil,
+			}
+			voteBytes, err := proto.Marshal(vote)
+			if err != nil {
+				log.Fatalf("Lỗi khi marshal (serialize): %v", err)
+			}
+			p.StartBroadcast(voteBytes, DataTypeVote, pb.MessageType_SEND)
+
 			nodeIDs := []string{"1", "2", "3", "4", "5"}
 			numFaulty := 1
 			ctx, cancel := context.WithCancel(context.Background())
-			proposalChannel1 := make(chan ProposalEvent, len(nodeIDs))
+			// <<< SỬA LỖI: Tăng buffer để tránh deadlock nếu gửi nhanh hơn nhận
+			proposalChannel1 := make(chan ProposalEvent, len(nodeIDs)*2)
 
-			// <<< SỬA LỖI: Tạo WaitGroup để chờ goroutine gửi proposal kết thúc
 			var proposalSenderWg sync.WaitGroup
 
-			// Goroutine để gửi proposals
-			proposalSenderWg.Add(1) // <<< SỬA LỖI: Tăng bộ đếm
+			proposalSenderWg.Add(1)
 			go func() {
-				defer proposalSenderWg.Done() // <<< SỬA LỖI: Giảm bộ đếm khi kết thúc
+				defer proposalSenderWg.Done()
 				defer func() {
 					if r := recover(); r != nil {
-						// Lỗi này không nên xảy ra nữa, nhưng vẫn giữ để phòng ngừa
 						logger.Error("Goroutine gửi proposal panic: %v", r)
 					}
 				}()
-
+				// <<< SỬA LỖI: Logic đề xuất phức tạp hơn để kiểm tra cả true và false
+				// Node 1 và 5 đề xuất true (giả sử có block)
+				// Node 2, 3, 4 đề xuất false (giả sử không có block)
+				// Điều này mô phỏng một kịch bản thực tế hơn.
 				proposals := []ProposalEvent{
-					{NodeID: "1", Value: true},
-					{NodeID: "2", Value: false},
-					{NodeID: "3", Value: false},
-					{NodeID: "4", Value: false},
-					{NodeID: "5", Value: true},
+					{NodeID: "1", Value: err == nil},
+					{NodeID: "2", Value: err != nil},
+					{NodeID: "3", Value: err != nil},
+					{NodeID: "4", Value: err != nil},
+					{NodeID: "5", Value: err == nil},
 				}
 				for _, p := range proposals {
 					select {
@@ -285,32 +297,25 @@ func (p *Process) Start() error {
 						logger.Info("Goroutine gửi proposal dừng lại do context bị huỷ")
 						return
 					case proposalChannel1 <- p:
-						// Gửi thành công
-						time.Sleep(50 * time.Millisecond)
+						time.Sleep(10 * time.Millisecond) // Giảm thời gian chờ để mô phỏng nhanh hơn
 					}
 				}
 				logger.Info("Đã gửi xong tất cả proposals.")
 			}()
 
-			runSimulation(
+			// <<< SỬA LỖI: Nhận lại quyết định từ `runSimulation`
+			simulationDecision := runSimulation(
 				ctx, cancel,
 				"Tất cả các nút đều trung thực",
 				nodeIDs, numFaulty,
 				proposalChannel1,
-				&proposalSenderWg, // <<< SỬA LỖI: Truyền WaitGroup vào
+				&proposalSenderWg,
+				fmt.Sprintf("%d", p.ID), // <<< SỬA LỖI: Truyền ID của node hiện tại vào mô phỏng
 			)
 
-			value := err == nil
-			vote := &pb.VoteRequest{
-				BlockNumber: blockNumber + 1,
-				NodeId:      int32(p.Config.ID),
-				Vote:        value,
-			}
-			voteBytes, err := proto.Marshal(vote)
-			if err != nil {
-				log.Fatalf("Lỗi khi marshal (serialize): %v", err)
-			}
-			p.StartBroadcast(voteBytes, DataTypeVote, pb.MessageType_SEND)
+			// <<< SỬA LỖI: Sử dụng kết quả từ mô phỏng để quyết định giá trị vote
+			value := simulationDecision
+			logger.Info("QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block: %d LÀ: %v", p.ID, blockNumber+1, value)
 
 			if value {
 				logger.Info("batch: ")
@@ -361,6 +366,7 @@ type MessageInTransit[N binaryagreement.NodeIdT] struct {
 	Message binaryagreement.Message
 }
 
+// <<< SỬA LỖI: Thay đổi chữ ký hàm để trả về `bool`
 func runSimulation(
 	ctx context.Context,
 	cancel context.CancelFunc,
@@ -368,8 +374,9 @@ func runSimulation(
 	nodeIDs []string,
 	numFaulty int,
 	proposalChannel chan ProposalEvent,
-	proposalSenderWg *sync.WaitGroup, // <<< SỬA LỖI: Nhận WaitGroup
-) {
+	proposalSenderWg *sync.WaitGroup,
+	ourID string, // <<< SỬA LỖI: Thêm tham số để biết ID của node hiện tại
+) bool { // <<< SỬA LỖI: Trả về quyết định cuối cùng
 	defer cancel()
 
 	logger.Info("\n\n==============================================================")
@@ -383,35 +390,27 @@ func runSimulation(
 	sessionID := "session-1"
 	var closeOnce sync.Once
 
+	// <<< SỬA LỖI: Channel để nhận quyết định cuối cùng từ các node
+	decisionChannel := make(chan bool, len(nodeIDs))
+
 	for _, id := range nodeIDs {
 		netinfo := binaryagreement.NewNetworkInfo(id, nodeIDs, numFaulty, true)
 		nodes[id] = binaryagreement.NewBinaryAgreement[string, string](netinfo, sessionID)
 		nodeChannels[id] = make(chan MessageInTransit[string], 100)
 	}
 
-	// Hàm dọn dẹp và kết thúc mô phỏng
 	cleanupAndShutdown := func() {
 		closeOnce.Do(func() {
 			logger.Info("🎉 Đạt được đồng thuận! Bắt đầu quá trình kết thúc mô phỏng.")
-
-			// <<< SỬA LỖI: Thay đổi thứ tự tắt
-			// 1. Hủy context để báo cho goroutine gửi proposal dừng lại
 			cancel()
-
-			// 2. Chờ cho goroutine gửi proposal thực sự kết thúc
 			logger.Info("Đang chờ goroutine gửi proposal kết thúc...")
 			proposalSenderWg.Wait()
 			logger.Info("Goroutine gửi proposal đã kết thúc.")
-
-			// 3. Bây giờ mới an toàn để đóng proposal channel
 			close(proposalChannel)
-
-			// 4. Đóng network channel
 			close(networkOutgoing)
 		})
 	}
 
-	// --- 2. Khởi chạy các Node trên các Goroutine riêng biệt ---
 	for _, id := range nodeIDs {
 		nodeWg.Add(1)
 		go func(nodeID string) {
@@ -430,11 +429,18 @@ func runSimulation(
 					if err != nil {
 						continue
 					}
+					// <<< SỬA LỖI: Kiểm tra output của step
+					if step.Output != nil {
+						if decision, ok := step.Output.(bool); ok {
+							// Gửi quyết định vào channel chung
+							decisionChannel <- decision
+						}
+					}
 					for _, msgToSend := range step.MessagesToSend {
 						select {
-						case networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}:
+						case networkOutgoing <- MessageInTransit[string]{Sender: nodeID, Message: msgToSend.Message}:
 						case <-ctx.Done():
-							logger.Info("Proposal handler stopping send because context is done.")
+							logger.Info("Handler for node %s stopping send because context is done.", nodeID)
 							return
 						}
 					}
@@ -443,7 +449,6 @@ func runSimulation(
 		}(id)
 	}
 
-	// --- 3. Goroutine mạng để định tuyến thông điệp ---
 	var networkWg sync.WaitGroup
 	networkWg.Add(1)
 	go func() {
@@ -486,7 +491,6 @@ func runSimulation(
 		}
 	}()
 
-	// --- 4. Goroutine xử lý các proposal đến ---
 	logger.Info("--- Đang lắng nghe proposals từ channel. Mô phỏng đang chạy... ---")
 	var proposalWg sync.WaitGroup
 	proposalWg.Add(1)
@@ -506,14 +510,18 @@ func runSimulation(
 				logger.Error("Nút %s không thể đề xuất: %v\n", id, err)
 				continue
 			}
-
+			// <<< SỬA LỖI: Kiểm tra output ngay sau khi propose
+			if step.Output != nil {
+				if decision, ok := step.Output.(bool); ok {
+					decisionChannel <- decision
+				}
+			}
 			for _, msgToSend := range step.MessagesToSend {
 				networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}
 			}
 		}
 	}()
 
-	// --- 5. Goroutine giám sát trạng thái đồng thuận ---
 	var monitorWg sync.WaitGroup
 	monitorWg.Add(1)
 	go func() {
@@ -541,14 +549,22 @@ func runSimulation(
 		}
 	}()
 
-	// --- 6. Chờ các tiến trình hoàn tất ---
 	proposalWg.Wait()
 	nodeWg.Wait()
 	networkWg.Wait()
 	monitorWg.Wait()
 
-	// --- 7. In kết quả cuối cùng ---
+	// <<< SỬA LỖI: Đóng decisionChannel sau khi tất cả các goroutine có thể ghi đã dừng
+	close(decisionChannel)
+
 	logger.Info("\n\n--- KẾT QUẢ CUỐI CÙNG ---")
+	// <<< SỬA LỖI: Lấy quyết định cuối cùng từ channel
+	finalDecision := false // Mặc định là false
+	// Đọc quyết định đầu tiên từ channel, vì tất cả các node trung thực sẽ có cùng quyết định
+	if decision, ok := <-decisionChannel; ok {
+		finalDecision = decision
+	}
+
 	for id, node := range nodes {
 		if decision, ok := node.GetDecision(); ok {
 			logger.Info("✅ Nút %s đã kết thúc và quyết định: %v\n", id, decision)
@@ -556,6 +572,8 @@ func runSimulation(
 			logger.Warn("❌ Nút %s KHÔNG kết thúc hoặc không có quyết định.\n", id)
 		}
 	}
+
+	return finalDecision // <<< SỬA LỖI: Trả về kết quả
 }
 
 // UpdateBlockNumber cập nhật số block hiện tại cho process
