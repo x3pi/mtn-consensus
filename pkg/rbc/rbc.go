@@ -310,6 +310,7 @@ func (p *Process) Start() error {
 		}
 	}()
 
+	// Di chuyển các câu lệnh này vào bên trong hàm Start()
 	p.HandleDelivered()
 	p.HandlePoolTransactions()
 
