@@ -312,11 +312,24 @@ func (p *Process) Start() error {
 				&proposalSenderWg,
 				fmt.Sprintf("%d", p.ID), // <<< SỬA LỖI: Truyền ID của node hiện tại vào mô phỏng
 			)
+			batch := &pb.Batch{}
+			err = proto.Unmarshal(playload, batch)
 
+			if err != nil {
+				logger.Error("Failed to Unmarshal Payload: %v", err)
+			}
 			// <<< SỬA LỖI: Sử dụng kết quả từ mô phỏng để quyết định giá trị vote
 			value := simulationDecision
 			logger.Info("QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block: %d LÀ: %v", p.ID, blockNumber+1, value)
-
+			transactionsPb := &pb.Transactions{
+				Transactions: batch.Transactions,
+			}
+			txBytes, err := proto.Marshal(transactionsPb)
+			if err != nil {
+				logger.Error("Failed to marshal transactions: %v", err)
+				return
+			}
+			err = p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, txBytes)
 			if value {
 				logger.Info("batch: ")
 				batch := &pb.Batch{}
@@ -852,15 +865,7 @@ func (p *Process) HandleDelivered() {
 		}
 
 		logger.Info("\n[APPLICATION] Node %d Delivered Batch for Block %d from Proposer %x\n> ", p.ID, payload.Priority, payload.SenderID)
-		transactionsPb := &pb.Transactions{
-			Transactions: batch.Transactions,
-		}
-		txBytes, err := proto.Marshal(transactionsPb)
-		if err != nil {
-			logger.Error("Failed to marshal transactions: %v", err)
-			return
-		}
-		err = p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, txBytes)
+
 		if err != nil {
 			logger.Error("Failed to send PushFinalizeEvent: %v", err)
 		}
