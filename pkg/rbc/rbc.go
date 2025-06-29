@@ -253,7 +253,7 @@ func (p *Process) Start() error {
 			logger.Error("err: ", err)
 
 			time.Sleep(50 * time.Millisecond)
-			nodeIDs := []string{"A", "B", "C", "D", "E"}
+			nodeIDs := []string{"1", "2", "3", "4", "5"}
 			numFaulty := 1
 
 			//==============================================================
@@ -263,13 +263,13 @@ func (p *Process) Start() error {
 
 			go func() {
 				// Gửi các proposals cho kịch bản 1
-				proposalChannel1 <- ProposalEvent{NodeID: "A", Value: true}
+				proposalChannel1 <- ProposalEvent{NodeID: "1", Value: true}
 				time.Sleep(100 * time.Millisecond)
-				proposalChannel1 <- ProposalEvent{NodeID: "B", Value: true}
+				proposalChannel1 <- ProposalEvent{NodeID: "2", Value: true}
 				time.Sleep(100 * time.Millisecond)
-				proposalChannel1 <- ProposalEvent{NodeID: "C", Value: true}
+				proposalChannel1 <- ProposalEvent{NodeID: "3", Value: true}
 				time.Sleep(100 * time.Millisecond)
-				proposalChannel1 <- ProposalEvent{NodeID: "D", Value: true}
+				proposalChannel1 <- ProposalEvent{NodeID: "4", Value: true}
 				close(proposalChannel1)
 			}()
 			runSimulation(
