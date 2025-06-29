@@ -460,17 +460,29 @@ func runSimulation(
 	}
 
 	// --- 3. Goroutine mạng để định tuyến thông điệp ---
+	// --- 3. Goroutine mạng để định tuyến thông điệp ---
 	var networkWg sync.WaitGroup
 	networkWg.Add(1)
 	go func() {
 		defer networkWg.Done()
+
+		// KHẮC PHỤC: Tạo một WaitGroup riêng cho các goroutine gửi tin.
+		var senderWg sync.WaitGroup
+
 		for transitMsg := range networkOutgoing {
 			for _, recipientID := range nodeIDs {
 				// Tạo bản sao để tránh race condition khi gửi bất đồng bộ
 				msgCopy := transitMsg
+
+				// KHẮC PHỤC: Tăng bộ đếm trước khi tạo goroutine mới.
+				senderWg.Add(1)
 				go func(recID string, msg MessageInTransit[string]) {
+					// KHẮC PHỤC: Đảm bảo bộ đếm được giảm khi goroutine kết thúc.
+					defer senderWg.Done()
+
 					defer func() {
 						if r := recover(); r != nil {
+							// Panic sẽ không còn xảy ra, nhưng recovery vẫn nên giữ lại để phòng ngừa lỗi khác
 							logger.Error("Gửi vào nodeChannels[%s] bị panic: %v", recID, r)
 						}
 					}()
@@ -496,7 +508,12 @@ func runSimulation(
 				}(recipientID, msgCopy)
 			}
 		}
-		// Khi networkOutgoing đóng, đóng tất cả các channel của node để chúng kết thúc
+
+		// KHẮC PHỤC: Chờ cho tất cả các goroutine gửi tin hoàn thành.
+		senderWg.Wait()
+
+		// Khi networkOutgoing đóng và tất cả các tin đã được gửi đi,
+		// bây giờ mới đóng tất cả các channel của node để chúng kết thúc.
 		for _, ch := range nodeChannels {
 			close(ch)
 		}

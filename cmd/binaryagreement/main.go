@@ -83,11 +83,14 @@ func runSimulation(
 					if err != nil {
 						continue
 					}
+					// rbc.go
 					for _, msgToSend := range step.MessagesToSend {
-						// Sử dụng select để tránh block nếu networkOutgoing đã đóng
 						select {
-						case networkOutgoing <- MessageInTransit[string]{Sender: nodeID, Message: msgToSend.Message}:
+						case networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}:
+							// Gửi thành công
 						case <-ctx.Done():
+							// Ngữ cảnh đã bị hủy, dừng việc gửi và thoát khỏi goroutine
+							logger.Info("Proposal handler stopping send because context is done.")
 							return
 						}
 					}
@@ -97,30 +100,60 @@ func runSimulation(
 	}
 
 	// --- 3. Goroutine mạng để định tuyến thông điệp ---
+	// --- 3. Goroutine mạng để định tuyến thông điệp ---
 	var networkWg sync.WaitGroup
 	networkWg.Add(1)
 	go func() {
 		defer networkWg.Done()
+
+		// KHẮC PHỤC: Tạo một WaitGroup riêng cho các goroutine gửi tin.
+		var senderWg sync.WaitGroup
+
 		for transitMsg := range networkOutgoing {
 			for _, recipientID := range nodeIDs {
 				// Tạo bản sao để tránh race condition khi gửi bất đồng bộ
 				msgCopy := transitMsg
+
+				// KHẮC PHỤC: Tăng bộ đếm trước khi tạo goroutine mới.
+				senderWg.Add(1)
 				go func(recID string, msg MessageInTransit[string]) {
+					// KHẮC PHỤC: Đảm bảo bộ đếm được giảm khi goroutine kết thúc.
+					defer senderWg.Done()
+
+					defer func() {
+						if r := recover(); r != nil {
+							// Panic sẽ không còn xảy ra, nhưng recovery vẫn nên giữ lại để phòng ngừa lỗi khác
+							logger.Error("Gửi vào nodeChannels[%s] bị panic: %v", recID, r)
+						}
+					}()
+
 					select {
 					case <-ctx.Done():
 						return
 					default:
-						if nodes[recID] == nil || nodes[recID].Terminated() {
-							return
-						}
-						latency := time.Duration(10+rand.Intn(50)) * time.Millisecond
-						time.Sleep(latency)
-						nodeChannels[recID] <- msg
+					}
+
+					if nodes[recID] == nil || nodes[recID].Terminated() {
+						return
+					}
+
+					// latency := time.Duration(10+rand.Intn(50)) * time.Millisecond
+					// time.Sleep(latency)
+
+					select {
+					case nodeChannels[recID] <- msg:
+					case <-ctx.Done():
+						return
 					}
 				}(recipientID, msgCopy)
 			}
 		}
-		// Khi networkOutgoing đóng, đóng tất cả các channel của node để chúng kết thúc
+
+		// KHẮC PHỤC: Chờ cho tất cả các goroutine gửi tin hoàn thành.
+		senderWg.Wait()
+
+		// Khi networkOutgoing đóng và tất cả các tin đã được gửi đi,
+		// bây giờ mới đóng tất cả các channel của node để chúng kết thúc.
 		for _, ch := range nodeChannels {
 			close(ch)
 		}
@@ -248,7 +281,7 @@ func runAllScenarios() {
 	wg.Wait()
 }
 
-const NUM_RUNS = 1
+const NUM_RUNS = 10000
 
 func main() {
 	rand.Seed(time.Now().UnixNano())

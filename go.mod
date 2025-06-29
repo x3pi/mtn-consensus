@@ -5,6 +5,7 @@ go 1.23.8
 toolchain go1.23.10
 
 require (
+	github.com/anthdm/hbbft v0.0.0-20190702061856-0826ffdcf567
 	github.com/dgraph-io/badger v1.6.2
 	github.com/dgraph-io/badger/v4 v4.7.0
 	github.com/ethereum/go-ethereum v1.15.11
@@ -22,6 +23,9 @@ require (
 
 require (
 	github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96 // indirect
+	github.com/NebulousLabs/errors v0.0.0-20181203160057-9f787ce8f69e // indirect
+	github.com/NebulousLabs/fastrand v0.0.0-20181203155948-6fb6489aac4e // indirect
+	github.com/NebulousLabs/merkletree v0.0.0-20181203152040-08d5d54b07f5 // indirect
 	github.com/bits-and-blooms/bitset v1.20.0 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -43,7 +47,10 @@ require (
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/ipfs/go-cid v0.5.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
+	github.com/klauspost/cpuid v1.2.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
+	github.com/klauspost/reedsolomon v1.9.2 // indirect
+	github.com/konsorten/go-windows-terminal-sequences v1.0.1 // indirect
 	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
@@ -59,6 +66,7 @@ require (
 	github.com/otiai10/mint v1.6.3 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/sirupsen/logrus v1.4.2 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/supranational/blst v0.3.14 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
