@@ -253,38 +253,22 @@ func (p *Process) Start() error {
 			logger.Error("playload: ", playload)
 			logger.Error("err: ", err)
 
-			// time.Sleep(20 * time.Millisecond)
 			nodeIDs := []string{"1", "2", "3", "4", "5"}
 			numFaulty := 1
 			ctx, cancel := context.WithCancel(context.Background())
 			proposalChannel1 := make(chan ProposalEvent, len(nodeIDs))
-			// =================================================================
-			// == START: Sửa đổi để lắng nghe sự kiện từ bên ngoài
-			// =================================================================
 
-			// Kênh để ra hiệu cho goroutine cầu nối dừng lại
-			// stopBridge := make(chan struct{})
+			// <<< SỬA LỖI: Tạo WaitGroup để chờ goroutine gửi proposal kết thúc
+			var proposalSenderWg sync.WaitGroup
 
-			// Goroutine cầu nối: đọc từ kênh chung và chuyển đến kênh cục bộ
-			// go func() {
-			// 	// Đảm bảo kênh cục bộ được đóng khi goroutine này thoát
-			// 	defer close(proposalChannelForSim)
-			// 	for {
-			// 		select {
-			// 		case event := <-p.proposalChannel: // Đọc từ kênh chung
-			// 			logger.Info("Forwarding event to simulation: NodeID=%s", event.NodeID)
-			// 			proposalChannelForSim <- event // Chuyển tiếp đến kênh cục bộ
-			// 		case <-stopBridge: // Nhận tín hiệu dừng
-			// 			logger.Info("Stopping proposal bridge for block %d", blockNumber)
-			// 			return
-			// 		}
-			// 	}
-			// }()
 			// Goroutine để gửi proposals
+			proposalSenderWg.Add(1) // <<< SỬA LỖI: Tăng bộ đếm
 			go func() {
+				defer proposalSenderWg.Done() // <<< SỬA LỖI: Giảm bộ đếm khi kết thúc
 				defer func() {
 					if r := recover(); r != nil {
-						logger.Error("Goroutine gửi proposal panic (send vào channel đã đóng?): %v", r)
+						// Lỗi này không nên xảy ra nữa, nhưng vẫn giữ để phòng ngừa
+						logger.Error("Goroutine gửi proposal panic: %v", r)
 					}
 				}()
 
@@ -301,6 +285,7 @@ func (p *Process) Start() error {
 						logger.Info("Goroutine gửi proposal dừng lại do context bị huỷ")
 						return
 					case proposalChannel1 <- p:
+						// Gửi thành công
 						time.Sleep(50 * time.Millisecond)
 					}
 				}
@@ -308,18 +293,12 @@ func (p *Process) Start() error {
 			}()
 
 			runSimulation(
-				ctx, cancel, // Truyền context và hàm cancel vào
+				ctx, cancel,
 				"Tất cả các nút đều trung thực",
 				nodeIDs, numFaulty,
 				proposalChannel1,
+				&proposalSenderWg, // <<< SỬA LỖI: Truyền WaitGroup vào
 			)
-
-			// Sau khi `runSimulation` hoàn tất, gửi tín hiệu để dừng goroutine cầu nối
-			// close(stopBridge)
-
-			// =================================================================
-			// == END: Sửa đổi để lắng nghe sự kiện từ bên ngoài
-			// =================================================================
 
 			value := err == nil
 			vote := &pb.VoteRequest{
@@ -383,15 +362,14 @@ type MessageInTransit[N binaryagreement.NodeIdT] struct {
 }
 
 func runSimulation(
-	ctx context.Context, // Sử dụng context để quản lý vòng đời
-	cancel context.CancelFunc, // Hàm để hủy context
+	ctx context.Context,
+	cancel context.CancelFunc,
 	scenarioTitle string,
 	nodeIDs []string,
 	numFaulty int,
 	proposalChannel chan ProposalEvent,
+	proposalSenderWg *sync.WaitGroup, // <<< SỬA LỖI: Nhận WaitGroup
 ) {
-	// Khi hàm runSimulation kết thúc, đảm bảo context được hủy
-	// để dọn dẹp các goroutine liên quan (ví dụ: goroutine gửi proposal).
 	defer cancel()
 
 	logger.Info("\n\n==============================================================")
@@ -403,7 +381,7 @@ func runSimulation(
 	var nodeWg sync.WaitGroup
 	networkOutgoing := make(chan MessageInTransit[string], len(nodeIDs)*10)
 	sessionID := "session-1"
-	var closeOnce sync.Once // Dùng để đảm bảo việc đóng các channel chỉ thực hiện 1 lần
+	var closeOnce sync.Once
 
 	for _, id := range nodeIDs {
 		netinfo := binaryagreement.NewNetworkInfo(id, nodeIDs, numFaulty, true)
@@ -415,11 +393,20 @@ func runSimulation(
 	cleanupAndShutdown := func() {
 		closeOnce.Do(func() {
 			logger.Info("🎉 Đạt được đồng thuận! Bắt đầu quá trình kết thúc mô phỏng.")
-			// 1. Hủy context để báo cho các goroutine bên ngoài (như proposal sender) dừng lại
+
+			// <<< SỬA LỖI: Thay đổi thứ tự tắt
+			// 1. Hủy context để báo cho goroutine gửi proposal dừng lại
 			cancel()
-			// 2. Đóng proposal channel để goroutine xử lý proposal kết thúc
+
+			// 2. Chờ cho goroutine gửi proposal thực sự kết thúc
+			logger.Info("Đang chờ goroutine gửi proposal kết thúc...")
+			proposalSenderWg.Wait()
+			logger.Info("Goroutine gửi proposal đã kết thúc.")
+
+			// 3. Bây giờ mới an toàn để đóng proposal channel
 			close(proposalChannel)
-			// 3. Đóng network channel
+
+			// 4. Đóng network channel
 			close(networkOutgoing)
 		})
 	}
@@ -433,23 +420,20 @@ func runSimulation(
 
 			for {
 				select {
-				case <-ctx.Done(): // Nếu context bị hủy, kết thúc goroutine
+				case <-ctx.Done():
 					return
 				case transitMsg, ok := <-nodeChannels[nodeID]:
-					if !ok { // Nếu channel đã đóng, kết thúc
+					if !ok {
 						return
 					}
 					step, err := nodeInstance.HandleMessage(transitMsg.Sender, transitMsg.Message)
 					if err != nil {
 						continue
 					}
-					// rbc.go
 					for _, msgToSend := range step.MessagesToSend {
 						select {
 						case networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}:
-							// Gửi thành công
 						case <-ctx.Done():
-							// Ngữ cảnh đã bị hủy, dừng việc gửi và thoát khỏi goroutine
 							logger.Info("Proposal handler stopping send because context is done.")
 							return
 						}
@@ -460,29 +444,20 @@ func runSimulation(
 	}
 
 	// --- 3. Goroutine mạng để định tuyến thông điệp ---
-	// --- 3. Goroutine mạng để định tuyến thông điệp ---
 	var networkWg sync.WaitGroup
 	networkWg.Add(1)
 	go func() {
 		defer networkWg.Done()
 
-		// KHẮC PHỤC: Tạo một WaitGroup riêng cho các goroutine gửi tin.
 		var senderWg sync.WaitGroup
-
 		for transitMsg := range networkOutgoing {
 			for _, recipientID := range nodeIDs {
-				// Tạo bản sao để tránh race condition khi gửi bất đồng bộ
 				msgCopy := transitMsg
-
-				// KHẮC PHỤC: Tăng bộ đếm trước khi tạo goroutine mới.
 				senderWg.Add(1)
 				go func(recID string, msg MessageInTransit[string]) {
-					// KHẮC PHỤC: Đảm bảo bộ đếm được giảm khi goroutine kết thúc.
 					defer senderWg.Done()
-
 					defer func() {
 						if r := recover(); r != nil {
-							// Panic sẽ không còn xảy ra, nhưng recovery vẫn nên giữ lại để phòng ngừa lỗi khác
 							logger.Error("Gửi vào nodeChannels[%s] bị panic: %v", recID, r)
 						}
 					}()
@@ -497,9 +472,6 @@ func runSimulation(
 						return
 					}
 
-					// latency := time.Duration(10+rand.Intn(50)) * time.Millisecond
-					// time.Sleep(latency)
-
 					select {
 					case nodeChannels[recID] <- msg:
 					case <-ctx.Done():
@@ -508,12 +480,7 @@ func runSimulation(
 				}(recipientID, msgCopy)
 			}
 		}
-
-		// KHẮC PHỤC: Chờ cho tất cả các goroutine gửi tin hoàn thành.
 		senderWg.Wait()
-
-		// Khi networkOutgoing đóng và tất cả các tin đã được gửi đi,
-		// bây giờ mới đóng tất cả các channel của node để chúng kết thúc.
 		for _, ch := range nodeChannels {
 			close(ch)
 		}
@@ -525,7 +492,7 @@ func runSimulation(
 	proposalWg.Add(1)
 	go func() {
 		defer proposalWg.Done()
-		for proposalEvent := range proposalChannel { // Dừng khi proposalChannel được đóng
+		for proposalEvent := range proposalChannel {
 			id := proposalEvent.NodeID
 			value := proposalEvent.Value
 			logger.Info("Nhận proposal từ channel - Nút %s đề xuất giá trị: %v\n", id, value)
@@ -566,19 +533,19 @@ func runSimulation(
 				}
 				if decidedCount >= requiredDecisions {
 					cleanupAndShutdown()
-					return // Kết thúc goroutine giám sát
+					return
 				}
-			case <-ctx.Done(): // Nếu context bị hủy từ bên ngoài, cũng kết thúc
+			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 
 	// --- 6. Chờ các tiến trình hoàn tất ---
-	proposalWg.Wait() // Chờ xử lý proposal xong (khi channel đóng)
-	nodeWg.Wait()     // Chờ các node goroutine kết thúc
-	networkWg.Wait()  // Chờ goroutine mạng kết thúc
-	monitorWg.Wait()  // Chờ goroutine giám sát kết thúc
+	proposalWg.Wait()
+	nodeWg.Wait()
+	networkWg.Wait()
+	monitorWg.Wait()
 
 	// --- 7. In kết quả cuối cùng ---
 	logger.Info("\n\n--- KẾT QUẢ CUỐI CÙNG ---")
