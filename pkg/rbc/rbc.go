@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/meta-node-blockchain/meta-node/pkg/loggerfile"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/meta-node-blockchain/meta-node/pkg/aleaqueues"
 	"github.com/meta-node-blockchain/meta-node/pkg/binaryagreement"
@@ -246,6 +248,8 @@ func (p *Process) Start() error {
 
 	// Khởi chạy goroutine xử lý block number như yêu cầu
 	go func() {
+		fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d", p.ID) + ".log")
+
 		for blockNumber := range p.blockNumberChan {
 			logger.Info("--------------------------------------------------")
 			logger.Info("⚡ Bắt đầu xử lý cho block: %d", blockNumber)
@@ -276,7 +280,7 @@ func (p *Process) Start() error {
 			// Hàm này sẽ tự xử lý việc đăng ký, lắng nghe và hủy đăng ký vote.
 			consensusDecision := p.achieveVoteConsensus(blockNumber + 1)
 
-			logger.Info("🏆 QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block %d LÀ: %v", p.ID, blockNumber, consensusDecision)
+			fileLogger.Info("🏆 QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block %d LÀ: %v", p.ID, blockNumber, consensusDecision)
 			// 4. Xử lý kết quả đồng thuận
 			if consensusDecision && payload != nil {
 				// Chỉ gửi PushFinalizeEvent nếu đồng thuận là CÓ và có payload
@@ -288,16 +292,29 @@ func (p *Process) Start() error {
 					txBytes, err := proto.Marshal(transactionsPb)
 					if err == nil {
 						logger.Info("Đã gửi giao dịch của batch")
-						p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, txBytes)
-						logger.Info("Đã gửi PushFinalizeEvent cho block %d", blockNumber+1)
+						fileLogger.Info("PushFinalizeEvent 1 block: %d : %v ", blockNumber+1, consensusDecision)
+						err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, txBytes)
+						if err != nil {
+							panic(err)
+						}
+						logger.Info("Đã gửi PushFinalizeEvent cho block %d : %v", blockNumber+1, consensusDecision)
+
 					} else {
 						logger.Info("Đã gửi giao dịch batch rỗng")
-						p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, []byte{})
+						fileLogger.Info("PushFinalizeEvent 2 block: %d : %v ", blockNumber+1, consensusDecision)
+						err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, []byte{})
+						if err != nil {
+							panic(err)
+						}
 					}
 				}
 			} else {
 				logger.Info("Đã gửi giao dịch rỗng")
-				p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, []byte{})
+				fileLogger.Info("PushFinalizeEvent 3 block: %d : %v", blockNumber+1, consensusDecision)
+				err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, []byte{})
+				if err != nil {
+					panic(err)
+				}
 
 			}
 
@@ -327,6 +344,8 @@ func (p *Process) Start() error {
 
 func (p *Process) achieveVoteConsensus(blockNumber uint64) bool {
 	// Thiết lập context với timeout để đảm bảo quá trình không bị treo vô hạn
+	fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d", p.ID) + ".log")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Minute) // ví dụ timeout 10s
 	defer cancel()                                                            // Đảm bảo context được hủy
 
@@ -342,6 +361,7 @@ func (p *Process) achieveVoteConsensus(blockNumber uint64) bool {
 
 	// Xử lý ngay các vote đã có
 	for _, vote := range initialVotes {
+		fileLogger.Info("Nhận được vote CÓ SẴN cho block %d từ Node %d: %v", blockNumber, vote.NodeId, vote.Vote)
 		proposalChannel <- ProposalEvent{NodeID: fmt.Sprintf("%d", vote.NodeId), Value: vote.Vote}
 	}
 
@@ -356,7 +376,7 @@ func (p *Process) achieveVoteConsensus(blockNumber uint64) bool {
 				if !ok { // Channel đã bị đóng bởi hàm unsubscribe
 					return
 				}
-				logger.Info("Nhận được vote MỚI cho block %d từ Node %d: %v", blockNumber, newVote.NodeId, newVote.Vote)
+				fileLogger.Info("Nhận được vote MỚI cho block %d từ Node %d: %v", blockNumber, newVote.NodeId, newVote.Vote)
 				proposalChannel <- ProposalEvent{NodeID: fmt.Sprintf("%d", newVote.NodeId), Value: newVote.Vote}
 			case <-ctx.Done(): // Dừng lắng nghe nếu hết thời gian hoặc đã xong
 				return
@@ -388,7 +408,7 @@ func (p *Process) achieveVoteConsensus(blockNumber uint64) bool {
 
 	// Sau khi runSimulation kết thúc, đóng proposal channel
 	close(proposalChannel)
-
+	fileLogger.Info("End: achieveVoteConsensus")
 	return decision
 }
 
@@ -424,6 +444,7 @@ func runSimulation(
 	ourID string, // <<< SỬA LỖI: Thêm tham số để biết ID của node hiện tại
 ) bool { // <<< SỬA LỖI: Trả về quyết định cuối cùng
 	defer cancel()
+	fileLogger, _ := loggerfile.NewFileLogger("Note_" + ourID + ".log")
 
 	logger.Info("\n\n==============================================================")
 	logger.Info("🚀 KỊCH BẢN: %s (Mô phỏng bất đồng bộ)\n", scenarioTitle)
@@ -447,7 +468,7 @@ func runSimulation(
 
 	cleanupAndShutdown := func() {
 		closeOnce.Do(func() {
-			logger.Info("🎉 Đạt được đồng thuận! Bắt đầu quá trình kết thúc mô phỏng.")
+			fileLogger.Info("🎉 Đạt được đồng thuận! Bắt đầu quá trình kết thúc mô phỏng.")
 			cancel()
 			// logger.Info("Đang chờ goroutine gửi proposal kết thúc...")
 			// proposalSenderWg.Wait()
@@ -603,7 +624,7 @@ func runSimulation(
 	// <<< SỬA LỖI: Đóng decisionChannel sau khi tất cả các goroutine có thể ghi đã dừng
 	close(decisionChannel)
 
-	logger.Info("\n\n--- KẾT QUẢ CUỐI CÙNG ---")
+	fileLogger.Info("\n\n--- KẾT QUẢ CUỐI CÙNG ---")
 	// <<< SỬA LỖI: Lấy quyết định cuối cùng từ channel
 	finalDecision := false // Mặc định là false
 	// Đọc quyết định đầu tiên từ channel, vì tất cả các node trung thực sẽ có cùng quyết định
@@ -613,9 +634,9 @@ func runSimulation(
 
 	for id, node := range nodes {
 		if decision, ok := node.GetDecision(); ok {
-			logger.Info("✅ Nút %s đã kết thúc và quyết định: %v\n", id, decision)
+			fileLogger.Info("✅ Nút %s đã kết thúc và quyết định: %v\n", id, decision)
 		} else {
-			logger.Warn("❌ Nút %s KHÔNG kết thúc hoặc không có quyết định.\n", id)
+			fileLogger.Info("❌ Nút %s KHÔNG kết thúc hoặc không có quyết định.\n", id)
 		}
 	}
 
@@ -1057,11 +1078,11 @@ func (p *Process) CleanupOldMessages() {
 
 	currentBlock := p.GetCurrentBlockNumber()
 	// Nếu chưa đủ block để dọn dẹp thì bỏ qua
-	if currentBlock <= 50 {
+	if currentBlock <= 10000 {
 		return
 	}
 
-	cleanupThreshold := currentBlock - 50
+	cleanupThreshold := currentBlock - 10000
 	cleanedCount := 0
 
 	for key, state := range p.logs {
