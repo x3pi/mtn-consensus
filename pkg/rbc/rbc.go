@@ -157,6 +157,7 @@ func NewProcess(config *NodeConfig) (*Process, error) {
 		voteSubscribers:    make(map[uint64]map[chan<- *pb.VoteRequest]struct{}),
 	}
 	p.queueManager = aleaqueues.NewQueueManager(peerIDs)
+	fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d", p.ID) + ".log")
 
 	handler := network.NewHandler(
 		map[string]func(t_network.Request) error{
@@ -177,6 +178,8 @@ func NewProcess(config *NodeConfig) (*Process, error) {
 					return fmt.Errorf("dữ liệu phản hồi block number không hợp lệ")
 				}
 				validatorBlockNumber := binary.BigEndian.Uint64(responseData)
+				fileLogger.Info("m_common.BlockNumber: %v", validatorBlockNumber)
+
 				p.blockNumberChan <- validatorBlockNumber
 				return nil
 			},
@@ -280,7 +283,7 @@ func (p *Process) Start() error {
 			// Hàm này sẽ tự xử lý việc đăng ký, lắng nghe và hủy đăng ký vote.
 			consensusDecision := p.achieveVoteConsensus(blockNumber + 1)
 
-			fileLogger.Info("🏆 QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block %d LÀ: %v", p.ID, blockNumber, consensusDecision)
+			fileLogger.Info("🏆 QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block %d LÀ: %v", p.ID, blockNumber+1, consensusDecision)
 			// 4. Xử lý kết quả đồng thuận
 			if consensusDecision && payload != nil {
 				// Chỉ gửi PushFinalizeEvent nếu đồng thuận là CÓ và có payload
@@ -468,7 +471,7 @@ func runSimulation(
 
 	cleanupAndShutdown := func() {
 		closeOnce.Do(func() {
-			fileLogger.Info("🎉 Đạt được đồng thuận! Bắt đầu quá trình kết thúc mô phỏng.")
+			fileLogger.Info("🎉 Đạt được đồng thuận! %s : Bắt đầu quá trình kết thúc mô phỏng.", scenarioTitle)
 			cancel()
 			// logger.Info("Đang chờ goroutine gửi proposal kết thúc...")
 			// proposalSenderWg.Wait()
@@ -561,9 +564,18 @@ func runSimulation(
 	logger.Info("--- Đang lắng nghe proposals từ channel. Mô phỏng đang chạy... ---")
 	var proposalWg sync.WaitGroup
 	proposalWg.Add(1)
+	// rbc.go
 	go func() {
 		defer proposalWg.Done()
 		for proposalEvent := range proposalChannel {
+			// Trước khi xử lý, kiểm tra xem context đã bị hủy chưa.
+			// Nếu rồi thì dừng goroutine này lại.
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			id := proposalEvent.NodeID
 			value := proposalEvent.Value
 			logger.Info("Nhận proposal từ channel - Nút %s đề xuất giá trị: %v\n", id, value)
@@ -577,14 +589,22 @@ func runSimulation(
 				logger.Error("Nút %s không thể đề xuất: %v\n", id, err)
 				continue
 			}
-			// <<< SỬA LỖI: Kiểm tra output ngay sau khi propose
+
 			if step.Output != nil {
 				if decision, ok := step.Output.(bool); ok {
 					decisionChannel <- decision
 				}
 			}
 			for _, msgToSend := range step.MessagesToSend {
-				networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}
+				// Sử dụng select để gửi một cách an toàn.
+				// Nếu context đã bị hủy, channel 'networkOutgoing' có thể đã đóng.
+				select {
+				case networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}:
+					// Gửi thành công
+				case <-ctx.Done():
+					// Context đã bị hủy, không gửi nữa và thoát.
+					return
+				}
 			}
 		}
 	}()
