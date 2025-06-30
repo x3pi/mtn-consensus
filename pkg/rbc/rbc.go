@@ -107,6 +107,12 @@ type Process struct {
 	blockNumberChan    chan uint64
 	currentBlockNumber uint64
 	proposalChannel    chan ProposalEvent
+
+	votesByBlockNumber map[uint64][]*pb.VoteRequest
+	votesMutex         sync.RWMutex
+
+	voteSubscribers  map[uint64]map[chan<- *pb.VoteRequest]struct{}
+	subscribersMutex sync.RWMutex
 }
 
 // NewProcess được cập nhật để nhận RBC Config
@@ -132,19 +138,21 @@ func NewProcess(config *NodeConfig) (*Process, error) {
 	}
 
 	p := &Process{
-		Config:           config,
-		ID:               int32(config.ID),
-		Peers:            peers,
-		N:                n,
-		F:                f,
-		Delivered:        make(chan *ProposalNotification, 1024),
-		logs:             make(map[string]*broadcastState),
-		connections:      make(map[int32]t_network.Connection),
-		KeyPair:          keyPair,
-		MessageSender:    network.NewMessageSender(""), // Khởi tạo MessageSender
-		PoolTransactions: make(chan []*pb.Transaction, 1024),
-		blockNumberChan:  make(chan uint64, 1024),
-		proposalChannel:  make(chan ProposalEvent, 1024),
+		Config:             config,
+		ID:                 int32(config.ID),
+		Peers:              peers,
+		N:                  n,
+		F:                  f,
+		Delivered:          make(chan *ProposalNotification, 1024),
+		logs:               make(map[string]*broadcastState),
+		connections:        make(map[int32]t_network.Connection),
+		KeyPair:            keyPair,
+		MessageSender:      network.NewMessageSender(""), // Khởi tạo MessageSender
+		PoolTransactions:   make(chan []*pb.Transaction, 1024),
+		blockNumberChan:    make(chan uint64, 1024),
+		proposalChannel:    make(chan ProposalEvent, 1024),
+		votesByBlockNumber: make(map[uint64][]*pb.VoteRequest),
+		voteSubscribers:    make(map[uint64]map[chan<- *pb.VoteRequest]struct{}),
 	}
 	p.queueManager = aleaqueues.NewQueueManager(peerIDs)
 
@@ -239,114 +247,72 @@ func (p *Process) Start() error {
 	// Khởi chạy goroutine xử lý block number như yêu cầu
 	go func() {
 		for blockNumber := range p.blockNumberChan {
-
-			logger.Info("New block number received: %d", blockNumber)
+			logger.Info("--------------------------------------------------")
+			logger.Info("⚡ Bắt đầu xử lý cho block: %d", blockNumber)
 			p.UpdateBlockNumber(blockNumber)
-			isMyTurn := ((int(blockNumber) + p.Config.NumValidator - 1) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
-			logger.Info("blockNumber: %v", blockNumber)
-			logger.Info("isMyTurn: %v, %v, %v", isMyTurn, p.Config.NumValidator, p.Config.ID)
+
+			// 1. Lấy payload từ queue
 			remainder := int(blockNumber)%p.Config.NumValidator + 1
-			logger.Info("remainder: %v", remainder)
+			payload, err := p.queueManager.Dequeue(int32(remainder))
+			if err != nil {
+				logger.Error("Không có payload cho block %d (proposer %d). Coi như không có block.", blockNumber, remainder)
+			}
 
-			logger.Info(remainder)
-			playload, err := p.queueManager.Dequeue(int32(remainder))
-			logger.Error("playload: ", playload)
-			logger.Error("err: ", err)
-
-			vote := &pb.VoteRequest{
+			// 2. Bỏ phiếu cho block TIẾP THEO (blockNumber + 1)
+			// Dựa vào việc có payload cho block hiện tại hay không để quyết định vote
+			myVoteForNextBlock := &pb.VoteRequest{
 				BlockNumber: blockNumber + 1,
 				NodeId:      int32(p.Config.ID),
-				Vote:        err != nil,
+				Vote:        err == nil, // Vote 'true' nếu có payload, 'false' nếu không
 			}
-			voteBytes, err := proto.Marshal(vote)
+			voteBytes, err := proto.Marshal(myVoteForNextBlock)
 			if err != nil {
-				log.Fatalf("Lỗi khi marshal (serialize): %v", err)
+				log.Fatalf("Lỗi khi marshal (serialize) vote: %v", err)
 			}
 			p.StartBroadcast(voteBytes, DataTypeVote, pb.MessageType_SEND)
+			logger.Info("Đã gửi vote của mình cho block %d là: %v", blockNumber+1, myVoteForNextBlock.Vote)
 
-			nodeIDs := []string{"1", "2", "3", "4", "5"}
-			numFaulty := 1
-			ctx, cancel := context.WithCancel(context.Background())
-			// <<< SỬA LỖI: Tăng buffer để tránh deadlock nếu gửi nhanh hơn nhận
-			proposalChannel1 := make(chan ProposalEvent, len(nodeIDs)*2)
+			// 3. Chạy quá trình đồng thuận cho block HIỆN TẠI (blockNumber)
+			// Hàm này sẽ tự xử lý việc đăng ký, lắng nghe và hủy đăng ký vote.
+			consensusDecision := p.achieveVoteConsensus(blockNumber + 1)
 
-			var proposalSenderWg sync.WaitGroup
-
-			proposalSenderWg.Add(1)
-			go func() {
-				defer proposalSenderWg.Done()
-				defer func() {
-					if r := recover(); r != nil {
-						logger.Error("Goroutine gửi proposal panic: %v", r)
-					}
-				}()
-				// <<< SỬA LỖI: Logic đề xuất phức tạp hơn để kiểm tra cả true và false
-				// Node 1 và 5 đề xuất true (giả sử có block)
-				// Node 2, 3, 4 đề xuất false (giả sử không có block)
-				// Điều này mô phỏng một kịch bản thực tế hơn.
-				proposals := []ProposalEvent{
-					{NodeID: "1", Value: err == nil},
-					{NodeID: "2", Value: err != nil},
-					{NodeID: "3", Value: err != nil},
-					{NodeID: "4", Value: err != nil},
-					{NodeID: "5", Value: err == nil},
-				}
-				for _, p := range proposals {
-					select {
-					case <-ctx.Done():
-						logger.Info("Goroutine gửi proposal dừng lại do context bị huỷ")
-						return
-					case proposalChannel1 <- p:
-						time.Sleep(10 * time.Millisecond) // Giảm thời gian chờ để mô phỏng nhanh hơn
-					}
-				}
-				logger.Info("Đã gửi xong tất cả proposals.")
-			}()
-
-			// <<< SỬA LỖI: Nhận lại quyết định từ `runSimulation`
-			simulationDecision := runSimulation(
-				ctx, cancel,
-				"Tất cả các nút đều trung thực",
-				nodeIDs, numFaulty,
-				proposalChannel1,
-				&proposalSenderWg,
-				fmt.Sprintf("%d", p.ID), // <<< SỬA LỖI: Truyền ID của node hiện tại vào mô phỏng
-			)
-			batch := &pb.Batch{}
-			err = proto.Unmarshal(playload, batch)
-
-			if err != nil {
-				logger.Error("Failed to Unmarshal Payload: %v", err)
-			}
-			// <<< SỬA LỖI: Sử dụng kết quả từ mô phỏng để quyết định giá trị vote
-			value := simulationDecision
-			logger.Info("QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block: %d LÀ: %v", p.ID, blockNumber+1, value)
-			transactionsPb := &pb.Transactions{
-				Transactions: batch.Transactions,
-			}
-			txBytes, err := proto.Marshal(transactionsPb)
-			if err != nil {
-				logger.Error("Failed to marshal transactions: %v", err)
-				return
-			}
-			err = p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, txBytes)
-			if value {
-				logger.Info("batch: ")
+			logger.Info("🏆 QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block %d LÀ: %v", p.ID, blockNumber, consensusDecision)
+			// 4. Xử lý kết quả đồng thuận
+			if consensusDecision && payload != nil {
+				// Chỉ gửi PushFinalizeEvent nếu đồng thuận là CÓ và có payload
 				batch := &pb.Batch{}
-				err = proto.Unmarshal(playload, batch)
-				logger.Info(batch)
-				logger.Info(err)
+				if err := proto.Unmarshal(payload, batch); err == nil {
+					transactionsPb := &pb.Transactions{
+						Transactions: batch.Transactions,
+					}
+					txBytes, err := proto.Marshal(transactionsPb)
+					if err == nil {
+						logger.Info("Đã gửi giao dịch của batch")
+						p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, txBytes)
+						logger.Info("Đã gửi PushFinalizeEvent cho block %d", blockNumber+1)
+					} else {
+						logger.Info("Đã gửi giao dịch batch rỗng")
+						p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, []byte{})
+					}
+				}
+			} else {
+				logger.Info("Đã gửi giao dịch rỗng")
+				p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, []byte{})
+
 			}
-			if isMyTurn {
-				logger.Info("It's my turn (Node %d) to propose for block %d. Requesting transactions...", p.Config.ID, blockNumber)
+
+			// 5. Nếu đến lượt, yêu cầu transactions cho block tiếp theo
+			isMyTurnForNextBlock := ((int(blockNumber+1) + p.Config.NumValidator - 1) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
+			if isMyTurnForNextBlock {
+				logger.Info("Đến lượt mình đề xuất cho block %d. Đang yêu cầu transactions...", blockNumber+1)
 				p.MessageSender.SendBytes(
 					p.MasterConn,
 					m_common.GetTransactionsPool,
 					[]byte{},
 				)
 			}
-			p.CleanupOldMessages()
 
+			p.CleanupOldMessages()
 		}
 	}()
 
@@ -357,6 +323,73 @@ func (p *Process) Start() error {
 	time.Sleep(10 * time.Second)
 	p.RequestInitialBlockNumber()
 	return nil
+}
+
+func (p *Process) achieveVoteConsensus(blockNumber uint64) bool {
+	// Thiết lập context với timeout để đảm bảo quá trình không bị treo vô hạn
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Minute) // ví dụ timeout 10s
+	defer cancel()                                                            // Đảm bảo context được hủy
+
+	// Channel để gửi các proposal (vote) vào thuật toán đồng thuận
+	// Buffer lớn để chứa tất cả các vote có thể có
+	proposalChannel := make(chan ProposalEvent, p.N*2)
+
+	// Đăng ký để lấy vote cũ và nhận vote mới cho block hiện tại
+	initialVotes, newVoteChan, unsubscribe := p.SubscribeToVotes(blockNumber)
+	defer unsubscribe() // Quan trọng: Đảm bảo hủy đăng ký ngay khi hàm kết thúc
+
+	logger.Info("Bắt đầu đồng thuận cho block %d. Đã có %d vote.", blockNumber, len(initialVotes))
+
+	// Xử lý ngay các vote đã có
+	for _, vote := range initialVotes {
+		proposalChannel <- ProposalEvent{NodeID: fmt.Sprintf("%d", vote.NodeId), Value: vote.Vote}
+	}
+
+	// Tạo một goroutine ngắn hạn CHỈ để lắng nghe các vote mới cho block NÀY
+	var listenerWg sync.WaitGroup
+	listenerWg.Add(1)
+	go func() {
+		defer listenerWg.Done()
+		for {
+			select {
+			case newVote, ok := <-newVoteChan:
+				if !ok { // Channel đã bị đóng bởi hàm unsubscribe
+					return
+				}
+				logger.Info("Nhận được vote MỚI cho block %d từ Node %d: %v", blockNumber, newVote.NodeId, newVote.Vote)
+				proposalChannel <- ProposalEvent{NodeID: fmt.Sprintf("%d", newVote.NodeId), Value: newVote.Vote}
+			case <-ctx.Done(): // Dừng lắng nghe nếu hết thời gian hoặc đã xong
+				return
+			}
+		}
+	}()
+
+	// Chạy mô phỏng đồng thuận
+	nodeIDs := make([]string, 0, p.N)
+	for i := 1; i <= p.N; i++ {
+		nodeIDs = append(nodeIDs, fmt.Sprintf("%d", i))
+	}
+
+	// Lưu ý: proposalSenderWg không còn cần thiết vì chúng ta không có goroutine gửi proposal riêng biệt nữa
+	var wg sync.WaitGroup
+	decision := runSimulation(
+		ctx,
+		cancel,
+		fmt.Sprintf("Đồng thuận cho block %d", blockNumber),
+		nodeIDs,
+		p.F,
+		proposalChannel,
+		&wg, // Sử dụng một WaitGroup rỗng
+		fmt.Sprintf("%d", p.ID),
+	)
+
+	// Chờ goroutine lắng nghe kết thúc trước khi hàm này trả về
+	listenerWg.Wait()
+
+	// Sau khi runSimulation kết thúc, đóng proposal channel
+	close(proposalChannel)
+
+	return decision
 }
 
 // =================================================================
@@ -416,10 +449,10 @@ func runSimulation(
 		closeOnce.Do(func() {
 			logger.Info("🎉 Đạt được đồng thuận! Bắt đầu quá trình kết thúc mô phỏng.")
 			cancel()
-			logger.Info("Đang chờ goroutine gửi proposal kết thúc...")
-			proposalSenderWg.Wait()
-			logger.Info("Goroutine gửi proposal đã kết thúc.")
-			close(proposalChannel)
+			// logger.Info("Đang chờ goroutine gửi proposal kết thúc...")
+			// proposalSenderWg.Wait()
+			// logger.Info("Goroutine gửi proposal đã kết thúc.")
+			// close(proposalChannel)
 			close(networkOutgoing)
 		})
 	}
@@ -540,7 +573,7 @@ func runSimulation(
 	go func() {
 		defer monitorWg.Done()
 		requiredDecisions := len(nodeIDs) - numFaulty
-		ticker := time.NewTicker(100 * time.Millisecond)
+		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
@@ -562,7 +595,7 @@ func runSimulation(
 		}
 	}()
 
-	proposalWg.Wait()
+	// proposalWg.Wait()
 	nodeWg.Wait()
 	networkWg.Wait()
 	monitorWg.Wait()
@@ -720,6 +753,59 @@ func (p *Process) getOrCreateState(key string, payload []byte) *broadcastState {
 	return state
 }
 
+func (p *Process) GetVotesByBlockNumber(blockNumber uint64) []*pb.VoteRequest {
+	p.votesMutex.RLock() // Sử dụng RLock để cho phép nhiều goroutine đọc cùng lúc
+	defer p.votesMutex.RUnlock()
+
+	if votes, found := p.votesByBlockNumber[blockNumber]; found {
+		// Tạo một bản sao của slice để trả về, tránh việc bên ngoài sửa đổi slice gốc
+		votesCopy := make([]*pb.VoteRequest, len(votes))
+		copy(votesCopy, votes)
+		return votesCopy
+	}
+
+	return nil // hoặc trả về một slice rỗng: make([]*pb.VoteRequest, 0)
+}
+
+func (p *Process) SubscribeToVotes(blockNumber uint64) (initialVotes []*pb.VoteRequest, updates <-chan *pb.VoteRequest, unsubscribe func()) {
+	// Tạo channel để gửi vote mới cho người gọi
+	updateChan := make(chan *pb.VoteRequest, 10) // Buffer để không bỏ lỡ vote
+
+	// 1. Lấy danh sách vote hiện có
+	p.votesMutex.RLock()
+	existingVotes, found := p.votesByBlockNumber[blockNumber]
+	if found {
+		// Tạo bản sao để tránh race condition
+		initialVotes = make([]*pb.VoteRequest, len(existingVotes))
+		copy(initialVotes, existingVotes)
+	}
+	p.votesMutex.RUnlock()
+
+	// 2. Đăng ký channel để nhận vote mới trong tương lai
+	p.subscribersMutex.Lock()
+	if _, ok := p.voteSubscribers[blockNumber]; !ok {
+		p.voteSubscribers[blockNumber] = make(map[chan<- *pb.VoteRequest]struct{})
+	}
+	p.voteSubscribers[blockNumber][updateChan] = struct{}{}
+	p.subscribersMutex.Unlock()
+
+	// 3. Tạo và trả về hàm hủy đăng ký
+	unsubscribe = func() {
+		p.subscribersMutex.Lock()
+		if subscribers, ok := p.voteSubscribers[blockNumber]; ok {
+			delete(subscribers, updateChan)
+			// Nếu không còn ai đăng ký cho block này, xóa luôn map con
+			if len(subscribers) == 0 {
+				delete(p.voteSubscribers, blockNumber)
+			}
+		}
+		p.subscribersMutex.Unlock()
+		close(updateChan) // Đóng channel sau khi hủy đăng ký
+	}
+
+	return initialVotes, updateChan, unsubscribe
+}
+
 // handleMessage is the original, unmodified RBC protocol logic.
 func (p *Process) handleMessage(msg *pb.RBCMessage) {
 	key := fmt.Sprintf("%d-%s", msg.OriginalSenderId, msg.MessageId)
@@ -737,6 +823,27 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 				log.Fatalf("Lỗi khi unmarshal (deserialize): %v", err)
 			}
 			logger.Error("receivedVote: %v", receivedVote)
+
+			// --- THÊM LOGIC LƯU VOTE ---
+			p.votesMutex.Lock()
+			// Thêm vote vào slice tương ứng với block number
+			p.votesByBlockNumber[receivedVote.BlockNumber] = append(p.votesByBlockNumber[receivedVote.BlockNumber], receivedVote)
+			p.votesMutex.Unlock()
+			// --- THÊM LOGIC THÔNG BÁO ---
+			// 2. Thông báo cho tất cả subscribers
+			p.subscribersMutex.RLock() // Khóa đọc để kiểm tra subscribers
+			if subscribers, found := p.voteSubscribers[receivedVote.BlockNumber]; found {
+				for subChan := range subscribers {
+					// Gửi vote mới đến từng channel đã đăng ký
+					// Sử dụng select để tránh bị block nếu channel đầy
+					select {
+					case subChan <- receivedVote:
+					default: // Nếu channel của người nhận bị đầy, bỏ qua để không làm chậm hệ thống
+					}
+				}
+			}
+			p.subscribersMutex.RUnlock()
+			// --- KẾT THÚC LOGIC THÔNG BÁO ---
 		}
 	case pb.MessageType_INIT:
 		if !state.sentEcho {
