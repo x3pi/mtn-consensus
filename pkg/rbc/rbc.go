@@ -289,14 +289,10 @@ func (p *Process) Start() error {
 				// Chỉ gửi PushFinalizeEvent nếu đồng thuận là CÓ và có payload
 				batch := &pb.Batch{}
 				if err := proto.Unmarshal(payload, batch); err == nil {
-					transactionsPb := &pb.Transactions{
-						Transactions: batch.Transactions,
-					}
-					txBytes, err := proto.Marshal(transactionsPb)
 					if err == nil {
 						logger.Info("Đã gửi giao dịch của batch")
 						fileLogger.Info("PushFinalizeEvent 1 block: %d : %v ", blockNumber+1, consensusDecision)
-						err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, txBytes)
+						err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, payload)
 						if err != nil {
 							panic(err)
 						}
@@ -304,17 +300,26 @@ func (p *Process) Start() error {
 
 					} else {
 						logger.Info("Đã gửi giao dịch batch rỗng")
+						batch := &pb.Batch{
+							BlockNumber: blockNumber + 1,
+						}
+						batchBytes, _ := proto.Marshal(batch)
+
 						fileLogger.Info("PushFinalizeEvent 2 block: %d : %v ", blockNumber+1, consensusDecision)
-						err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, []byte{})
+						err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, batchBytes)
 						if err != nil {
 							panic(err)
 						}
 					}
 				}
 			} else {
-				logger.Info("Đã gửi giao dịch rỗng")
+				logger.Info("Đã gửi giao dịch batch rỗng")
+				batch := &pb.Batch{
+					BlockNumber: blockNumber + 1,
+				}
+				batchBytes, _ := proto.Marshal(batch)
 				fileLogger.Info("PushFinalizeEvent 3 block: %d : %v", blockNumber+1, consensusDecision)
-				err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, []byte{})
+				err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, batchBytes)
 				if err != nil {
 					panic(err)
 				}
@@ -435,7 +440,6 @@ type MessageInTransit[N binaryagreement.NodeIdT] struct {
 	Message binaryagreement.Message
 }
 
-// <<< SỬA LỖI: Thay đổi chữ ký hàm để trả về `bool`
 func runSimulation(
 	ctx context.Context,
 	cancel context.CancelFunc,
@@ -444,8 +448,8 @@ func runSimulation(
 	numFaulty int,
 	proposalChannel chan ProposalEvent,
 	proposalSenderWg *sync.WaitGroup,
-	ourID string, // <<< SỬA LỖI: Thêm tham số để biết ID của node hiện tại
-) bool { // <<< SỬA LỖI: Trả về quyết định cuối cùng
+	ourID string,
+) bool {
 	defer cancel()
 	fileLogger, _ := loggerfile.NewFileLogger("Note_" + ourID + ".log")
 
@@ -460,7 +464,6 @@ func runSimulation(
 	sessionID := "session-1"
 	var closeOnce sync.Once
 
-	// <<< SỬA LỖI: Channel để nhận quyết định cuối cùng từ các node
 	decisionChannel := make(chan bool, len(nodeIDs))
 
 	for _, id := range nodeIDs {
@@ -473,10 +476,6 @@ func runSimulation(
 		closeOnce.Do(func() {
 			fileLogger.Info("🎉 Đạt được đồng thuận! %s : Bắt đầu quá trình kết thúc mô phỏng.", scenarioTitle)
 			cancel()
-			// logger.Info("Đang chờ goroutine gửi proposal kết thúc...")
-			// proposalSenderWg.Wait()
-			// logger.Info("Goroutine gửi proposal đã kết thúc.")
-			// close(proposalChannel)
 			close(networkOutgoing)
 		})
 	}
@@ -499,10 +498,8 @@ func runSimulation(
 					if err != nil {
 						continue
 					}
-					// <<< SỬA LỖI: Kiểm tra output của step
 					if step.Output != nil {
 						if decision, ok := step.Output.(bool); ok {
-							// Gửi quyết định vào channel chung
 							decisionChannel <- decision
 						}
 					}
@@ -567,43 +564,42 @@ func runSimulation(
 	// rbc.go
 	go func() {
 		defer proposalWg.Done()
-		for proposalEvent := range proposalChannel {
-			// Trước khi xử lý, kiểm tra xem context đã bị hủy chưa.
-			// Nếu rồi thì dừng goroutine này lại.
+		for { // Changed to a for loop to use select
 			select {
-			case <-ctx.Done():
+			case <-ctx.Done(): // Check if context is cancelled first
 				return
-			default:
-			}
-
-			id := proposalEvent.NodeID
-			value := proposalEvent.Value
-			logger.Info("Nhận proposal từ channel - Nút %s đề xuất giá trị: %v\n", id, value)
-
-			if nodes[id] == nil || nodes[id].Terminated() {
-				continue
-			}
-
-			step, err := nodes[id].Propose(value)
-			if err != nil {
-				logger.Error("Nút %s không thể đề xuất: %v\n", id, err)
-				continue
-			}
-
-			if step.Output != nil {
-				if decision, ok := step.Output.(bool); ok {
-					decisionChannel <- decision
-				}
-			}
-			for _, msgToSend := range step.MessagesToSend {
-				// Sử dụng select để gửi một cách an toàn.
-				// Nếu context đã bị hủy, channel 'networkOutgoing' có thể đã đóng.
-				select {
-				case networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}:
-					// Gửi thành công
-				case <-ctx.Done():
-					// Context đã bị hủy, không gửi nữa và thoát.
+			case proposalEvent, ok := <-proposalChannel:
+				if !ok { // Channel closed, exit
 					return
+				}
+
+				id := proposalEvent.NodeID
+				value := proposalEvent.Value
+				logger.Info("Nhận proposal từ channel - Nút %s đề xuất giá trị: %v\n", id, value)
+
+				if nodes[id] == nil || nodes[id].Terminated() {
+					continue
+				}
+
+				step, err := nodes[id].Propose(value)
+				if err != nil {
+					logger.Error("Nút %s không thể đề xuất: %v\n", id, err)
+					continue
+				}
+
+				if step.Output != nil {
+					if decision, ok := step.Output.(bool); ok {
+						decisionChannel <- decision
+					}
+				}
+				for _, msgToSend := range step.MessagesToSend {
+					select {
+					case networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}:
+						// Sent successfully
+					case <-ctx.Done():
+						// Context was cancelled, don't send and exit.
+						return
+					}
 				}
 			}
 		}
@@ -636,18 +632,15 @@ func runSimulation(
 		}
 	}()
 
-	// proposalWg.Wait()
 	nodeWg.Wait()
 	networkWg.Wait()
 	monitorWg.Wait()
 
-	// <<< SỬA LỖI: Đóng decisionChannel sau khi tất cả các goroutine có thể ghi đã dừng
 	close(decisionChannel)
 
 	fileLogger.Info("\n\n--- KẾT QUẢ CUỐI CÙNG ---")
-	// <<< SỬA LỖI: Lấy quyết định cuối cùng từ channel
-	finalDecision := false // Mặc định là false
-	// Đọc quyết định đầu tiên từ channel, vì tất cả các node trung thực sẽ có cùng quyết định
+
+	finalDecision := false
 	if decision, ok := <-decisionChannel; ok {
 		finalDecision = decision
 	}
@@ -660,7 +653,7 @@ func runSimulation(
 		}
 	}
 
-	return finalDecision // <<< SỬA LỖI: Trả về kết quả
+	return finalDecision
 }
 
 // UpdateBlockNumber cập nhật số block hiện tại cho process
@@ -871,15 +864,18 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 			p.votesByBlockNumber[receivedVote.BlockNumber] = append(p.votesByBlockNumber[receivedVote.BlockNumber], receivedVote)
 			p.votesMutex.Unlock()
 			// --- THÊM LOGIC THÔNG BÁO ---
-			// 2. Thông báo cho tất cả subscribers
+			// 2. Thông báo cho tất cả subscribersreceivedVote
 			p.subscribersMutex.RLock() // Khóa đọc để kiểm tra subscribers
-			if subscribers, found := p.voteSubscribers[receivedVote.BlockNumber]; found {
-				for subChan := range subscribers {
-					// Gửi vote mới đến từng channel đã đăng ký
-					// Sử dụng select để tránh bị block nếu channel đầy
-					select {
-					case subChan <- receivedVote:
-					default: // Nếu channel của người nhận bị đầy, bỏ qua để không làm chậm hệ thống
+			if receivedVote.BlockNumber > p.currentBlockNumber {
+
+				if subscribers, found := p.voteSubscribers[receivedVote.BlockNumber]; found {
+					for subChan := range subscribers {
+						// Gửi vote mới đến từng channel đã đăng ký
+						// Sử dụng select để tránh bị block nếu channel đầy
+						select {
+						case subChan <- receivedVote:
+						default: // Nếu channel của người nhận bị đầy, bỏ qua để không làm chậm hệ thống
+						}
 					}
 				}
 			}
