@@ -1,159 +1,124 @@
 package main
 
 import (
-	"encoding/binary"
+	"context"
+	"encoding/gob"
 	"fmt"
 	"log"
 	"math/rand"
 	"sync"
 	"time"
-
-	"encoding/gob"
-
-	"github.com/anthdm/hbbft"
 )
-
-// Transaction là một triển khai đơn giản của giao diện hbbft.Transaction
-type Transaction struct {
-	Nonce uint64
-}
-
-// Hash trả về một hash duy nhất cho giao dịch.
-func (t *Transaction) Hash() []byte {
-	buf := make([]byte, 8)
-	binary.LittleEndian.PutUint64(buf, t.Nonce)
-	return buf
-}
-
-func newTransaction() *Transaction {
-	return &Transaction{rand.Uint64()}
-}
-
-// message là một cấu trúc để giữ các thông điệp được trao đổi giữa các node.
-type message struct {
-	from    uint64
-	payload hbbft.MessageTuple
-}
-
-// Server đại diện cho một node trong mạng.
-type Server struct {
-	id          uint64
-	hb          *hbbft.HoneyBadger
-	mempool     map[string]*Transaction
-	lock        sync.RWMutex
-	totalCommit int
-	start       time.Time
-}
-
-func newServer(id uint64, nodes []uint64) *Server {
-	cfg := hbbft.Config{
-		N:         len(nodes),
-		ID:        id,
-		Nodes:     nodes,
-		BatchSize: 100, // Kích thước batch cho mỗi epoch
-	}
-	hb := hbbft.NewHoneyBadger(cfg)
-	return &Server{
-		id:      id,
-		hb:      hb,
-		mempool: make(map[string]*Transaction),
-		start:   time.Now(),
-	}
-}
-
-// addTransactions thêm các giao dịch vào mempool và hbbft.
-func (s *Server) addTransactions(txs ...*Transaction) {
-	for _, tx := range txs {
-		s.lock.Lock()
-		if _, ok := s.mempool[string(tx.Hash())]; !ok {
-			s.mempool[string(tx.Hash())] = tx
-			s.hb.AddTransaction(tx)
-		}
-		s.lock.Unlock()
-	}
-}
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
+	// Đăng ký kiểu Transaction để có thể mã hóa/giải mã qua mạng.
 	gob.Register(&Transaction{})
 
-	const numNodes = 4
-	var nodes []*Server
+	// Cấu hình mô phỏng
+	const (
+		numNodes       = 4
+		initialTxCount = 1000 // Giao dịch ban đầu cho mỗi node
+		batchSize      = 100  // Kích thước batch của HBBFT
+		simulationTime = 2 * time.Minute
+		networkLatency = 100 * time.Millisecond
+		statsInterval  = 15 * time.Second
+	)
+
+	// 1. Khởi tạo Network Router
+	router := NewNetworkRouter(networkLatency)
+
+	// 2. Tạo Node IDs
 	nodeIDs := make([]uint64, numNodes)
 	for i := 0; i < numNodes; i++ {
 		nodeIDs[i] = uint64(i)
 	}
 
+	// 3. Khởi tạo các Server (Node)
+	servers := make([]*Server, numNodes)
 	for i := 0; i < numNodes; i++ {
-		server := newServer(uint64(i), nodeIDs)
-		nodes = append(nodes, server)
+		server := newServer(uint64(i), nodeIDs, router, batchSize)
+		servers[i] = server
+		router.RegisterNode(uint64(i), server)
+
+		// Thêm các giao dịch ban đầu vào mempool của mỗi node
+		initialTxs := make([]*Transaction, initialTxCount)
+		for j := range initialTxs {
+			initialTxs[j] = newTransaction()
+		}
+		server.addTransactions(initialTxs...)
 	}
 
-	messages := make(chan message, 1024*1024)
+	// 4. Khởi động các node
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(numNodes)
 
-	// Bắt đầu các node và gửi các thông điệp khởi tạo.
+	for _, s := range servers {
+		go s.start(ctx, &wg)
+	}
+	log.Println("🚀 Tất cả các node đã được khởi động. Bắt đầu mô phỏng...")
+
+	// 5. Vòng lặp chính để theo dõi và in thống kê tổng hợp
+	mainTicker := time.NewTicker(statsInterval)
+	defer mainTicker.Stop()
+	timeout := time.NewTimer(simulationTime)
+	defer timeout.Stop()
+
+	startTime := time.Now()
+
+	for {
+		select {
+		case <-timeout.C:
+			log.Println("⏳ Mô phỏng kết thúc. Đang chờ các node tắt...")
+			cancel()  // Gửi tín hiệu dừng đến tất cả các goroutine
+			wg.Wait() // Chờ tất cả các node kết thúc
+			log.Println("✅ Tất cả các node đã tắt.")
+			printFinalStats(servers, time.Since(startTime))
+			return
+
+		case <-mainTicker.C:
+			printAggregatedStats(servers, time.Since(startTime))
+		}
+	}
+}
+
+// printAggregatedStats in thống kê tổng hợp từ tất cả các node.
+func printAggregatedStats(nodes []*Server, runningTime time.Duration) {
+	var totalCommits, totalSent, totalReceived, totalMempool int
 	for _, node := range nodes {
-		// Thêm một số giao dịch ban đầu
-		for i := 0; i < 10000; i++ {
-			node.addTransactions(newTransaction())
+		commits, sent, received, mempool := node.getStats()
+		// Vì các block được commit trên tất cả các node, chỉ cần lấy từ một node là đủ.
+		if totalCommits == 0 {
+			totalCommits = commits
 		}
-
-		if err := node.hb.Start(); err != nil {
-			log.Fatalf("Lỗi khi khởi động node %d: %v", node.id, err)
-		}
-		// Gửi các thông điệp ban đầu đến người nhận được chỉ định
-		for _, msg := range node.hb.Messages() {
-			messages <- message{from: node.id, payload: msg}
-		}
+		totalSent += sent
+		totalReceived += received
+		totalMempool += mempool
 	}
 
-	// Vòng lặp xử lý thông điệp chính.
-	go func() {
-		for msg := range messages {
-			// Định tuyến thông điệp đến đúng node nhận
-			if int(msg.payload.To) >= len(nodes) {
-				log.Printf("Lỗi: Người nhận không hợp lệ %d", msg.payload.To)
-				continue
-			}
-			node := nodes[msg.payload.To]
+	fmt.Println("\n--- THỐNG KÊ TỔNG QUÁT ---")
+	fmt.Printf("Thời gian chạy: %s\n", runningTime.Truncate(time.Second))
+	fmt.Printf("Tổng số Giao dịch đã Commit (ước tính): %d\n", totalCommits)
+	fmt.Printf("Tổng số Tin nhắn (Gửi/Nhận): %d / %d\n", totalSent, totalReceived)
+	fmt.Printf("Tổng số Giao dịch trong Mempools: %d\n", totalMempool)
+	fmt.Println("--------------------------\n")
+}
 
-			// Xử lý thông điệp
-			hbmsg := msg.payload.Payload.(hbbft.HBMessage)
-			if err := node.hb.HandleMessage(msg.from, hbmsg.Epoch, hbmsg.Payload.(*hbbft.ACSMessage)); err != nil {
-				// Lỗi này giờ đây không nên xảy ra thường xuyên
-				log.Printf("Lỗi xử lý thông điệp tại node %d từ node %d: %v", node.id, msg.from, err)
-			}
+// printFinalStats in thống kê cuối cùng khi mô phỏng kết thúc.
+func printFinalStats(nodes []*Server, runningTime time.Duration) {
+	fmt.Println("\n\n--- KẾT QUẢ MÔ PHỎNG CUỐI CÙNG ---")
+	printAggregatedStats(nodes, runningTime)
 
-			// Gửi các thông điệp phản hồi đến đúng người nhận
-			for _, responseMsg := range node.hb.Messages() {
-				messages <- message{from: node.id, payload: responseMsg}
-			}
-		}
-	}()
-
-	// Vòng lặp commit và in kết quả.
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	lastCommitCount := 0
-	for range ticker.C {
-		totalCommits := 0
-		for _, node := range nodes {
-			outputs := node.hb.Outputs()
-			for epoch, txx := range outputs {
-				node.totalCommit += len(txx)
-				fmt.Printf("Node %d đã commit %d giao dịch trong epoch %d. Tổng số đã commit: %d\n", node.id, len(txx), epoch, node.totalCommit)
-			}
-			// Thêm giao dịch mới một cách định kỳ để duy trì hoạt động
-			for i := 0; i < 10000; i++ {
-				node.addTransactions(newTransaction())
-			}
-			totalCommits += node.totalCommit
-		}
-		if totalCommits > lastCommitCount {
-			fmt.Println("--- Epoch mới đã được commit! ---")
-			lastCommitCount = totalCommits
-		} else {
-			fmt.Println("--- Đang chờ epoch tiếp theo... ---")
-		}
+	var totalCommits int
+	if len(nodes) > 0 {
+		totalCommits, _, _, _ = nodes[0].getStats()
 	}
+
+	if runningTime.Seconds() > 0 {
+		tps := float64(totalCommits) / runningTime.Seconds()
+		fmt.Printf("Thông lượng (TPS - Giao dịch mỗi giây): %.2f\n", tps)
+	}
+	fmt.Println("------------------------------------")
 }

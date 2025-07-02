@@ -1,14 +1,17 @@
-package rbc
+package hbbft_rbc
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/gob"
 	"fmt"
 	"log"
+	"math/rand"
 	"sync"
 	"time"
 
+	"github.com/anthdm/hbbft"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/meta-node-blockchain/meta-node/pkg/aleaqueues"
 	"github.com/meta-node-blockchain/meta-node/pkg/binaryagreement"
@@ -197,156 +200,299 @@ func NewProcess(config *NodeConfig) (*Process, error) {
 	return p, nil
 }
 
+// Transaction là một triển khai đơn giản của giao diện hbbft.Transaction
+type Transaction struct {
+	Nonce uint64
+}
+
+// Hash trả về một hash duy nhất cho giao dịch.
+func (t *Transaction) Hash() []byte {
+	buf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(buf, t.Nonce)
+	return buf
+}
+
+func newTransaction() *Transaction {
+	return &Transaction{rand.Uint64()}
+}
+
+// message là một cấu trúc để giữ các thông điệp được trao đổi giữa các node.
+type message struct {
+	from    uint64
+	payload hbbft.MessageTuple
+}
+
+// Server đại diện cho một node trong mạng.
+type Server struct {
+	id          uint64
+	hb          *hbbft.HoneyBadger
+	mempool     map[string]*Transaction
+	lock        sync.RWMutex
+	totalCommit int
+	start       time.Time
+}
+
+func newServer(id uint64, nodes []uint64) *Server {
+	cfg := hbbft.Config{
+		N:         len(nodes),
+		ID:        id,
+		Nodes:     nodes,
+		BatchSize: 100, // Kích thước batch cho mỗi epoch
+	}
+	hb := hbbft.NewHoneyBadger(cfg)
+	return &Server{
+		id:      id,
+		hb:      hb,
+		mempool: make(map[string]*Transaction),
+		start:   time.Now(),
+	}
+}
+
+// addTransactions thêm các giao dịch vào mempool và hbbft.
+func (s *Server) addTransactions(txs ...*Transaction) {
+	for _, tx := range txs {
+		s.lock.Lock()
+		if _, ok := s.mempool[string(tx.Hash())]; !ok {
+			s.mempool[string(tx.Hash())] = tx
+			s.hb.AddTransaction(tx)
+		}
+		s.lock.Unlock()
+	}
+}
+
 // Start now launches the SocketServer and connects to peers.
 func (p *Process) Start() error {
-	addr := p.Peers[p.ID]
-	// Start listening for incoming connections in a separate goroutine
+	// addr := p.Peers[p.ID]
+	// // Start listening for incoming connections in a separate goroutine
+	// go func() {
+	// 	logger.Info("Node %d listening on %s", p.ID, addr)
+	// 	if err := p.server.Listen(addr); err != nil {
+	// 		logger.Error("Server listening error on node %d: %v", p.ID, err)
+	// 	}
+	// }()
+
+	// // Allow some time for other nodes to start their listeners
+	// time.Sleep(time.Second * 2)
+
+	// // Kết nối tới Master
+	// logger.Info("Node %d attempting to connect to Master at %s", p.Config.ID, p.Config.Master.ConnectionAddress)
+	// masterConn := network.NewConnection(common.HexToAddress("0x0"), m_common.MASTER_CONNECTION_TYPE)
+	// masterConn.SetRealConnAddr(p.Config.Master.ConnectionAddress)
+	// if err := masterConn.Connect(); err != nil {
+	// 	logger.Error("Node %d failed to connect to Master: %v", p.Config.ID, err)
+	// 	// Có thể quyết định dừng chương trình hoặc thử lại ở đây
+	// } else {
+	// 	p.MasterConn = masterConn
+	// 	p.addConnection(-1, masterConn)
+	// 	go p.server.HandleConnection(masterConn)
+	// 	logger.Info("Node %d connected to Master", p.Config.ID)
+	// }
+
+	// // Connect to all other peers
+	// for peerID, peerAddr := range p.Peers {
+	// 	if peerID == p.ID {
+	// 		continue
+	// 	}
+
+	// 	// Create a new connection object
+	// 	conn := network.NewConnection(
+	// 		common.HexToAddress("0x0"),
+	// 		RBC_COMMAND, // Set a type for clarity
+	// 	)
+	// 	conn.SetRealConnAddr(peerAddr)
+
+	// 	logger.Info("Node %d attempting to connect to Node %d at %s", p.ID, peerID, peerAddr)
+	// 	err := conn.Connect()
+	// 	if err != nil {
+	// 		logger.Warn("Node %d failed to connect to Node %d: %v", p.ID, peerID, err)
+	// 		continue
+	// 	}
+	// 	p.addConnection(peerID, conn)
+	// 	go p.server.HandleConnection(conn) // Start handling the connection
+	// }
+
+	// // Khởi chạy goroutine xử lý block number như yêu cầu
+	// go func() {
+	// 	fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d", p.ID) + ".log")
+
+	// 	for blockNumber := range p.blockNumberChan {
+	// 		logger.Info("--------------------------------------------------")
+	// 		logger.Info("⚡ Bắt đầu xử lý cho block: %d", blockNumber)
+	// 		p.UpdateBlockNumber(blockNumber)
+
+	// 		// 1. Lấy payload từ queue
+	// 		remainder := int(blockNumber)%p.Config.NumValidator + 1
+	// 		payload, err := p.queueManager.Dequeue(int32(remainder))
+	// 		if err != nil {
+	// 			logger.Error("Không có payload cho block %d (proposer %d). Coi như không có block.", blockNumber, remainder)
+	// 		}
+
+	// 		// 2. Bỏ phiếu cho block TIẾP THEO (blockNumber + 1)
+	// 		// Dựa vào việc có payload cho block hiện tại hay không để quyết định vote
+	// 		myVoteForNextBlock := &pb.VoteRequest{
+	// 			BlockNumber: blockNumber + 1,
+	// 			NodeId:      int32(p.Config.ID),
+	// 			Vote:        err == nil, // Vote 'true' nếu có payload, 'false' nếu không
+	// 		}
+	// 		voteBytes, err := proto.Marshal(myVoteForNextBlock)
+	// 		if err != nil {
+	// 			log.Fatalf("Lỗi khi marshal (serialize) vote: %v", err)
+	// 		}
+	// 		p.StartBroadcast(voteBytes, DataTypeVote, pb.MessageType_SEND)
+	// 		logger.Info("Đã gửi vote của mình cho block %d là: %v", blockNumber+1, myVoteForNextBlock.Vote)
+
+	// 		// 3. Chạy quá trình đồng thuận cho block HIỆN TẠI (blockNumber)
+	// 		// Hàm này sẽ tự xử lý việc đăng ký, lắng nghe và hủy đăng ký vote.
+	// 		consensusDecision := p.achieveVoteConsensus(blockNumber + 1)
+
+	// 		fileLogger.Info("🏆 QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block %d LÀ: %v", p.ID, blockNumber+1, consensusDecision)
+	// 		// 4. Xử lý kết quả đồng thuận
+	// 		if consensusDecision && payload != nil {
+	// 			// Chỉ gửi PushFinalizeEvent nếu đồng thuận là CÓ và có payload
+	// 			batch := &pb.Batch{}
+	// 			if err := proto.Unmarshal(payload, batch); err == nil {
+	// 				if err == nil {
+	// 					logger.Info("Đã gửi giao dịch của batch")
+	// 					fileLogger.Info("PushFinalizeEvent 1 block: %d : %v ", blockNumber+1, consensusDecision)
+	// 					fileLogger.Info("PushFinalizeEvent 1 %v ", batch.Transactions)
+	// 					err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, payload)
+	// 					if err != nil {
+	// 						panic(err)
+	// 					}
+	// 					logger.Info("Đã gửi PushFinalizeEvent cho block %d : %v", blockNumber+1, consensusDecision)
+
+	// 				} else {
+	// 					logger.Info("Đã gửi giao dịch batch rỗng")
+	// 					batch := &pb.Batch{
+	// 						BlockNumber: blockNumber + 1,
+	// 					}
+	// 					batchBytes, _ := proto.Marshal(batch)
+
+	// 					fileLogger.Info("PushFinalizeEvent 2 block: %d : %v ", blockNumber+1, consensusDecision)
+	// 					err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, batchBytes)
+	// 					if err != nil {
+	// 						panic(err)
+	// 					}
+	// 				}
+	// 			}
+	// 		} else {
+	// 			logger.Info("Đã gửi giao dịch batch rỗng")
+	// 			batch := &pb.Batch{
+	// 				BlockNumber: blockNumber + 1,
+	// 			}
+	// 			batchBytes, _ := proto.Marshal(batch)
+	// 			fileLogger.Info("PushFinalizeEvent 3 block: %d : %v", blockNumber+1, consensusDecision)
+	// 			err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, batchBytes)
+	// 			if err != nil {
+	// 				panic(err)
+	// 			}
+
+	// 		}
+
+	// 		// 5. Nếu đến lượt, yêu cầu transactions cho block tiếp theo
+	// 		isMyTurnForNextBlock := ((int(blockNumber+1) + p.Config.NumValidator - 1) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
+	// 		if isMyTurnForNextBlock {
+	// 			logger.Info("Đến lượt mình đề xuất cho block %d. Đang yêu cầu transactions...", blockNumber+1)
+	// 			p.MessageSender.SendBytes(
+	// 				p.MasterConn,
+	// 				m_common.GetTransactionsPool,
+	// 				[]byte{},
+	// 			)
+	// 		}
+
+	// 		p.CleanupOldMessages()
+	// 	}
+	// }()
+
+	// // Di chuyển các câu lệnh này vào bên trong hàm Start()
+	// p.HandleDelivered()
+	// p.HandlePoolTransactions()
+
+	// time.Sleep(10 * time.Second)
+	// p.RequestInitialBlockNumber()
+
+	rand.Seed(time.Now().UnixNano())
+	gob.Register(&Transaction{})
+
+	const numNodes = 4
+	var nodes []*Server
+	nodeIDs := make([]uint64, numNodes)
+	for i := 0; i < numNodes; i++ {
+		nodeIDs[i] = uint64(i)
+	}
+
+	for i := 0; i < numNodes; i++ {
+		server := newServer(uint64(i), nodeIDs)
+		nodes = append(nodes, server)
+	}
+
+	messages := make(chan message, 1024*1024)
+
+	// Bắt đầu các node và gửi các thông điệp khởi tạo.
+	for _, node := range nodes {
+		// Thêm một số giao dịch ban đầu
+		for i := 0; i < 10000; i++ {
+			node.addTransactions(newTransaction())
+		}
+
+		if err := node.hb.Start(); err != nil {
+			log.Fatalf("Lỗi khi khởi động node %d: %v", node.id, err)
+		}
+		// Gửi các thông điệp ban đầu đến người nhận được chỉ định
+		for _, msg := range node.hb.Messages() {
+			messages <- message{from: node.id, payload: msg}
+		}
+	}
+
+	// Vòng lặp xử lý thông điệp chính.
 	go func() {
-		logger.Info("Node %d listening on %s", p.ID, addr)
-		if err := p.server.Listen(addr); err != nil {
-			logger.Error("Server listening error on node %d: %v", p.ID, err)
+		for msg := range messages {
+			// Định tuyến thông điệp đến đúng node nhận
+			if int(msg.payload.To) >= len(nodes) {
+				log.Printf("Lỗi: Người nhận không hợp lệ %d", msg.payload.To)
+				continue
+			}
+			node := nodes[msg.payload.To]
+
+			// Xử lý thông điệp
+			hbmsg := msg.payload.Payload.(hbbft.HBMessage)
+			if err := node.hb.HandleMessage(msg.from, hbmsg.Epoch, hbmsg.Payload.(*hbbft.ACSMessage)); err != nil {
+				// Lỗi này giờ đây không nên xảy ra thường xuyên
+				log.Printf("Lỗi xử lý thông điệp tại node %d từ node %d: %v", node.id, msg.from, err)
+			}
+
+			// Gửi các thông điệp phản hồi đến đúng người nhận
+			for _, responseMsg := range node.hb.Messages() {
+				messages <- message{from: node.id, payload: responseMsg}
+			}
 		}
 	}()
 
-	// Allow some time for other nodes to start their listeners
-	time.Sleep(time.Second * 2)
-
-	// Kết nối tới Master
-	logger.Info("Node %d attempting to connect to Master at %s", p.Config.ID, p.Config.Master.ConnectionAddress)
-	masterConn := network.NewConnection(common.HexToAddress("0x0"), m_common.MASTER_CONNECTION_TYPE)
-	masterConn.SetRealConnAddr(p.Config.Master.ConnectionAddress)
-	if err := masterConn.Connect(); err != nil {
-		logger.Error("Node %d failed to connect to Master: %v", p.Config.ID, err)
-		// Có thể quyết định dừng chương trình hoặc thử lại ở đây
-	} else {
-		p.MasterConn = masterConn
-		p.addConnection(-1, masterConn)
-		go p.server.HandleConnection(masterConn)
-		logger.Info("Node %d connected to Master", p.Config.ID)
+	// Vòng lặp commit và in kết quả.
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	lastCommitCount := 0
+	for range ticker.C {
+		totalCommits := 0
+		for _, node := range nodes {
+			outputs := node.hb.Outputs()
+			for epoch, txx := range outputs {
+				node.totalCommit += len(txx)
+				fmt.Printf("Node %d đã commit %d giao dịch trong epoch %d. Tổng số đã commit: %d\n", node.id, len(txx), epoch, node.totalCommit)
+			}
+			// Thêm giao dịch mới một cách định kỳ để duy trì hoạt động
+			for i := 0; i < 10000; i++ {
+				node.addTransactions(newTransaction())
+			}
+			totalCommits += node.totalCommit
+		}
+		if totalCommits > lastCommitCount {
+			fmt.Println("--- Epoch mới đã được commit! ---")
+			lastCommitCount = totalCommits
+		} else {
+			fmt.Println("--- Đang chờ epoch tiếp theo... ---")
+		}
 	}
-
-	// Connect to all other peers
-	for peerID, peerAddr := range p.Peers {
-		if peerID == p.ID {
-			continue
-		}
-
-		// Create a new connection object
-		conn := network.NewConnection(
-			common.HexToAddress("0x0"),
-			RBC_COMMAND, // Set a type for clarity
-		)
-		conn.SetRealConnAddr(peerAddr)
-
-		logger.Info("Node %d attempting to connect to Node %d at %s", p.ID, peerID, peerAddr)
-		err := conn.Connect()
-		if err != nil {
-			logger.Warn("Node %d failed to connect to Node %d: %v", p.ID, peerID, err)
-			continue
-		}
-		p.addConnection(peerID, conn)
-		go p.server.HandleConnection(conn) // Start handling the connection
-	}
-
-	// Khởi chạy goroutine xử lý block number như yêu cầu
-	go func() {
-		fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d", p.ID) + ".log")
-
-		for blockNumber := range p.blockNumberChan {
-			logger.Info("--------------------------------------------------")
-			logger.Info("⚡ Bắt đầu xử lý cho block: %d", blockNumber)
-			p.UpdateBlockNumber(blockNumber)
-
-			// 1. Lấy payload từ queue
-			remainder := int(blockNumber)%p.Config.NumValidator + 1
-			payload, err := p.queueManager.Dequeue(int32(remainder))
-			if err != nil {
-				logger.Error("Không có payload cho block %d (proposer %d). Coi như không có block.", blockNumber, remainder)
-			}
-
-			// 2. Bỏ phiếu cho block TIẾP THEO (blockNumber + 1)
-			// Dựa vào việc có payload cho block hiện tại hay không để quyết định vote
-			myVoteForNextBlock := &pb.VoteRequest{
-				BlockNumber: blockNumber + 1,
-				NodeId:      int32(p.Config.ID),
-				Vote:        err == nil, // Vote 'true' nếu có payload, 'false' nếu không
-			}
-			voteBytes, err := proto.Marshal(myVoteForNextBlock)
-			if err != nil {
-				log.Fatalf("Lỗi khi marshal (serialize) vote: %v", err)
-			}
-			p.StartBroadcast(voteBytes, DataTypeVote, pb.MessageType_SEND)
-			logger.Info("Đã gửi vote của mình cho block %d là: %v", blockNumber+1, myVoteForNextBlock.Vote)
-
-			// 3. Chạy quá trình đồng thuận cho block HIỆN TẠI (blockNumber)
-			// Hàm này sẽ tự xử lý việc đăng ký, lắng nghe và hủy đăng ký vote.
-			consensusDecision := p.achieveVoteConsensus(blockNumber + 1)
-
-			fileLogger.Info("🏆 QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block %d LÀ: %v", p.ID, blockNumber+1, consensusDecision)
-			// 4. Xử lý kết quả đồng thuận
-			if consensusDecision && payload != nil {
-				// Chỉ gửi PushFinalizeEvent nếu đồng thuận là CÓ và có payload
-				batch := &pb.Batch{}
-				if err := proto.Unmarshal(payload, batch); err == nil {
-					if err == nil {
-						logger.Info("Đã gửi giao dịch của batch")
-						fileLogger.Info("PushFinalizeEvent 1 block: %d : %v ", blockNumber+1, consensusDecision)
-						fileLogger.Info("PushFinalizeEvent 1 %v ", batch.Transactions)
-						err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, payload)
-						if err != nil {
-							panic(err)
-						}
-						logger.Info("Đã gửi PushFinalizeEvent cho block %d : %v", blockNumber+1, consensusDecision)
-
-					} else {
-						logger.Info("Đã gửi giao dịch batch rỗng")
-						batch := &pb.Batch{
-							BlockNumber: blockNumber + 1,
-						}
-						batchBytes, _ := proto.Marshal(batch)
-
-						fileLogger.Info("PushFinalizeEvent 2 block: %d : %v ", blockNumber+1, consensusDecision)
-						err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, batchBytes)
-						if err != nil {
-							panic(err)
-						}
-					}
-				}
-			} else {
-				logger.Info("Đã gửi giao dịch batch rỗng")
-				batch := &pb.Batch{
-					BlockNumber: blockNumber + 1,
-				}
-				batchBytes, _ := proto.Marshal(batch)
-				fileLogger.Info("PushFinalizeEvent 3 block: %d : %v", blockNumber+1, consensusDecision)
-				err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, batchBytes)
-				if err != nil {
-					panic(err)
-				}
-
-			}
-
-			// 5. Nếu đến lượt, yêu cầu transactions cho block tiếp theo
-			isMyTurnForNextBlock := ((int(blockNumber+1) + p.Config.NumValidator - 1) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
-			if isMyTurnForNextBlock {
-				logger.Info("Đến lượt mình đề xuất cho block %d. Đang yêu cầu transactions...", blockNumber+1)
-				p.MessageSender.SendBytes(
-					p.MasterConn,
-					m_common.GetTransactionsPool,
-					[]byte{},
-				)
-			}
-
-			p.CleanupOldMessages()
-		}
-	}()
-
-	// Di chuyển các câu lệnh này vào bên trong hàm Start()
-	p.HandleDelivered()
-	p.HandlePoolTransactions()
-
-	time.Sleep(10 * time.Second)
-	p.RequestInitialBlockNumber()
 	return nil
 }
 
