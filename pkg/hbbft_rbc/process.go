@@ -495,7 +495,6 @@ func (p *Process) Start() error {
 	}
 	return nil
 }
-
 func (p *Process) achieveVoteConsensus(blockNumber uint64) bool {
 	// Thiết lập context với timeout để đảm bảo quá trình không bị treo vô hạn
 	fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d", p.ID) + ".log")
@@ -538,13 +537,25 @@ func (p *Process) achieveVoteConsensus(blockNumber uint64) bool {
 		}
 	}()
 
+	// **THÊM MỚI**: Goroutine này đảm bảo proposalChannel được đóng khi context bị hủy.
+	// Điều này ngăn goroutine lắng nghe proposal trong runSimulation bị chặn vĩnh viễn.
+	go func() {
+		<-ctx.Done()
+		go func() {
+			defer func() {
+				// Bỏ qua lỗi nếu channel đã được đóng ở đâu đó khác
+				recover()
+			}()
+			close(proposalChannel)
+		}()
+	}()
+
 	// Chạy mô phỏng đồng thuận
 	nodeIDs := make([]string, 0, p.N)
 	for i := 1; i <= p.N; i++ {
 		nodeIDs = append(nodeIDs, fmt.Sprintf("%d", i))
 	}
 
-	// Lưu ý: proposalSenderWg không còn cần thiết vì chúng ta không có goroutine gửi proposal riêng biệt nữa
 	var wg sync.WaitGroup
 	decision := runSimulation(
 		ctx,
@@ -553,15 +564,13 @@ func (p *Process) achieveVoteConsensus(blockNumber uint64) bool {
 		nodeIDs,
 		p.F,
 		proposalChannel,
-		&wg, // Sử dụng một WaitGroup rỗng
+		&wg,
 		fmt.Sprintf("%d", p.ID),
 	)
 
 	// Chờ goroutine lắng nghe kết thúc trước khi hàm này trả về
 	listenerWg.Wait()
 
-	// Sau khi runSimulation kết thúc, đóng proposal channel
-	close(proposalChannel)
 	fileLogger.Info("End: achieveVoteConsensus")
 	return decision
 }
@@ -596,7 +605,6 @@ func runSimulation(
 	proposalSenderWg *sync.WaitGroup,
 	ourID string,
 ) bool {
-	defer cancel()
 	fileLogger, _ := loggerfile.NewFileLogger("Note_" + ourID + ".log")
 
 	logger.Info("\n\n==============================================================")
@@ -609,10 +617,7 @@ func runSimulation(
 	networkOutgoing := make(chan MessageInTransit[string], len(nodeIDs)*10)
 	sessionID := "session-1"
 	var closeOnce sync.Once
-
 	decisionChannel := make(chan bool, len(nodeIDs))
-
-	// **FIX START**: Introduce a WaitGroup to track all writers to networkOutgoing
 	var writersWg sync.WaitGroup
 
 	for _, id := range nodeIDs {
@@ -621,26 +626,21 @@ func runSimulation(
 		nodeChannels[id] = make(chan MessageInTransit[string], 100)
 	}
 
+	// **SỬA ĐỔI**: Hàm này giờ chỉ gọi cancel() để ra tín hiệu.
 	cleanupAndShutdown := func() {
 		closeOnce.Do(func() {
 			fileLogger.Info("🎉 Đạt được đồng thuận! %s : Bắt đầu quá trình kết thúc mô phỏng.", scenarioTitle)
-			cancel() // 1. Signal all goroutines to stop.
-
-			// **FIX**: Wait for all writers to finish before closing the channel.
-			// This prevents a "send on closed channel" panic.
-			go func() {
-				writersWg.Wait()
-				close(networkOutgoing)
-			}()
+			cancel()
+			fileLogger.Info("🎉 Đạt được đồng thuận cancel done")
 		})
 	}
 
 	for _, id := range nodeIDs {
 		nodeWg.Add(1)
-		writersWg.Add(1) // **FIX**: Add node handler to writer group
+		writersWg.Add(1)
 		go func(nodeID string) {
 			defer nodeWg.Done()
-			defer writersWg.Done() // **FIX**: Signal completion
+			defer writersWg.Done()
 			nodeInstance := nodes[nodeID]
 
 			for {
@@ -651,7 +651,27 @@ func runSimulation(
 					if !ok {
 						return
 					}
-					step, err := nodeInstance.HandleMessage(transitMsg.Sender, transitMsg.Message)
+					// Áp dụng bản vá chống chặn
+					type handleResult struct {
+						step binaryagreement.Step[string]
+						err  error
+					}
+					resultChan := make(chan handleResult, 1)
+					go func() {
+						step, err := nodeInstance.HandleMessage(transitMsg.Sender, transitMsg.Message)
+						resultChan <- handleResult{step: step, err: err}
+					}()
+
+					var step binaryagreement.Step[string]
+					var err error
+					select {
+					case <-ctx.Done():
+						return
+					case result := <-resultChan:
+						step = result.step
+						err = result.err
+					}
+
 					if err != nil {
 						continue
 					}
@@ -677,7 +697,6 @@ func runSimulation(
 	networkWg.Add(1)
 	go func() {
 		defer networkWg.Done()
-
 		var senderWg sync.WaitGroup
 		for transitMsg := range networkOutgoing {
 			for _, recipientID := range nodeIDs {
@@ -690,17 +709,9 @@ func runSimulation(
 							logger.Error("Gửi vào nodeChannels[%s] bị panic: %v", recID, r)
 						}
 					}()
-
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-
 					if nodes[recID] == nil || nodes[recID].Terminated() {
 						return
 					}
-
 					select {
 					case nodeChannels[recID] <- msg:
 					case <-ctx.Done():
@@ -715,13 +726,12 @@ func runSimulation(
 		}
 	}()
 
-	logger.Info("--- Đang lắng nghe proposals từ channel. Mô phỏng đang chạy... ---")
 	var proposalWg sync.WaitGroup
 	proposalWg.Add(1)
-	writersWg.Add(1) // **FIX**: Add proposal listener to writer group
+	writersWg.Add(1)
 	go func() {
 		defer proposalWg.Done()
-		defer writersWg.Done() // **FIX**: Signal completion
+		defer writersWg.Done()
 		for {
 			select {
 			case <-ctx.Done():
@@ -730,21 +740,38 @@ func runSimulation(
 				if !ok {
 					return
 				}
-
 				id := proposalEvent.NodeID
 				value := proposalEvent.Value
 				logger.Info("Nhận proposal từ channel - Nút %s đề xuất giá trị: %v\n", id, value)
-
 				if nodes[id] == nil || nodes[id].Terminated() {
 					continue
 				}
 
-				step, err := nodes[id].Propose(value)
+				// Áp dụng bản vá chống chặn
+				type proposeResult struct {
+					step binaryagreement.Step[string]
+					err  error
+				}
+				resultChan := make(chan proposeResult, 1)
+				go func() {
+					step, err := nodes[id].Propose(value)
+					resultChan <- proposeResult{step: step, err: err}
+				}()
+
+				var step binaryagreement.Step[string]
+				var err error
+				select {
+				case <-ctx.Done():
+					return
+				case result := <-resultChan:
+					step = result.step
+					err = result.err
+				}
+
 				if err != nil {
 					logger.Error("Nút %s không thể đề xuất: %v\n", id, err)
 					continue
 				}
-
 				if step.Output != nil {
 					if decision, ok := step.Output.(bool); ok {
 						decisionChannel <- decision
@@ -753,9 +780,7 @@ func runSimulation(
 				for _, msgToSend := range step.MessagesToSend {
 					select {
 					case networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}:
-						// Sent successfully
 					case <-ctx.Done():
-						// Context was cancelled, don't send and exit.
 						return
 					}
 				}
@@ -770,7 +795,6 @@ func runSimulation(
 		requiredDecisions := len(nodeIDs) - numFaulty
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
-
 		for {
 			select {
 			case <-ticker.C:
@@ -790,10 +814,30 @@ func runSimulation(
 		}
 	}()
 
-	nodeWg.Wait()
+	// **SỬA ĐỔI LỚN: TRÌNH TỰ TẮT MỚI**
+	// 1. Chờ tín hiệu hủy được kích hoạt từ goroutine giám sát.
+	<-ctx.Done()
+
+	// 2. Chờ tất cả "writer" (node handler, proposal listener) thoát.
+	// Chúng sẽ thoát vì đã thấy ctx.Done() hoặc vì channel input của chúng đã đóng.
+	writersWg.Wait()
+	fileLogger.Info("writersWg done")
+
+	// 3. Khi không còn ai ghi vào networkOutgoing, ta có thể đóng nó một cách an toàn.
+	close(networkOutgoing)
+	fileLogger.Info("networkOutgoing closed")
+
+	// 4. Chờ goroutine phân phối mạng xử lý nốt các message còn lại và thoát.
 	networkWg.Wait()
-	proposalWg.Wait() // **FIX**: Wait for the proposal listener to finish
+	fileLogger.Info("networkWg done")
+
+	// 5. Chờ tất cả các goroutine chính kết thúc hoàn toàn.
+	nodeWg.Wait()
+	fileLogger.Info("nodeWg done")
+	proposalWg.Wait()
+	fileLogger.Info("proposalWg done")
 	monitorWg.Wait()
+	fileLogger.Info("monitorWg done")
 
 	close(decisionChannel)
 

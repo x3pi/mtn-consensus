@@ -73,3 +73,24 @@ func (qm *QueueManager) Dequeue(proposerID int32) ([]byte, error) {
 
 	return i.Value, nil
 }
+
+// GetByPriority trả về phần tử có priority đúng bằng giá trị truyền vào (nếu có) trong hàng đợi của proposer, không loại bỏ khỏi hàng đợi.
+func (qm *QueueManager) GetByPriority(proposerID int32, priority int64) ([]byte, error) {
+	qm.mu.RLock()
+	defer qm.mu.RUnlock()
+
+	q, ok := qm.queues[proposerID]
+	if !ok {
+		return nil, fmt.Errorf("không tìm thấy hàng đợi cho proposer ID %d", proposerID)
+	}
+	if q.Len() == 0 {
+		return nil, fmt.Errorf("hàng đợi của proposer ID %d rỗng", proposerID)
+	}
+
+	for _, it := range *q {
+		if it.Priority == priority {
+			return it.Value, nil
+		}
+	}
+	return nil, fmt.Errorf("không tìm thấy phần tử với priority %d trong hàng đợi proposer ID %d", priority, proposerID)
+}

@@ -104,7 +104,7 @@ type Process struct {
 	MessageSender t_network.MessageSender // Để gửi message
 
 	// Channels for the new handlers
-	PoolTransactions   chan []*pb.Transaction
+	PoolTransactions   chan *pb.Batch
 	blockNumberChan    chan uint64
 	currentBlockNumber uint64
 	proposalChannel    chan ProposalEvent
@@ -149,7 +149,7 @@ func NewProcess(config *NodeConfig) (*Process, error) {
 		connections:        make(map[int32]t_network.Connection),
 		KeyPair:            keyPair,
 		MessageSender:      network.NewMessageSender(""), // Khởi tạo MessageSender
-		PoolTransactions:   make(chan []*pb.Transaction, 1024),
+		PoolTransactions:   make(chan *pb.Batch, 1024),
 		blockNumberChan:    make(chan uint64, 1024),
 		proposalChannel:    make(chan ProposalEvent, 1024),
 		votesByBlockNumber: make(map[uint64][]*pb.VoteRequest),
@@ -162,13 +162,17 @@ func NewProcess(config *NodeConfig) (*Process, error) {
 		map[string]func(t_network.Request) error{
 			RBC_COMMAND: p.handleNetworkRequest,
 			m_common.SendPoolTransactons: func(req t_network.Request) error {
-				var transactionsPb pb.Transactions
-				if err := proto.Unmarshal(req.Message().Body(), &transactionsPb); err != nil {
-					logger.Error("❌ Failed to unmarshal pool transactions: %v", err)
-					return err
+
+				batch := &pb.Batch{}
+				if err := proto.Unmarshal(req.Message().Body(), batch); err == nil {
+
+					p.PoolTransactions <- batch
+					return nil
+
+				} else {
+					panic("Error Unmarshal batch in SendPoolTransactons")
 				}
-				p.PoolTransactions <- transactionsPb.GetTransactions()
-				return nil
+
 			},
 			m_common.BlockNumber: func(req t_network.Request) error {
 				responseData := req.Message().Body()
@@ -253,44 +257,65 @@ func (p *Process) Start() error {
 		fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d", p.ID) + ".log")
 
 		for blockNumber := range p.blockNumberChan {
-			logger.Info("--------------------------------------------------")
-			logger.Info("⚡ Bắt đầu xử lý cho block: %d", blockNumber)
+			time.Sleep(20 * time.Millisecond)
+			fileLogger.Info("blockNumberChan: ", blockNumber)
+
+			// 5. Nếu đến lượt, yêu cầu transactions cho block tiếp theo
+			isMyTurnForNextBlock := ((int(blockNumber+1) + p.Config.NumValidator - 1) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
+			if isMyTurnForNextBlock {
+				fileLogger.Info("Đến lượt mình đề xuất cho block %d. Đang yêu cầu transactions...", blockNumber+1)
+				p.MessageSender.SendBytes(
+					p.MasterConn,
+					m_common.GetTransactionsPool,
+					[]byte{},
+				)
+			}
+
+			// time.Sleep(10 * time.Millisecond)
+			fileLogger.Info("--------------------------------------------------")
+			fileLogger.Info("⚡ Bắt đầu xử lý cho block: %d", blockNumber)
 			p.UpdateBlockNumber(blockNumber)
 
 			// 1. Lấy payload từ queue
 			remainder := int(blockNumber)%p.Config.NumValidator + 1
-			payload, err := p.queueManager.Dequeue(int32(remainder))
-			if err != nil {
-				logger.Error("Không có payload cho block %d (proposer %d). Coi như không có block.", blockNumber, remainder)
+			var payload []byte
+			var err error
+			for {
+				payload, err = p.queueManager.GetByPriority(int32(remainder), int64(blockNumber+1))
+				if err == nil {
+					break // Lấy được payload thì thoát vòng lặp
+				}
+				// fileLogger.Info("Không có payload cho block %d (proposer %d). Thử lại sau 10ms...", blockNumber, remainder)
+				time.Sleep(10 * time.Millisecond) // Đợi một chút rồi thử lại, tránh vòng lặp quá nhanh
 			}
 
-			// 2. Bỏ phiếu cho block TIẾP THEO (blockNumber + 1)
-			// Dựa vào việc có payload cho block hiện tại hay không để quyết định vote
-			myVoteForNextBlock := &pb.VoteRequest{
-				BlockNumber: blockNumber + 1,
-				NodeId:      int32(p.Config.ID),
-				Vote:        err == nil, // Vote 'true' nếu có payload, 'false' nếu không
-			}
-			voteBytes, err := proto.Marshal(myVoteForNextBlock)
-			if err != nil {
-				log.Fatalf("Lỗi khi marshal (serialize) vote: %v", err)
-			}
-			p.StartBroadcast(voteBytes, DataTypeVote, pb.MessageType_SEND)
-			logger.Info("Đã gửi vote của mình cho block %d là: %v", blockNumber+1, myVoteForNextBlock.Vote)
+			// // 2. Bỏ phiếu cho block TIẾP THEO (blockNumber + 1)
+			// // Dựa vào việc có payload cho block hiện tại hay không để quyết định vote
+			// myVoteForNextBlock := &pb.VoteRequest{
+			// 	BlockNumber: blockNumber + 1,
+			// 	NodeId:      int32(p.Config.ID),
+			// 	Vote:        err == nil, // Vote 'true' nếu có payload, 'false' nếu không
+			// }
+			// voteBytes, err := proto.Marshal(myVoteForNextBlock)
+			// if err != nil {
+			// 	log.Fatalf("Lỗi khi marshal (serialize) vote: %v", err)
+			// }
+			// p.StartBroadcast(voteBytes, DataTypeVote, pb.MessageType_SEND)
+			// // logger.Info("Đã gửi vote của mình cho block %d là: %v", blockNumber+1, myVoteForNextBlock.Vote)
 
-			// 3. Chạy quá trình đồng thuận cho block HIỆN TẠI (blockNumber)
-			// Hàm này sẽ tự xử lý việc đăng ký, lắng nghe và hủy đăng ký vote.
-			consensusDecision := p.achieveVoteConsensus(blockNumber + 1)
-
-			fileLogger.Info("🏆 QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block %d LÀ: %v", p.ID, blockNumber+1, consensusDecision)
+			// // // 3. Chạy quá trình đồng thuận cho block HIỆN TẠI (blockNumber)
+			// // // Hàm này sẽ tự xử lý việc đăng ký, lắng nghe và hủy đăng ký vote.
+			// consensusDecision := p.achieveVoteConsensus(blockNumber + 1)
+			consensusDecision := true
+			// fileLogger.Info("🏆 QUYẾT ĐỊNH CUỐI CÙNG CỦA NODE %d cho Block %d LÀ: %v", p.ID, blockNumber+1, consensusDecision)
 			// 4. Xử lý kết quả đồng thuận
-			if consensusDecision && payload != nil {
+			if true && payload != nil {
 				// Chỉ gửi PushFinalizeEvent nếu đồng thuận là CÓ và có payload
 				batch := &pb.Batch{}
 				if err := proto.Unmarshal(payload, batch); err == nil {
 					if err == nil {
-						logger.Info("Đã gửi giao dịch của batch")
-						fileLogger.Info("PushFinalizeEvent 1 block: %d : %v ", blockNumber+1, consensusDecision)
+						fileLogger.Info("Đã gửi giao dịch của batch")
+						fileLogger.Info("PushFinalizeEvent 1 block: %d - %d : %v ", batch.BlockNumber, blockNumber+1, consensusDecision)
 						fileLogger.Info("PushFinalizeEvent 1 %v ", batch.Transactions)
 						err := p.MessageSender.SendBytes(p.MasterConn, m_common.PushFinalizeEvent, payload)
 						if err != nil {
@@ -324,17 +349,6 @@ func (p *Process) Start() error {
 					panic(err)
 				}
 
-			}
-
-			// 5. Nếu đến lượt, yêu cầu transactions cho block tiếp theo
-			isMyTurnForNextBlock := ((int(blockNumber+1) + p.Config.NumValidator - 1) % p.Config.NumValidator) == (int(p.Config.ID) - 1)
-			if isMyTurnForNextBlock {
-				logger.Info("Đến lượt mình đề xuất cho block %d. Đang yêu cầu transactions...", blockNumber+1)
-				p.MessageSender.SendBytes(
-					p.MasterConn,
-					m_common.GetTransactionsPool,
-					[]byte{},
-				)
 			}
 
 			p.CleanupOldMessages()
@@ -479,11 +493,14 @@ func runSimulation(
 		closeOnce.Do(func() {
 			fileLogger.Info("🎉 Đạt được đồng thuận! %s : Bắt đầu quá trình kết thúc mô phỏng.", scenarioTitle)
 			cancel() // 1. Signal all goroutines to stop.
+			fileLogger.Info("🎉 Đạt được đồng thuận cancel done ")
 
 			// **FIX**: Wait for all writers to finish before closing the channel.
 			// This prevents a "send on closed channel" panic.
 			go func() {
+				fileLogger.Info("🎉 Đạt được đồng thuận writersWg wait ")
 				writersWg.Wait()
+				fileLogger.Info("🎉 Đạt được đồng thuận writersWg done ")
 				close(networkOutgoing)
 			}()
 		})
@@ -505,7 +522,32 @@ func runSimulation(
 					if !ok {
 						return
 					}
-					step, err := nodeInstance.HandleMessage(transitMsg.Sender, transitMsg.Message)
+
+					// --- BẮT ĐẦU THAY ĐỔI ---
+					type handleResult struct {
+						step binaryagreement.Step[string] // ĐÃ SỬA
+						err  error
+					}
+					resultChan := make(chan handleResult, 1)
+
+					// Chạy lệnh gọi có thể bị chặn trong một goroutine riêng
+					go func() {
+						step, err := nodeInstance.HandleMessage(transitMsg.Sender, transitMsg.Message)
+						resultChan <- handleResult{step: step, err: err}
+					}()
+
+					// Chờ kết quả hoặc chờ context bị hủy
+					var step binaryagreement.Step[string] // ĐÃ SỬA
+					var err error
+					select {
+					case <-ctx.Done():
+						return // Thoát ngay nếu context bị hủy
+					case result := <-resultChan:
+						step = result.step
+						err = result.err
+					}
+					// --- KẾT THÚC THAY ĐỔI ---
+
 					if err != nil {
 						continue
 					}
@@ -593,7 +635,31 @@ func runSimulation(
 					continue
 				}
 
-				step, err := nodes[id].Propose(value)
+				// --- BẮT ĐẦU THAY ĐỔI ---
+				type proposeResult struct {
+					step binaryagreement.Step[string] // ĐÃ SỬA
+					err  error
+				}
+				resultChan := make(chan proposeResult, 1)
+
+				// Chạy lệnh gọi có thể bị chặn trong một goroutine riêng
+				go func() {
+					step, err := nodes[id].Propose(value)
+					resultChan <- proposeResult{step: step, err: err}
+				}()
+
+				// Chờ kết quả hoặc chờ context bị hủy
+				var step binaryagreement.Step[string] // ĐÃ SỬA
+				var err error
+				select {
+				case <-ctx.Done():
+					return // Thoát ngay nếu context bị hủy
+				case result := <-resultChan:
+					step = result.step
+					err = result.err
+				}
+				// --- KẾT THÚC THAY ĐỔI ---
+
 				if err != nil {
 					logger.Error("Nút %s không thể đề xuất: %v\n", id, err)
 					continue
@@ -607,9 +673,7 @@ func runSimulation(
 				for _, msgToSend := range step.MessagesToSend {
 					select {
 					case networkOutgoing <- MessageInTransit[string]{Sender: id, Message: msgToSend.Message}:
-						// Sent successfully
 					case <-ctx.Done():
-						// Context was cancelled, don't send and exit.
 						return
 					}
 				}
@@ -644,10 +708,23 @@ func runSimulation(
 		}
 	}()
 
-	nodeWg.Wait()
+	// Đợi cho network distributor kết thúc trước.
+	// Nó sẽ xử lý hết message và đóng các nodeChannels.
+	fileLogger.Info("Wait: %v", scenarioTitle)
+
 	networkWg.Wait()
-	proposalWg.Wait() // **FIX**: Wait for the proposal listener to finish
+	fileLogger.Info("networkWg done")
+
+	// Bây giờ mới đợi các node handlers và proposal listener.
+	// Chúng chắc chắn sẽ kết thúc vì input channel đã được đóng.
+	nodeWg.Wait()
+	fileLogger.Info("nodeWg done")
+
+	proposalWg.Wait()
+	fileLogger.Info("proposalWg done")
+
 	monitorWg.Wait()
+	fileLogger.Info("monitorWg done")
 
 	close(decisionChannel)
 
@@ -952,6 +1029,7 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 				batch := &pb.Batch{}
 				if err := proto.Unmarshal(state.payload, batch); err == nil {
 					priority := int64(batch.BlockNumber)
+					logger.Info("-----------------Enqueue: %v - %v", proposerID, priority)
 					p.queueManager.Enqueue(proposerID, priority, state.payload)
 					notification = &ProposalNotification{
 						SenderID: proposerID,
@@ -1066,26 +1144,27 @@ func (p *Process) HandleDelivered() {
 }
 
 func (p *Process) HandlePoolTransactions() {
+	fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d", p.ID) + ".log")
+
 	go func() {
 		for txs := range p.PoolTransactions {
 			proposerId := p.KeyPair.PublicKey().Bytes()
 			headerData := fmt.Sprintf("%d:%x", p.GetCurrentBlockNumber()+1, proposerId)
 			batchHash := sha256.Sum256([]byte(headerData))
-
 			batch := &pb.Batch{
 				Hash:         batchHash[:],
-				Transactions: txs,
-				BlockNumber:  p.GetCurrentBlockNumber() + 1,
+				Transactions: txs.Transactions,
+				BlockNumber:  txs.BlockNumber,
 				ProposerId:   proposerId,
 			}
 
 			payload, err := proto.Marshal(batch)
 			if err != nil {
-				logger.Error("Failed to marshal batch:", err)
+				fileLogger.Info("Failed to marshal batch:", err)
 				continue
 			}
 
-			logger.Info("\n[APPLICATION] Node %d broadcasting a batch for block %d...\n> ", p.ID, p.GetCurrentBlockNumber()+1)
+			fileLogger.Info("\n[APPLICATION] Node %d broadcasting a batch for block %d...\n> ", p.ID, p.GetCurrentBlockNumber()+1)
 			p.StartBroadcast(payload, "batch", pb.MessageType_INIT)
 		}
 	}()
@@ -1107,11 +1186,11 @@ func (p *Process) CleanupOldMessages() {
 
 	currentBlock := p.GetCurrentBlockNumber()
 	// Nếu chưa đủ block để dọn dẹp thì bỏ qua
-	if currentBlock <= 10000 {
+	if currentBlock <= 1000 {
 		return
 	}
 
-	cleanupThreshold := currentBlock - 10000
+	cleanupThreshold := currentBlock - 1000
 	cleanedCount := 0
 
 	for key, state := range p.logs {
