@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package mtn_proto;
+
+// Tin nhắn chung cho BBA
+message BBAMessage {
+    string session_id = 1;
+    int32 epoch = 2;
+    int32 sender_id = 3;
+
+    oneof content {
+        BvalRequest bval_request = 4;
+        AuxRequest aux_request = 5;
+    }
+}
+
+// Yêu cầu BVAL(v)
+message BvalRequest {
+    bool value = 1;
+}
+
+// Yêu cầu AUX(v)
+message AuxRequest {
+    bool value = 1;
+}

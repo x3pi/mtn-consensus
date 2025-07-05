@@ -236,12 +236,16 @@ func (p *Process) handleNetworkRequest(req t_network.Request) error {
 	return nil
 }
 
-// broadcast sử dụng Node để gửi thông điệp đến tất cả peers.
+// broadcast chuẩn bị và gửi thông điệp RBC.
 func (p *Process) broadcast(msg *pb.RBCMessage) {
-	// Xử lý thông điệp cho chính node hiện tại
+	msg.NetworkSenderId = p.node.ID
+	payload, err := proto.Marshal(msg)
+	if err != nil {
+		logger.Error("Node %d: Failed to marshal RBC message: %v", p.node.ID, err)
+		return
+	}
 	go p.handleMessage(msg)
-	// Gửi đến các node khác qua module node
-	p.node.Broadcast(RBC_COMMAND, msg)
+	p.node.Broadcast(RBC_COMMAND, payload)
 }
 
 // ... (Giữ nguyên các hàm getOrCreateState, GetVotesByBlockNumber, SubscribeToVotes, handleMessage, StartBroadcast, HandleDelivered, HandlePoolTransactions, RequestInitialBlockNumber, CleanupOldMessages)
@@ -380,6 +384,8 @@ func (p *Process) handleMessage(msg *pb.RBCMessage) {
 			}
 			p.subscribersMutex.RUnlock()
 			// --- KẾT THÚC LOGIC THÔNG BÁO ---
+		} else {
+			logger.Info(string(msg.Payload))
 		}
 	case pb.MessageType_INIT:
 		if !state.sentEcho {
@@ -996,4 +1002,28 @@ func (p *Process) SetNode(node *node.Node) {
 		peerIDs = append(peerIDs, int32(peerConf.Id))
 	}
 	p.queueManager = aleaqueues.NewQueueManager(peerIDs)
+}
+
+func (p *Process) GetCommandHandlers() map[string]func(t_network.Request) error {
+	return map[string]func(t_network.Request) error{
+		RBC_COMMAND: p.handleNetworkRequest,
+		m_common.SendPoolTransactons: func(req t_network.Request) error {
+			batch := &pb.Batch{}
+			if err := proto.Unmarshal(req.Message().Body(), batch); err == nil {
+				p.PoolTransactions <- batch
+				return nil
+			} else {
+				panic("Error Unmarshal batch in SendPoolTransactons")
+			}
+		},
+		m_common.BlockNumber: func(req t_network.Request) error {
+			responseData := req.Message().Body()
+			if len(responseData) < 8 {
+				return fmt.Errorf("invalid block number response data length")
+			}
+			validatorBlockNumber := binary.BigEndian.Uint64(responseData)
+			p.blockNumberChan <- validatorBlockNumber
+			return nil
+		},
+	}
 }

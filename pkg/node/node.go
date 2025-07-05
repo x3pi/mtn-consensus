@@ -12,7 +12,6 @@ import (
 	pb "github.com/meta-node-blockchain/meta-node/pkg/mtn_proto"
 	"github.com/meta-node-blockchain/meta-node/pkg/network"
 	t_network "github.com/meta-node-blockchain/meta-node/types/network"
-	"google.golang.org/protobuf/proto"
 )
 
 // Node là trung tâm quản lý mạng, kết nối và các thông điệp.
@@ -161,28 +160,11 @@ func (n *Node) Send(targetID int32, command string, body []byte) error {
 }
 
 // Broadcast gửi một thông điệp đến tất cả các peers.
-func (n *Node) Broadcast(command string, rbcMsg *pb.RBCMessage) {
-	n.connMutex.RLock()
-	connsSnapshot := make(map[int32]t_network.Connection, len(n.connections))
-	for id, conn := range n.connections {
-		connsSnapshot[id] = conn
-	}
-	n.connMutex.RUnlock()
-
-	rbcMsg.NetworkSenderId = n.ID // Đặt ID của người gửi mạng
-
-	body, err := proto.Marshal(rbcMsg)
-	if err != nil {
-		logger.Error("Node %d: Failed to marshal broadcast message: %v", n.ID, err)
-		return
-	}
-
-	for id := range n.Peers {
-		if id == n.ID {
-			// Xử lý nội bộ, không cần gửi qua mạng
-			// Điều này sẽ được handle bởi RBC process
-			continue
+func (n *Node) Broadcast(command string, body []byte) {
+	for peerID := range n.Peers {
+		if peerID == n.ID {
+			continue // Bỏ qua việc gửi cho chính mình
 		}
-		go n.Send(id, command, body)
+		go n.Send(peerID, command, body)
 	}
 }
