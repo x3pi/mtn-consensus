@@ -131,7 +131,7 @@ func (p *Process) Start() {
 
 		for blockNumber := range p.blockNumberChan {
 			time.Sleep(20 * time.Millisecond)
-			fileLogger.Info("blockNumberChan: ", blockNumber)
+			fileLogger.Info("blockNumberChan: %v", blockNumber)
 
 			// 5. Nếu đến lượt, yêu cầu transactions cho block tiếp theo
 			isMyTurnForNextBlock := ((int(blockNumber+1) + p.node.Config.NumValidator - 1) % p.node.Config.NumValidator) == (int(p.node.Config.ID) - 1)
