@@ -5,26 +5,23 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"os"
+	"os" // <-- 1. Import 'os' instead of 'io/ioutil'
 
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
 	"github.com/meta-node-blockchain/meta-node/pkg/mtn_proto"
-
-	// Assuming this is the correct import path for your protobuf definitions
-
+	"github.com/meta-node-blockchain/meta-node/pkg/node"
 	"github.com/meta-node-blockchain/meta-node/pkg/rbc"
 )
 
-// ValidatorInfo contains public key of a validator.
-
-func LoadConfigFromFile(filename string) (*rbc.NodeConfig, error) {
-	data, err := ioutil.ReadFile(filename)
+// LoadConfigFromFile now uses os.ReadFile.
+func LoadConfigFromFile(filename string) (*node.NodeConfig, error) {
+	// 2. Use os.ReadFile which is the current standard
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("could not read config file: %w", err)
 	}
-	var config rbc.NodeConfig
+	var config node.NodeConfig
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("could not unmarshal json: %w", err)
 	}
@@ -32,30 +29,39 @@ func LoadConfigFromFile(filename string) (*rbc.NodeConfig, error) {
 }
 
 func main() {
-	// Cờ lệnh giờ chỉ cần ID của node và đường dẫn tới file config
 	configFile := flag.String("config", "config.json", "Configuration file name")
 	flag.Parse()
 
-	// Tải cấu hình chứa tất cả các node
-	allConfig, err := LoadConfigFromFile(*configFile)
+	config, err := LoadConfigFromFile(*configFile)
 	if err != nil {
 		log.Fatalf("Error loading config: %v", err)
 	}
 
-	// Khởi tạo process với ID và danh sách peers đã được đọc từ config
-	process, err := rbc.NewProcess(allConfig)
+	// 1. Khởi tạo RBC Process (chưa có node)
+	rbcProcess, err := rbc.NewProcess()
 	if err != nil {
-		log.Fatalf("Failed to create process: %v", err)
+		log.Fatalf("Failed to create rbc process: %v", err)
 	}
 
-	// Start the server and connect to peers
+	// 2. Khởi tạo Node, truyền handler từ RBC vào
+	appNode, err := node.NewNode(config, rbcProcess.GetHandler())
+	if err != nil {
+		log.Fatalf("Failed to create node: %v", err)
+	}
+
+	// 3. Gán node đã khởi tạo vào rbcProcess bằng phương thức SetNode
+	rbcProcess.SetNode(appNode)
+
+	// 4. Bắt đầu Node (mạng)
 	go func() {
-		if err := process.Start(); err != nil {
-			log.Fatalf("Process failed to start: %v", err)
+		if err := appNode.Start(); err != nil {
+			log.Fatalf("Node failed to start: %v", err)
 		}
 	}()
 
-	// Allow user to broadcast messages from stdin (giữ nguyên)
+	// 5. Bắt đầu logic của RBC
+	rbcProcess.Start()
+
 	logger.Info("Enter a message and press Enter to broadcast:")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -63,11 +69,11 @@ func main() {
 		if scanner.Scan() {
 			line := scanner.Text()
 			if line != "" {
-				process.StartBroadcast([]byte(line), "string", mtn_proto.MessageType_INIT)
+				rbcProcess.StartBroadcast([]byte(line), "string", mtn_proto.MessageType_INIT)
 			}
 		} else {
 			if err := scanner.Err(); err != nil {
-				logger.Info("Error reading from stdin: %v", err)
+				logger.Error("Error reading from stdin: %v", err)
 			}
 			break
 		}
