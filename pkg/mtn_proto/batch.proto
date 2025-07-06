@@ -14,3 +14,15 @@ message Batch {
     uint64 block_number = 3;
     bytes proposer_id = 4; // Public key của người đề xuất
 }
+
+
+message FillGapRequest {
+  int32 queue_id = 1;
+  uint64 head = 2;
+  int32 sender_id = 3;
+}
+
+// Gửi từ node có dữ liệu để trả lời cho FillGapRequest
+message FillerRequest {
+  repeated bytes entries = 1; // Danh sách các payload (batch) bị thiếu
+}

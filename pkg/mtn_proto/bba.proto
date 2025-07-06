@@ -1,6 +1,7 @@
 syntax = "proto3";
 
 package mtn_proto;
+option go_package = "/mtn_proto";
 
 // Tin nhắn chung cho BBA
 message BBAMessage {

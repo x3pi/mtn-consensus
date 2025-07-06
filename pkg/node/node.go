@@ -116,6 +116,7 @@ func (n *Node) Start() error {
 		n.AddConnection(peerID, conn)      //
 		go n.server.HandleConnection(conn) //
 	}
+	time.Sleep(10 * time.Second)
 
 	for _, m := range n.modules {
 		m.Start()

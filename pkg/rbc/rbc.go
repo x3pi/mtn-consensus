@@ -117,79 +117,97 @@ func (p *Process) CommandHandlers() map[string]func(t_network.Request) error {
 
 // Start implement interface core.Module
 func (p *Process) Start() {
-	go func() {
-		fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d", p.host.ID()) + ".log")
-		for blockNumber := range p.blockNumberChan {
-			time.Sleep(20 * time.Millisecond)
-			fileLogger.Info("blockNumberChan: %v", blockNumber)
+	// go func() {
+	// 	fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d", p.host.ID()) + ".log")
+	// 	for blockNumber := range p.blockNumberChan {
+	// 		time.Sleep(20 * time.Millisecond)
+	// 		fileLogger.Info("blockNumberChan: %v", blockNumber)
 
-			isMyTurnForNextBlock := ((int(blockNumber+1) + p.host.Config().NumValidator - 1) % p.host.Config().NumValidator) == (int(p.host.Config().ID) - 1)
-			if isMyTurnForNextBlock {
-				fileLogger.Info("Đến lượt mình đề xuất cho block %d. Đang yêu cầu transactions...", blockNumber+1)
-				p.MessageSender.SendBytes(
-					p.host.MasterConn(),
-					m_common.GetTransactionsPool,
-					[]byte{},
-				)
-			}
+	// 		isMyTurnForNextBlock := ((int(blockNumber+1) + p.host.Config().NumValidator - 1) % p.host.Config().NumValidator) == (int(p.host.Config().ID) - 1)
+	// 		if isMyTurnForNextBlock {
+	// 			fileLogger.Info("Đến lượt mình đề xuất cho block %d. Đang yêu cầu transactions...", blockNumber+1)
+	// 			p.MessageSender.SendBytes(
+	// 				p.host.MasterConn(),
+	// 				m_common.GetTransactionsPool,
+	// 				[]byte{},
+	// 			)
+	// 		}
 
-			fileLogger.Info("--------------------------------------------------")
-			fileLogger.Info("⚡ Bắt đầu xử lý cho block: %d", blockNumber)
-			p.UpdateBlockNumber(blockNumber)
+	// 		fileLogger.Info("--------------------------------------------------")
+	// 		fileLogger.Info("⚡ Bắt đầu xử lý cho block: %d", blockNumber)
+	// 		p.UpdateBlockNumber(blockNumber)
 
-			remainder := int(blockNumber)%p.host.Config().NumValidator + 1
-			var payload []byte
-			var err error
-			for {
-				payload, err = p.queueManager.GetByPriority(int32(remainder), int64(blockNumber+1))
-				if err == nil {
-					break
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
+	// 		remainder := int(blockNumber)%p.host.Config().NumValidator + 1
+	// 		var payload []byte
+	// 		var err error
+	// 		for {
+	// 			payload, err = p.queueManager.GetByPriority(int32(remainder), int64(blockNumber+1))
+	// 			if err == nil {
+	// 				break
+	// 			}
+	// 			time.Sleep(10 * time.Millisecond)
+	// 		}
 
-			consensusDecision := true
-			if consensusDecision && payload != nil {
-				batch := &pb.Batch{}
-				if proto.Unmarshal(payload, batch) == nil {
-					fileLogger.Info("Đã gửi giao dịch của batch")
-					fileLogger.Info("PushFinalizeEvent 1 block: %d - %d : %v ", batch.BlockNumber, blockNumber+1, consensusDecision)
-					fileLogger.Info("PushFinalizeEvent 1 %v ", batch.Transactions)
-					err := p.MessageSender.SendBytes(p.host.MasterConn(), m_common.PushFinalizeEvent, payload)
-					if err != nil {
-						panic(err)
-					}
-					logger.Info("Đã gửi PushFinalizeEvent cho block %d : %v", blockNumber+1, consensusDecision)
+	// 		consensusDecision := true
+	// 		if consensusDecision && payload != nil {
+	// 			batch := &pb.Batch{}
+	// 			if proto.Unmarshal(payload, batch) == nil {
+	// 				fileLogger.Info("Đã gửi giao dịch của batch")
+	// 				fileLogger.Info("PushFinalizeEvent 1 block: %d - %d : %v ", batch.BlockNumber, blockNumber+1, consensusDecision)
+	// 				fileLogger.Info("PushFinalizeEvent 1 %v ", batch.Transactions)
+	// 				err := p.MessageSender.SendBytes(p.host.MasterConn(), m_common.PushFinalizeEvent, payload)
+	// 				if err != nil {
+	// 					panic(err)
+	// 				}
+	// 				logger.Info("Đã gửi PushFinalizeEvent cho block %d : %v", blockNumber+1, consensusDecision)
 
-				} else {
-					logger.Info("Đã gửi giao dịch batch rỗng")
-					batch := &pb.Batch{BlockNumber: blockNumber + 1}
-					batchBytes, _ := proto.Marshal(batch)
-					fileLogger.Info("PushFinalizeEvent 2 block: %d : %v ", blockNumber+1, consensusDecision)
-					err := p.MessageSender.SendBytes(p.host.MasterConn(), m_common.PushFinalizeEvent, batchBytes)
-					if err != nil {
-						panic(err)
-					}
-				}
-			} else {
-				logger.Info("Đã gửi giao dịch batch rỗng")
-				batch := &pb.Batch{BlockNumber: blockNumber + 1}
-				batchBytes, _ := proto.Marshal(batch)
-				fileLogger.Info("PushFinalizeEvent 3 block: %d : %v", blockNumber+1, consensusDecision)
-				err := p.MessageSender.SendBytes(p.host.MasterConn(), m_common.PushFinalizeEvent, batchBytes)
-				if err != nil {
-					panic(err)
-				}
-			}
+	// 			} else {
+	// 				logger.Info("Đã gửi giao dịch batch rỗng")
+	// 				batch := &pb.Batch{BlockNumber: blockNumber + 1}
+	// 				batchBytes, _ := proto.Marshal(batch)
+	// 				fileLogger.Info("PushFinalizeEvent 2 block: %d : %v ", blockNumber+1, consensusDecision)
+	// 				err := p.MessageSender.SendBytes(p.host.MasterConn(), m_common.PushFinalizeEvent, batchBytes)
+	// 				if err != nil {
+	// 					panic(err)
+	// 				}
+	// 			}
+	// 		} else {
+	// 			logger.Info("Đã gửi giao dịch batch rỗng")
+	// 			batch := &pb.Batch{BlockNumber: blockNumber + 1}
+	// 			batchBytes, _ := proto.Marshal(batch)
+	// 			fileLogger.Info("PushFinalizeEvent 3 block: %d : %v", blockNumber+1, consensusDecision)
+	// 			err := p.MessageSender.SendBytes(p.host.MasterConn(), m_common.PushFinalizeEvent, batchBytes)
+	// 			if err != nil {
+	// 				panic(err)
+	// 			}
+	// 		}
 
-			p.CleanupOldMessages()
-		}
-	}()
+	// 		p.CleanupOldMessages()
+	// 	}
+	// }()
 
 	p.HandleDelivered()
 	p.HandlePoolTransactions()
-	time.Sleep(10 * time.Second)
-	p.RequestInitialBlockNumber()
+
+	// === THAY ĐỔI TẠI ĐÂY ===
+	// Loại bỏ hoàn toàn time.Sleep(10 * time.Second)
+	// Yêu cầu block number ban đầu ngay lập tức để kích hoạt chu trình đồng thuận.
+	// Việc này được thực hiện trong một goroutine để không block quá trình khởi động.
+	go func() {
+		// Có thể thêm một khoảng chờ rất ngắn để đảm bảo kết nối mạng đã ổn định
+		time.Sleep(10 * time.Second)
+		p.RequestInitialBlockNumber()
+	}()
+}
+
+func (p *Process) RequestInitialBlockNumber() {
+	if p.host.MasterConn() != nil && p.host.MasterConn().IsConnect() {
+		logger.Info("RBC Process requesting initial block number...")
+		go p.MessageSender.SendBytes(p.host.MasterConn(), m_common.ValidatorGetBlockNumber, []byte{})
+	} else {
+		logger.Error("RBC Process cannot request initial block number: Master connection is not available.")
+		// Có thể thêm logic retry ở đây nếu cần
+	}
 }
 
 // Stop implement interface core.Module
@@ -423,9 +441,7 @@ func (p *Process) HandlePoolTransactions() {
 		}
 	}()
 }
-func (p *Process) RequestInitialBlockNumber() {
-	go p.MessageSender.SendBytes(p.host.MasterConn(), m_common.ValidatorGetBlockNumber, []byte{})
-}
+
 func (p *Process) CleanupOldMessages() {
 	p.logsMu.Lock()
 	defer p.logsMu.Unlock()
@@ -453,4 +469,44 @@ func (p *Process) UpdateBlockNumber(blockNumber uint64) {
 }
 func (p *Process) GetCurrentBlockNumber() uint64 {
 	return p.currentBlockNumber
+}
+
+// QueueManager trả về QueueManager để các module khác có thể truy cập.
+func (p *Process) QueueManager() *aleaqueues.QueueManager {
+	return p.queueManager
+}
+
+// PushFinalizeEvent đẩy một sự kiện đã được đồng thuận để xử lý.
+// (Thuật toán gọi đây là "output m")
+func (p *Process) PushFinalizeEvent(payload []byte) {
+	// Logic này tương tự như logic xử lý trong goroutine của Start()
+	// nhưng bây giờ được tách ra để agreement có thể gọi.
+	batch := &pb.Batch{}
+	if proto.Unmarshal(payload, batch) == nil {
+		err := p.MessageSender.SendBytes(p.host.MasterConn(), m_common.PushFinalizeEvent, payload)
+		if err != nil {
+			logger.Error("Failed to send PushFinalizeEvent: %v", err)
+		}
+		logger.Info("Pushed finalized event for block %d", batch.BlockNumber)
+	}
+}
+
+// ForceDeliver ép RBC coi một payload như đã được delivered.
+// Điều này cần thiết cho cơ chế FILL-GAP.
+func (p *Process) ForceDeliver(payload []byte) {
+	batch := &pb.Batch{}
+	if err := proto.Unmarshal(payload, batch); err == nil {
+		// --- SỬA LỖI TẠI ĐÂY ---
+		if len(batch.ProposerId) < 4 {
+			logger.Error("Invalid ProposerId length in ForceDeliver, cannot convert to int32")
+			return
+		}
+		// Đọc 4 byte theo thứ tự BigEndian và chuyển thành uint32, sau đó ép kiểu về int32
+		proposerID := int32(binary.BigEndian.Uint32(batch.ProposerId))
+		// --- KẾT THÚC SỬA LỖI ---
+
+		priority := int64(batch.BlockNumber)
+		p.queueManager.Enqueue(proposerID, priority, payload)
+		logger.Info("Force-delivered batch for block %d from proposer %d", priority, proposerID)
+	}
 }

@@ -3,9 +3,11 @@ package bba
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/meta-node-blockchain/meta-node/pkg/core"
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
+	"github.com/meta-node-blockchain/meta-node/pkg/loggerfile"
 	pb "github.com/meta-node-blockchain/meta-node/pkg/mtn_proto"
 	t_network "github.com/meta-node-blockchain/meta-node/types/network"
 	"google.golang.org/protobuf/proto"
@@ -17,7 +19,13 @@ const (
 
 var _ core.Module = (*Process)(nil)
 
-// BBAInstance đại diện cho một phiên đồng thuận BBA cụ thể.
+// agreementWaiter holds channels to return a consensus result synchronously.
+type agreementWaiter struct {
+	decisionChan chan bool
+	errChan      chan error
+}
+
+// BBAInstance represents a specific BBA consensus session.
 type BBAInstance struct {
 	process        *Process
 	sessionID      string
@@ -35,41 +43,43 @@ type BBAInstance struct {
 	lock           sync.RWMutex
 }
 
-// Process quản lý tất cả các phiên BBA và các tin nhắn đang chờ.
+// Process manages all BBA sessions and pending messages.
 type Process struct {
 	host            core.Host
 	instances       map[string]*BBAInstance
-	pendingMessages map[string][]*pb.BBAMessage // Bộ đệm cho các session chưa được khởi tạo
+	pendingMessages map[string][]*pb.BBAMessage // Buffer for uninitialized sessions
+	waiters         map[string]*agreementWaiter // Map to store waiters by sessionID
 	mu              sync.RWMutex
 }
 
-// NewProcess khởi tạo BBA Process.
+// NewProcess initializes the BBA Process.
 func NewProcess(host core.Host) (*Process, error) {
 	return &Process{
 		host:            host,
 		instances:       make(map[string]*BBAInstance),
-		pendingMessages: make(map[string][]*pb.BBAMessage), // Khởi tạo bộ đệm
+		pendingMessages: make(map[string][]*pb.BBAMessage), // Initialize buffer
+		waiters:         make(map[string]*agreementWaiter), // Initialize waiters map
 	}, nil
 }
 
-// CommandHandlers triển khai interface core.Module.
+// CommandHandlers implements the core.Module interface.
 func (p *Process) CommandHandlers() map[string]func(t_network.Request) error {
 	return map[string]func(t_network.Request) error{
 		BBA_COMMAND: p.handleNetworkRequest,
 	}
 }
 
-// Start triển khai interface core.Module.
+// Start implements the core.Module interface.
 func (p *Process) Start() {
 	logger.Info("BBA Process started.")
 }
 
-// Stop triển khai interface core.Module.
+// Stop implements the core.Module interface.
 func (p *Process) Stop() {
 	logger.Info("BBA Process stopping.")
 }
 
-// handleNetworkRequest là điểm tiếp nhận tất cả tin nhắn BBA từ mạng.
+// handleNetworkRequest is the entry point for all BBA messages from the network.
 func (p *Process) handleNetworkRequest(req t_network.Request) error {
 	msg := &pb.BBAMessage{}
 	if err := proto.Unmarshal(req.Message().Body(), msg); err != nil {
@@ -80,7 +90,7 @@ func (p *Process) handleNetworkRequest(req t_network.Request) error {
 	p.mu.Lock()
 	instance, ok := p.instances[msg.SessionId]
 	if !ok {
-		// Nếu session chưa tồn tại, lưu tin nhắn vào bộ đệm
+		// If session doesn't exist, buffer the message
 		logger.Warn("Received BBA message for unknown session '%s'. Buffering message.", msg.SessionId)
 		p.pendingMessages[msg.SessionId] = append(p.pendingMessages[msg.SessionId], msg)
 		p.mu.Unlock()
@@ -88,11 +98,44 @@ func (p *Process) handleNetworkRequest(req t_network.Request) error {
 	}
 	p.mu.Unlock()
 
-	// Nếu session đã tồn tại, xử lý bình thường
+	// If session exists, process normally
 	return instance.handleMessage(msg)
 }
 
-// StartAgreement bắt đầu một phiên đồng thuận mới.
+// StartAgreementAndWait starts a BBA session and blocks until a decision is made or timeout occurs.
+func (p *Process) StartAgreementAndWait(sessionID string, value bool, timeout time.Duration) (bool, error) {
+	fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d/", p.host.ID()) + sessionID + ".log")
+
+	p.mu.Lock()
+	if _, exists := p.instances[sessionID]; exists {
+		p.mu.Unlock()
+		fileLogger.Info("BBA instance for session %s already exists", sessionID)
+		return false, fmt.Errorf("BBA instance for session %s already exists", sessionID)
+	}
+
+	// Create a new waiter for this session
+	waiter := &agreementWaiter{
+		decisionChan: make(chan bool, 1),
+		errChan:      make(chan error, 1),
+	}
+	p.waiters[sessionID] = waiter
+	p.mu.Unlock()
+
+	// Start the consensus process (asynchronously)
+	p.StartAgreement(sessionID, value)
+
+	// Wait for the result or timeout
+	select {
+	case decision := <-waiter.decisionChan:
+		return decision, nil
+	case err := <-waiter.errChan:
+		return false, err
+	case <-time.After(timeout):
+		return false, fmt.Errorf("BBA agreement for session '%s' timed out after %v", sessionID, timeout)
+	}
+}
+
+// StartAgreement starts a new consensus session (asynchronously).
 func (p *Process) StartAgreement(sessionID string, value bool) {
 	p.mu.Lock()
 	if _, exists := p.instances[sessionID]; exists {
@@ -100,19 +143,20 @@ func (p *Process) StartAgreement(sessionID string, value bool) {
 		logger.Warn("BBA instance for session %s already exists", sessionID)
 		return
 	}
+	fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d/", p.host.ID()) + sessionID + ".log")
 
-	// Tạo instance mới
+	// Create new instance
 	instance := p.NewBBAInstance(sessionID)
 	p.instances[sessionID] = instance
 
-	// Kiểm tra bộ đệm xem có tin nhắn nào đang chờ cho session này không
+	// Check buffer for any pending messages for this session
 	if pending, found := p.pendingMessages[sessionID]; found {
-		logger.Info("Processing %d buffered messages for new BBA session '%s'", len(pending), sessionID)
+		fileLogger.Info("Processing %d buffered messages for new BBA session '%s'", len(pending), sessionID)
 		for _, msg := range pending {
-			// Chuyển các tin nhắn đang chờ cho instance mới xử lý
+			// Pass pending messages to the new instance for processing
 			go instance.handleMessage(msg)
 		}
-		// Xóa các tin nhắn đã xử lý khỏi bộ đệm
+		// Clean up processed messages from the buffer
 		delete(p.pendingMessages, sessionID)
 	}
 	p.mu.Unlock()
@@ -121,7 +165,7 @@ func (p *Process) StartAgreement(sessionID string, value bool) {
 	instance.inputValue(value)
 }
 
-// NewBBAInstance tạo một BBAInstance mới.
+// NewBBAInstance creates a new BBAInstance.
 func (p *Process) NewBBAInstance(sessionID string) *BBAInstance {
 	config := p.host.Config()
 	return &BBAInstance{
@@ -138,8 +182,6 @@ func (p *Process) NewBBAInstance(sessionID string) *BBAInstance {
 	}
 }
 
-// ... (Các hàm còn lại của BBAInstance không thay đổi) ...
-
 func (bba *BBAInstance) broadcast(msg *pb.BBAMessage) {
 	payload, err := proto.Marshal(msg)
 	if err != nil {
@@ -150,6 +192,7 @@ func (bba *BBAInstance) broadcast(msg *pb.BBAMessage) {
 }
 
 func (bba *BBAInstance) inputValue(val bool) {
+
 	bba.lock.Lock()
 	defer bba.lock.Unlock()
 	if bba.epoch != 0 || bba.estimated != nil {
@@ -158,6 +201,7 @@ func (bba *BBAInstance) inputValue(val bool) {
 	bba.estimated = val
 	bba.sentBvals = append(bba.sentBvals, val)
 	bba.broadcastBval(val)
+
 	bba.handleBvalRequest(bba.nodeID, val)
 }
 
@@ -170,7 +214,7 @@ func (bba *BBAInstance) handleMessage(msg *pb.BBAMessage) error {
 	}
 
 	if msg.Epoch > int32(bba.epoch) {
-		logger.Info("Node %d BBA session '%s': Đệm tin nhắn cho epoch %d (hiện tại là %d)", bba.nodeID, bba.sessionID, msg.Epoch, bba.epoch)
+		logger.Info("Node %d BBA session '%s': Buffering message for epoch %d (current is %d)", bba.nodeID, bba.sessionID, msg.Epoch, bba.epoch)
 		bba.futureMessages[msg.Epoch] = append(bba.futureMessages[msg.Epoch], msg)
 		return nil
 	}
@@ -248,7 +292,16 @@ func (bba *BBAInstance) tryOutputAgreement() {
 	if bba.decision != nil && bba.decision.(bool) == coin {
 		if !bba.done {
 			bba.done = true
-			logger.Info("✅ Node %d BBA session '%s' is DONE. Final Decision: %v", bba.nodeID, bba.sessionID, bba.decision)
+			finalDecision := bba.decision.(bool)
+			logger.Info("✅ Node %d BBA session '%s' is DONE. Final Decision: %v", bba.nodeID, bba.sessionID, finalDecision)
+
+			// Find and send result to the waiter
+			bba.process.mu.Lock()
+			if waiter, ok := bba.process.waiters[bba.sessionID]; ok {
+				waiter.decisionChan <- finalDecision
+				delete(bba.process.waiters, bba.sessionID) // Clean up waiter
+			}
+			bba.process.mu.Unlock()
 		}
 		return
 	}
@@ -280,7 +333,7 @@ func (bba *BBAInstance) advanceEpoch() {
 	bba.binValues = []bool{}
 
 	if bufferedMsgs, found := bba.futureMessages[int32(bba.epoch)]; found {
-		logger.Info("Node %d BBA session '%s': Xử lý %d tin nhắn đã đệm cho epoch %d", bba.nodeID, bba.sessionID, len(bufferedMsgs), bba.epoch)
+		logger.Info("Node %d BBA session '%s': Processing %d buffered messages for epoch %d", bba.nodeID, bba.sessionID, len(bufferedMsgs), bba.epoch)
 		for _, msg := range bufferedMsgs {
 			bba.processMessage(msg)
 		}

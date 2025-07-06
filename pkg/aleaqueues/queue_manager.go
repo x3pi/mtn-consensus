@@ -4,77 +4,61 @@ import (
 	"container/heap"
 	"fmt"
 	"sync"
-
-	"github.com/meta-node-blockchain/meta-node/pkg/logger"
 )
 
-// QueueManager quản lý một tập hợp các hàng đợi ưu tiên, mỗi hàng đợi cho một peer.
+// QueueManager quản lý một tập hợp các hàng đợi ưu tiên và con trỏ head của chúng.
 type QueueManager struct {
-	queues map[int32]*priorityQueue
+	queues map[int32]*PriorityQueue
+	heads  map[int32]uint64 // Thêm map để theo dõi head cho mỗi hàng đợi
 	mu     sync.RWMutex
 }
 
 // NewQueueManager tạo và khởi tạo một QueueManager mới.
-// peerIDs là một slice chứa ID của tất cả các node trong mạng.
 func NewQueueManager(peerIDs []int32) *QueueManager {
 	qm := &QueueManager{
-		queues: make(map[int32]*priorityQueue),
+		queues: make(map[int32]*PriorityQueue),
+		heads:  make(map[int32]uint64), // Khởi tạo map heads
 	}
-	// Khởi tạo một hàng đợi cho mỗi peer
 	for _, id := range peerIDs {
-		pq := make(priorityQueue, 0)
+		pq := make(PriorityQueue, 0)
 		heap.Init(&pq)
 		qm.queues[id] = &pq
+		qm.heads[id] = 0 // Khởi tạo head = 0 cho mỗi hàng đợi
 	}
 	return qm
 }
 
-// Enqueue là phương thức công khai để thêm một đề xuất vào hàng đợi của người gửi tương ứng.
-// Đây là giao diện chính mà module rbc sẽ sử dụng.
+// Enqueue thêm một đề xuất vào hàng đợi của người gửi tương ứng.
 func (qm *QueueManager) Enqueue(proposerID int32, priority int64, payload []byte) {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
 
 	q, ok := qm.queues[proposerID]
 	if !ok {
-		// Trường hợp này không nên xảy ra nếu tất cả peer đã được cung cấp lúc khởi tạo,
-		// nhưng vẫn xử lý để đảm bảo an toàn.
-		pq := make(priorityQueue, 0)
+		pq := make(PriorityQueue, 0)
 		heap.Init(&pq)
 		qm.queues[proposerID] = &pq
 		q = &pq
 	}
 
-	newItem := &item{
+	newItem := &Item{ // Sử dụng Item đã export
 		Value:    payload,
 		Priority: priority,
 	}
 	heap.Push(q, newItem)
 }
 
-// Dequeue lấy ra phần tử có độ ưu tiên cao nhất từ hàng đợi của một proposer.
-// (Hữu ích cho thành phần Agreement sau này)
-func (qm *QueueManager) Dequeue(proposerID int32) ([]byte, error) {
+// DequeueByValue loại bỏ một giá trị cụ thể khỏi tất cả các hàng đợi.
+func (qm *QueueManager) DequeueByValue(valueToRemove []byte) {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
 
-	q, ok := qm.queues[proposerID]
-	if !ok {
-		return nil, fmt.Errorf("không tìm thấy hàng đợi cho proposer ID %d", proposerID)
+	for _, q := range qm.queues {
+		q.Remove(valueToRemove)
 	}
-	if q.Len() == 0 {
-		return nil, fmt.Errorf("hàng đợi của proposer ID %d rỗng", proposerID)
-	}
-
-	i := heap.Pop(q).(*item)
-	logger.Info("Dequeue: ")
-	logger.Info(i.index)
-	logger.Info(i.Priority)
-
-	return i.Value, nil
 }
 
-// GetByPriority trả về phần tử có priority đúng bằng giá trị truyền vào (nếu có) trong hàng đợi của proposer, không loại bỏ khỏi hàng đợi.
+// GetByPriority trả về phần tử có priority đúng bằng giá trị truyền vào.
 func (qm *QueueManager) GetByPriority(proposerID int32, priority int64) ([]byte, error) {
 	qm.mu.RLock()
 	defer qm.mu.RUnlock()
@@ -93,4 +77,30 @@ func (qm *QueueManager) GetByPriority(proposerID int32, priority int64) ([]byte,
 		}
 	}
 	return nil, fmt.Errorf("không tìm thấy phần tử với priority %d trong hàng đợi proposer ID %d", priority, proposerID)
+}
+
+// GetQueue trả về hàng đợi ưu tiên cho một ID node cụ thể.
+// === THÊM PHƯƠNG THỨC NÀY VÀO ===
+func (qm *QueueManager) GetQueue(id int32) *PriorityQueue {
+	qm.mu.RLock()
+	defer qm.mu.RUnlock()
+
+	q, ok := qm.queues[id]
+	if !ok {
+		return nil
+	}
+	return q
+}
+
+func (qm *QueueManager) Head(id int32) uint64 {
+	qm.mu.RLock()
+	defer qm.mu.RUnlock()
+	return qm.heads[id]
+}
+
+// IncrementHead tăng con trỏ head của một hàng đợi lên 1.
+func (qm *QueueManager) IncrementHead(id int32) {
+	qm.mu.Lock()
+	defer qm.mu.Unlock()
+	qm.heads[id]++
 }

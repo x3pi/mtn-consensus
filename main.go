@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/meta-node-blockchain/meta-node/pkg/agreement"
 	"github.com/meta-node-blockchain/meta-node/pkg/bba"
 	"github.com/meta-node-blockchain/meta-node/pkg/config"
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
@@ -17,14 +20,14 @@ import (
 	"github.com/meta-node-blockchain/meta-node/pkg/rbc"
 )
 
-// Application đóng gói toàn bộ logic của ứng dụng.
+// Application encapsulates the entire application logic.
 type Application struct {
-	node       *node.Node
-	rbcProcess *rbc.Process
-	bbaProcess *bba.Process
+	node             *node.Node
+	rbcProcess       *rbc.Process
+	bbaProcess       *bba.Process
+	agreementProcess *agreement.Process // Thêm agreement process
 }
 
-// NewApplication khởi tạo toàn bộ ứng dụng.
 func NewApplication(config *config.NodeConfig) (*Application, error) {
 	app := &Application{}
 
@@ -34,11 +37,12 @@ func NewApplication(config *config.NodeConfig) (*Application, error) {
 	}
 	app.node = appNode
 
-	// rbcProcess, err := rbc.NewProcess(appNode)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("failed to create rbc process: %w", err)
-	// }
-	// app.rbcProcess = rbcProcess
+	// Khởi tạo RBC và BBA như trước
+	rbcProcess, err := rbc.NewProcess(appNode)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rbc process: %w", err)
+	}
+	app.rbcProcess = rbcProcess
 
 	bbaProcess, err := bba.NewProcess(appNode)
 	if err != nil {
@@ -46,18 +50,24 @@ func NewApplication(config *config.NodeConfig) (*Application, error) {
 	}
 	app.bbaProcess = bbaProcess
 
-	// app.node.RegisterModule(rbcProcess)
+	// Khởi tạo Agreement Process, truyền các dependency cần thiết
+	agreementProcess := agreement.NewProcess(appNode, rbcProcess, bbaProcess)
+	app.agreementProcess = agreementProcess
+	// Đăng ký tất cả các module với node
+	time.Sleep(10 * time.Second)
+	app.node.RegisterModule(rbcProcess)
 	app.node.RegisterModule(bbaProcess)
+	app.node.RegisterModule(agreementProcess)
 
 	return app, nil
 }
 
-// Start khởi chạy ứng dụng.
+// Start launches the application.
 func (app *Application) Start() error {
 	return app.node.Start()
 }
 
-// LoadConfigFromFile đọc và phân tích cú pháp tệp cấu hình.
+// LoadConfigFromFile reads and parses the configuration file.
 func LoadConfigFromFile(filename string) (*config.NodeConfig, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -95,8 +105,9 @@ func main() {
 
 func runCLI(app *Application) {
 	logger.Info("Enter command to start process:")
-	logger.Info("  'rbc <message>' - to start an RBC broadcast")
-	logger.Info("  'bba <session_id> <true|false>' - to start a BBA")
+	logger.Info("  'rbc <message>'              - to start an RBC broadcast")
+	logger.Info("  'bba <session_id> <t/f>'     - to start a BBA (async)")
+	logger.Info("  'bba-wait <sid> <t/f> <sec>' - to start a BBA and wait for result") // New command
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
@@ -115,11 +126,34 @@ func runCLI(app *Application) {
 			case "bba":
 				if len(parts) == 3 {
 					sessionID := parts[1]
-					value := parts[2] == "true"
+					value := parts[2] == "true" || parts[2] == "t"
+					// Call asynchronous function
 					app.bbaProcess.StartAgreement(sessionID, value)
 				}
+			case "bba-wait": // Handle new command
+				if len(parts) == 4 {
+					sessionID := parts[1]
+					value := parts[2] == "true" || parts[2] == "t"
+					timeoutSec, err := strconv.Atoi(parts[3])
+					if err != nil {
+						logger.Error("Invalid timeout value: %v", err)
+						continue
+					}
+
+					logger.Info("Starting BBA for session '%s' and waiting for decision (timeout %d s)...", sessionID, timeoutSec)
+
+					// Call synchronous function and wait for result
+					decision, err := app.bbaProcess.StartAgreementAndWait(sessionID, value, time.Duration(timeoutSec)*time.Second)
+					if err != nil {
+						logger.Error("BBA-WAIT FAILED: %v", err)
+					} else {
+						logger.Info("BBA-WAIT SUCCESS: Final decision for session '%s' is %v", sessionID, decision)
+					}
+				} else {
+					logger.Warn("Usage: bba-wait <session_id> <true|false> <timeout_seconds>")
+				}
 			default:
-				logger.Warn("Unknown command. Use 'rbc' or 'bba'.")
+				logger.Warn("Unknown command.")
 			}
 		} else {
 			if err := scanner.Err(); err != nil {
