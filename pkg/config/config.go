@@ -1,4 +1,4 @@
-package node
+package config
 
 // PeerConfig đại diện cho cấu hình của một node ngang hàng.
 type PeerConfig struct {

@@ -10,21 +10,60 @@ import (
 	"strings"
 
 	"github.com/meta-node-blockchain/meta-node/pkg/bba"
+	"github.com/meta-node-blockchain/meta-node/pkg/config"
 	"github.com/meta-node-blockchain/meta-node/pkg/logger"
 	"github.com/meta-node-blockchain/meta-node/pkg/mtn_proto"
-	"github.com/meta-node-blockchain/meta-node/pkg/network"
 	"github.com/meta-node-blockchain/meta-node/pkg/node"
 	"github.com/meta-node-blockchain/meta-node/pkg/rbc"
-	t_network "github.com/meta-node-blockchain/meta-node/types/network"
 )
 
+// Application đóng gói toàn bộ logic của ứng dụng.
+type Application struct {
+	node       *node.Node
+	rbcProcess *rbc.Process
+	bbaProcess *bba.Process
+}
+
+// NewApplication khởi tạo toàn bộ ứng dụng.
+func NewApplication(config *config.NodeConfig) (*Application, error) {
+	app := &Application{}
+
+	appNode, err := node.NewNode(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create node: %w", err)
+	}
+	app.node = appNode
+
+	rbcProcess, err := rbc.NewProcess(appNode)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rbc process: %w", err)
+	}
+	app.rbcProcess = rbcProcess
+
+	bbaProcess, err := bba.NewProcess(appNode)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create bba process: %w", err)
+	}
+	app.bbaProcess = bbaProcess
+
+	app.node.RegisterModule(rbcProcess)
+	app.node.RegisterModule(bbaProcess)
+
+	return app, nil
+}
+
+// Start khởi chạy ứng dụng.
+func (app *Application) Start() error {
+	return app.node.Start()
+}
+
 // LoadConfigFromFile đọc và phân tích cú pháp tệp cấu hình.
-func LoadConfigFromFile(filename string) (*node.NodeConfig, error) {
+func LoadConfigFromFile(filename string) (*config.NodeConfig, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("could not read config file: %w", err)
 	}
-	var config node.NodeConfig
+	var config config.NodeConfig
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("could not unmarshal json: %w", err)
 	}
@@ -40,47 +79,21 @@ func main() {
 		log.Fatalf("Error loading config: %v", err)
 	}
 
-	// 1. Khởi tạo tất cả các process
-	rbcProcess, err := rbc.NewProcess()
+	app, err := NewApplication(config)
 	if err != nil {
-		log.Fatalf("Failed to create rbc process: %v", err)
-	}
-	bbaProcess, err := bba.NewProcess()
-	if err != nil {
-		log.Fatalf("Failed to create bba process: %v", err)
+		log.Fatalf("Failed to initialize application: %v", err)
 	}
 
-	// 2. Lấy tất cả các command handlers và gộp chúng vào một map
-	rootHandlers := make(map[string]func(t_network.Request) error)
-	for command, handler := range rbcProcess.GetCommandHandlers() {
-		rootHandlers[command] = handler
-	}
-	for command, handler := range bbaProcess.GetCommandHandlers() {
-		rootHandlers[command] = handler
-	}
-
-	// 3. Tạo một root handler duy nhất từ map đã gộp
-	rootHandler := network.NewHandler(rootHandlers, nil)
-
-	// 4. Khởi tạo Node với root handler
-	appNode, err := node.NewNode(config, rootHandler)
-	if err != nil {
-		log.Fatalf("Failed to create node: %v", err)
-	}
-
-	// 5. Gán node cho tất cả các process
-	rbcProcess.SetNode(appNode)
-	bbaProcess.SetNode(appNode)
-
-	// 6. Bắt đầu Node (mạng) và các process
 	go func() {
-		if err := appNode.Start(); err != nil {
-			log.Fatalf("Node failed to start: %v", err)
+		if err := app.Start(); err != nil {
+			log.Fatalf("Application failed to start: %v", err)
 		}
 	}()
-	rbcProcess.Start()
 
-	// Giao diện dòng lệnh để tương tác
+	runCLI(app)
+}
+
+func runCLI(app *Application) {
 	logger.Info("Enter command to start process:")
 	logger.Info("  'rbc <message>' - to start an RBC broadcast")
 	logger.Info("  'bba <session_id> <true|false>' - to start a BBA")
@@ -97,13 +110,13 @@ func main() {
 			case "rbc":
 				if len(parts) > 1 {
 					message := strings.Join(parts[1:], " ")
-					rbcProcess.StartBroadcast([]byte(message), "string", mtn_proto.MessageType_SEND)
+					app.rbcProcess.StartBroadcast([]byte(message), "string", mtn_proto.MessageType_SEND)
 				}
 			case "bba":
 				if len(parts) == 3 {
 					sessionID := parts[1]
 					value := parts[2] == "true"
-					bbaProcess.StartAgreement(sessionID, value)
+					app.bbaProcess.StartAgreement(sessionID, value)
 				}
 			default:
 				logger.Warn("Unknown command. Use 'rbc' or 'bba'.")
