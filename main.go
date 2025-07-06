@@ -34,11 +34,11 @@ func NewApplication(config *config.NodeConfig) (*Application, error) {
 	}
 	app.node = appNode
 
-	rbcProcess, err := rbc.NewProcess(appNode)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create rbc process: %w", err)
-	}
-	app.rbcProcess = rbcProcess
+	// rbcProcess, err := rbc.NewProcess(appNode)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to create rbc process: %w", err)
+	// }
+	// app.rbcProcess = rbcProcess
 
 	bbaProcess, err := bba.NewProcess(appNode)
 	if err != nil {
@@ -46,7 +46,7 @@ func NewApplication(config *config.NodeConfig) (*Application, error) {
 	}
 	app.bbaProcess = bbaProcess
 
-	app.node.RegisterModule(rbcProcess)
+	// app.node.RegisterModule(rbcProcess)
 	app.node.RegisterModule(bbaProcess)
 
 	return app, nil
