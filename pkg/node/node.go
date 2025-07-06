@@ -150,6 +150,7 @@ func (n *Node) MasterConn() t_network.Connection {
 
 // Send gửi một thông điệp đến một peer cụ thể.
 func (n *Node) Send(targetID int32, command string, body []byte) error {
+	// time.Sleep(50 * time.Millisecond)
 	conn, ok := n.GetConnection(targetID) //
 	if !ok || !conn.IsConnect() {         //
 		return fmt.Errorf("node %d not connected to target %d", n.id, targetID) //

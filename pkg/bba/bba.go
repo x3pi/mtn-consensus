@@ -133,6 +133,7 @@ func (p *Process) cleanupOldInstances() {
 }
 
 // handleNetworkRequest is the entry point for all BBA messages from the network.
+// MODIFIED: This function is now non-blocking and uses goroutines for processing.
 func (p *Process) handleNetworkRequest(req t_network.Request) error {
 	msg := &pb.BBAMessage{}
 	if err := proto.Unmarshal(req.Message().Body(), msg); err != nil {
@@ -140,55 +141,49 @@ func (p *Process) handleNetworkRequest(req t_network.Request) error {
 		return err
 	}
 
-	p.mu.Lock()
-	instance, ok := p.instances[msg.SessionId]
-	if !ok {
-		logger.Warn("Received BBA message for unknown session '%s'. Buffering message.", msg.SessionId)
-		p.pendingMessages[msg.SessionId] = append(p.pendingMessages[msg.SessionId], msg)
-		p.mu.Unlock()
-		return nil
-	}
-	p.mu.Unlock()
+	go func(msg *pb.BBAMessage) {
+		p.mu.RLock()
+		instance, ok := p.instances[msg.SessionId]
+		p.mu.RUnlock()
 
-	return instance.handleMessage(msg)
+		if ok {
+			// If the instance exists, let it handle the message.
+			instance.handleMessage(msg)
+		} else {
+			// If the instance doesn't exist, buffer the message.
+			p.mu.Lock()
+			// Double-check if instance was created while waiting for the lock.
+			if instance, ok := p.instances[msg.SessionId]; ok {
+				p.mu.Unlock()
+				instance.handleMessage(msg)
+				return
+			}
+			p.pendingMessages[msg.SessionId] = append(p.pendingMessages[msg.SessionId], msg)
+			p.mu.Unlock()
+		}
+	}(msg)
+
+	return nil
 }
 
 // ADDED: A helper function to parse round number from sessionID.
 func parseRoundFromSessionID(sessionID string) (uint64, error) {
-	// Tạo file logger với format tên file tương tự như các hàm khác
-	fileLogger, _ := loggerfile.NewFileLogger("Note_parseRound_" + sessionID + ".log")
-
-	fileLogger.Info(" Parsing round from sessionID: '%s'", sessionID)
-
 	parts := strings.Split(sessionID, "_")
-	fileLogger.Info("📝 Split sessionID into %d parts: %v", len(parts), parts)
-
 	if len(parts) < 3 || parts[0] != "agreement" || parts[1] != "round" {
-		fileLogger.Info("❌ Invalid sessionID format: expected 'agreement_round_<number>', got '%s'", sessionID)
 		return 0, fmt.Errorf("invalid sessionID format: %s", sessionID)
 	}
-
-	roundStr := parts[2]
-	fileLogger.Info("🔢 Extracted round string: '%s'", roundStr)
-
-	round, err := strconv.ParseUint(roundStr, 10, 64)
+	round, err := strconv.ParseUint(parts[2], 10, 64)
 	if err != nil {
-		fileLogger.Info("❌ Failed to parse round number '%s': %v", roundStr, err)
-		return 0, err
+		return 0, fmt.Errorf("failed to parse round number '%s': %w", parts[2], err)
 	}
-
-	fileLogger.Info("✅ Successfully parsed round number: %d", round)
 	return round, nil
 }
 
 // StartAgreementAndWait starts a BBA session and blocks until a decision is made or timeout occurs.
 func (p *Process) StartAgreementAndWait(sessionID string, value bool, timeout time.Duration) (bool, error) {
-	fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d/", p.host.ID()) + sessionID + ".log")
-
 	p.mu.Lock()
 	if _, exists := p.instances[sessionID]; exists {
 		p.mu.Unlock()
-		fileLogger.Info("BBA instance for session %s already exists", sessionID)
 		return false, fmt.Errorf("BBA instance for session %s already exists", sessionID)
 	}
 
@@ -199,6 +194,7 @@ func (p *Process) StartAgreementAndWait(sessionID string, value bool, timeout ti
 	p.waiters[sessionID] = waiter
 	p.mu.Unlock()
 
+	// StartAgreement is non-blocking
 	p.StartAgreement(sessionID, value)
 
 	select {
@@ -207,7 +203,6 @@ func (p *Process) StartAgreementAndWait(sessionID string, value bool, timeout ti
 	case err := <-waiter.errChan:
 		return false, err
 	case <-time.After(timeout):
-		// Clean up the waiter on timeout to prevent memory leak
 		p.mu.Lock()
 		delete(p.waiters, sessionID)
 		p.mu.Unlock()
@@ -217,53 +212,54 @@ func (p *Process) StartAgreementAndWait(sessionID string, value bool, timeout ti
 
 // StartAgreement starts a new consensus session (asynchronously).
 // MODIFIED: Extracts round number, updates highest round, and passes it to NewBBAInstance.
+// The core logic is now non-blocking.
 func (p *Process) StartAgreement(sessionID string, value bool) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if _, exists := p.instances[sessionID]; exists {
-		p.mu.Unlock()
-		logger.Warn("BBA instance for session %s already exists", sessionID)
 		return
 	}
+
 	fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d/", p.host.ID()) + sessionID + ".log")
 
-	// ADDED: Parse round, update highest round
 	round, err := parseRoundFromSessionID(sessionID)
 	if err != nil {
-		p.mu.Unlock()
-		fileLogger.Info("Could not start BBA: %v", err)
 		return
 	}
 	if round > p.highestRound {
 		p.highestRound = round
 	}
 
-	// Create new instance, passing the round number
-	instance := p.NewBBAInstance(sessionID, round)
+	instance := p.NewBBAInstance(sessionID, round, fileLogger)
 	p.instances[sessionID] = instance
 
-	if pending, found := p.pendingMessages[sessionID]; found {
-		fileLogger.Info("Processing %d buffered messages for new BBA session '%s'", len(pending), sessionID)
-		for _, msg := range pending {
-			go instance.handleMessage(msg)
+	// Process any buffered messages for this new session in a goroutine
+	go func() {
+		p.mu.Lock()
+		if pending, found := p.pendingMessages[sessionID]; found {
+			for _, msg := range pending {
+				// The message handler itself is now safe for concurrent calls
+				go instance.handleMessage(msg)
+			}
+			delete(p.pendingMessages, sessionID)
 		}
-		delete(p.pendingMessages, sessionID)
-	}
-	p.mu.Unlock()
+		p.mu.Unlock()
 
-	logger.Info("Node %d starting BBA for session '%s' with value %v", p.host.ID(), sessionID, value)
-	instance.inputValue(value)
+		// Start the BBA process for this instance
+		instance.inputValue(value)
+	}()
 }
 
 // NewBBAInstance creates a new BBAInstance.
-// MODIFIED: Accepts round number as a parameter and initializes fileLogger.
-func (p *Process) NewBBAInstance(sessionID string, round uint64) *BBAInstance {
+// MODIFIED: Accepts round number and file logger as parameters.
+func (p *Process) NewBBAInstance(sessionID string, round uint64, fileLogger *loggerfile.FileLogger) *BBAInstance {
 	config := p.host.Config()
-	fileLogger, _ := loggerfile.NewFileLogger("Note_" + fmt.Sprintf("%d/", p.host.ID()) + sessionID + ".log")
 
 	return &BBAInstance{
 		process:        p,
 		sessionID:      sessionID,
-		round:          round, // ADDED: Set the round number
+		round:          round,
 		N:              config.NumValidator,
 		F:              (config.NumValidator - 1) / 3,
 		nodeID:         p.host.ID(),
@@ -272,11 +268,10 @@ func (p *Process) NewBBAInstance(sessionID string, round uint64) *BBAInstance {
 		sentBvals:      []bool{},
 		binValues:      []bool{},
 		futureMessages: make(map[int32][]*pb.BBAMessage),
-		fileLogger:     fileLogger, // ADDED: Set the file logger
+		fileLogger:     fileLogger,
 	}
 }
 
-// ... (Rest of the file remains the same) ...
 func (bba *BBAInstance) broadcast(msg *pb.BBAMessage) {
 	payload, err := proto.Marshal(msg)
 	if err != nil {
@@ -289,59 +284,53 @@ func (bba *BBAInstance) broadcast(msg *pb.BBAMessage) {
 func (bba *BBAInstance) inputValue(val bool) {
 	bba.lock.Lock()
 	defer bba.lock.Unlock()
+
 	if bba.epoch != 0 || bba.estimated != nil {
 		return
 	}
 	bba.estimated = val
 	bba.sentBvals = append(bba.sentBvals, val)
-	bba.broadcastBval(val)
 
-	// ADDED: Log the initial input value
-	bba.fileLogger.Info("Node %d BBA session '%s': Input value set to %v", bba.nodeID, bba.sessionID, val)
-
+	// Create a copy of the value to avoid race conditions in the goroutine
+	bvalMsg := &pb.BBAMessage{
+		SessionId: bba.sessionID,
+		Epoch:     int32(bba.epoch),
+		SenderId:  bba.nodeID,
+		Content:   &pb.BBAMessage_BvalRequest{BvalRequest: &pb.BvalRequest{Value: val}},
+	}
+	bba.broadcast(bvalMsg)
 	bba.handleBvalRequest(bba.nodeID, val)
 }
 
-func (bba *BBAInstance) handleMessage(msg *pb.BBAMessage) error {
+func (bba *BBAInstance) handleMessage(msg *pb.BBAMessage) {
 	bba.lock.Lock()
 	defer bba.lock.Unlock()
 
 	if msg.Epoch > int32(bba.epoch) {
-		// ADDED: Log buffering of future message
-		bba.fileLogger.Info("Node %d BBA session '%s': Buffering message for epoch %d (current is %d)", bba.nodeID, bba.sessionID, msg.Epoch, bba.epoch)
 		bba.futureMessages[msg.Epoch] = append(bba.futureMessages[msg.Epoch], msg)
-		return nil
+		return
 	}
 
 	if msg.Epoch < int32(bba.epoch) {
-		// ADDED: Log dropping of old message
-		bba.fileLogger.Info("Node %d BBA session '%s': Dropping old message from epoch %d (current is %d)", bba.nodeID, bba.sessionID, msg.Epoch, bba.epoch)
-		return nil
+		return
 	}
 
-	return bba.processMessage(msg)
+	bba.processMessage(msg)
 }
 
-func (bba *BBAInstance) processMessage(msg *pb.BBAMessage) error {
+func (bba *BBAInstance) processMessage(msg *pb.BBAMessage) {
 	switch content := msg.Content.(type) {
 	case *pb.BBAMessage_BvalRequest:
-		// ADDED: Log received BVAL message
-		bba.fileLogger.Info("Node %d BBA session '%s': Received BVAL from node %d with value %v", bba.nodeID, bba.sessionID, msg.SenderId, content.BvalRequest.Value)
 		bba.handleBvalRequest(msg.SenderId, content.BvalRequest.Value)
 	case *pb.BBAMessage_AuxRequest:
-		// ADDED: Log received AUX message
-		bba.fileLogger.Info("Node %d BBA session '%s': Received AUX from node %d with value %v", bba.nodeID, bba.sessionID, msg.SenderId, content.AuxRequest.Value)
 		bba.handleAuxRequest(msg.SenderId, content.AuxRequest.Value)
 	default:
-		return fmt.Errorf("unknown BBA message content")
+		logger.Error("unknown BBA message content for session %s", bba.sessionID)
 	}
-	return nil
 }
 
 func (bba *BBAInstance) handleBvalRequest(senderID int32, val bool) {
 	if _, exists := bba.recvBval[senderID]; exists {
-		// ADDED: Log duplicate BVAL message
-		bba.fileLogger.Info("Node %d BBA session '%s': Ignoring duplicate BVAL from node %d", bba.nodeID, bba.sessionID, senderID)
 		return
 	}
 	bba.recvBval[senderID] = val
@@ -352,41 +341,32 @@ func (bba *BBAInstance) handleBvalRequest(senderID int32, val bool) {
 		}
 	}
 
-	// ADDED: Log BVAL count
-	bba.fileLogger.Info("Node %d BBA session '%s': BVAL count for value %v is %d/%d", bba.nodeID, bba.sessionID, val, count, bba.N)
-
 	if count >= bba.F+1 && !bba.hasSentBval(val) {
 		bba.sentBvals = append(bba.sentBvals, val)
 		bba.broadcastBval(val)
-		// ADDED: Log BVAL broadcast
-		bba.fileLogger.Info("Node %d BBA session '%s': Broadcasting BVAL %v (threshold F+1=%d reached)", bba.nodeID, bba.sessionID, val, bba.F+1)
 	}
 	if count >= 2*bba.F+1 && !bba.isInBinValues(val) {
 		bba.binValues = append(bba.binValues, val)
-		// ADDED: Log bin value addition
-		bba.fileLogger.Info("Node %d BBA session '%s': Added %v to bin values (threshold 2F+1=%d reached)", bba.nodeID, bba.sessionID, val, 2*bba.F+1)
 		if len(bba.binValues) == 1 {
 			bba.broadcastAux(val)
 			bba.handleAuxRequest(bba.nodeID, val)
-			// ADDED: Log AUX broadcast
-			bba.fileLogger.Info("Node %d BBA session '%s': Broadcasting AUX %v (first bin value)", bba.nodeID, bba.sessionID, val)
 		}
 	}
 }
 
 func (bba *BBAInstance) handleAuxRequest(senderID int32, val bool) {
 	if _, exists := bba.recvAux[senderID]; exists {
-		// ADDED: Log duplicate AUX message
-		bba.fileLogger.Info("Node %d BBA session '%s': Ignoring duplicate AUX from node %d", bba.nodeID, bba.sessionID, senderID)
 		return
 	}
 	bba.recvAux[senderID] = val
-	// ADDED: Log AUX count
-	bba.fileLogger.Info("Node %d BBA session '%s': AUX count for value %v is %d/%d", bba.nodeID, bba.sessionID, val, len(bba.recvAux), bba.N)
 	bba.tryOutputAgreement()
 }
 
 func (bba *BBAInstance) tryOutputAgreement() {
+	if bba.decision != nil {
+		return // Already decided
+	}
+
 	if len(bba.binValues) == 0 || len(bba.recvAux) < bba.N-bba.F {
 		return
 	}
@@ -405,74 +385,65 @@ func (bba *BBAInstance) tryOutputAgreement() {
 		}
 	}
 
-	coin := bba.epoch%2 == 0
-	// ADDED: Log coin flip and values
-	bba.fileLogger.Info("Node %d BBA session '%s': Coin flip is %v, values: %v", bba.nodeID, bba.sessionID, coin, values)
+	if len(values) == 0 {
+		bba.advanceEpoch()
+		return
+	}
 
-	if bba.decision == nil {
-		if len(values) == 1 {
-			if values[0] == coin {
-				bba.decision = values[0]
-				// ADDED: Log decision
-				bba.fileLogger.Info("🏆 Node %d BBA session '%s' DECIDED on %v at epoch %d", bba.nodeID, bba.sessionID, bba.decision, bba.epoch-1)
-				logger.Info("🏆 Node %d BBA session '%s' DECIDED on %v at epoch %d", bba.nodeID, bba.sessionID, bba.decision, bba.epoch-1)
+	// Using modulo on the round number for the coin flip to ensure determinism
+	coin := (bba.round+uint64(bba.epoch))%2 == 0
 
-				bba.process.mu.Lock()
-				if waiter, ok := bba.process.waiters[bba.sessionID]; ok {
-					waiter.decisionChan <- bba.decision.(bool)
-					delete(bba.process.waiters, bba.sessionID)
-				}
-				bba.process.mu.Unlock()
+	if len(values) == 1 {
+		v := values[0]
+		if v == coin {
+			bba.decision = v
+			logger.Info("🏆 Node %d BBA session '%s' DECIDED on %v at epoch %d", bba.nodeID, bba.sessionID, bba.decision, bba.epoch)
+
+			bba.process.mu.Lock()
+			if waiter, ok := bba.process.waiters[bba.sessionID]; ok {
+				waiter.decisionChan <- bba.decision.(bool)
+				close(waiter.decisionChan)
+				close(waiter.errChan)
+				delete(bba.process.waiters, bba.sessionID)
 			}
+			bba.process.mu.Unlock()
+			return // Stop processing after a decision
+		} else {
+			bba.estimated = v
 		}
+	} else { // len(values) > 1 or (len(values)==1 and values[0]!=coin)
+		bba.estimated = coin
 	}
 
 	bba.advanceEpoch()
-
-	if len(values) == 1 {
-		bba.estimated = values[0]
-		// ADDED: Log estimated value update
-		bba.fileLogger.Info("Node %d BBA session '%s': Estimated value set to %v (single value)", bba.nodeID, bba.sessionID, values[0])
-	} else {
-		if bba.decision != nil {
-			bba.estimated = bba.decision
-			// ADDED: Log estimated value update
-			bba.fileLogger.Info("Node %d BBA session '%s': Estimated value set to decision %v", bba.nodeID, bba.sessionID, bba.decision)
-		} else {
-			bba.estimated = coin
-			// ADDED: Log estimated value update
-			bba.fileLogger.Info("Node %d BBA session '%s': Estimated value set to coin %v", bba.nodeID, bba.sessionID, coin)
-		}
-	}
-
-	est := bba.estimated.(bool)
-	bba.sentBvals = append(bba.sentBvals, est)
-	bba.broadcastBval(est)
-	// ADDED: Log next epoch BVAL broadcast
-	bba.fileLogger.Info("Node %d BBA session '%s': Broadcasting BVAL %v for next epoch", bba.nodeID, bba.sessionID, est)
-	bba.handleBvalRequest(bba.nodeID, est)
 }
 
 func (bba *BBAInstance) advanceEpoch() {
+	if bba.decision != nil {
+		return
+	}
+
 	bba.epoch++
-	// ADDED: Log epoch advancement
-	bba.fileLogger.Info("Node %d advancing BBA session '%s' to epoch %d", bba.nodeID, bba.sessionID, bba.epoch)
-	logger.Info("Node %d advancing BBA session '%s' to epoch %d", bba.nodeID, bba.sessionID, bba.epoch)
 
 	bba.recvBval = make(map[int32]bool)
 	bba.recvAux = make(map[int32]bool)
 	bba.sentBvals = []bool{}
 	bba.binValues = []bool{}
 
+	// Handle buffered messages for the new epoch
 	if bufferedMsgs, found := bba.futureMessages[int32(bba.epoch)]; found {
-		// ADDED: Log processing of buffered messages
-		bba.fileLogger.Info("Node %d BBA session '%s': Processing %d buffered messages for epoch %d", bba.nodeID, bba.sessionID, len(bufferedMsgs), bba.epoch)
-		logger.Info("Node %d BBA session '%s': Processing %d buffered messages for epoch %d", bba.nodeID, bba.sessionID, len(bufferedMsgs), bba.epoch)
 		for _, msg := range bufferedMsgs {
-			// MODIFIED: Call handleMessage which acquires the lock, instead of processMessage.
-			go bba.handleMessage(msg)
+			bba.processMessage(msg) // Already under lock
 		}
 		delete(bba.futureMessages, int32(bba.epoch))
+	}
+
+	// If an estimate is set, broadcast it for the new epoch
+	if bba.estimated != nil {
+		est := bba.estimated.(bool)
+		bba.sentBvals = append(bba.sentBvals, est)
+		bba.broadcastBval(est)
+		bba.handleBvalRequest(bba.nodeID, est)
 	}
 }
 
