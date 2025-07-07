@@ -33,22 +33,22 @@ type Node struct {
 
 // NewNode khởi tạo một đối tượng Node mới từ cấu hình.
 func NewNode(config *config.NodeConfig) (*Node, error) {
-	keyPair := bls.NewKeyPair(common.FromHex(config.KeyPair)) //
+	keyPair := bls.NewKeyPair(common.FromHex(config.KeyPair))
 	if keyPair == nil {
-		keyPair = bls.GenerateKeyPair() //
+		keyPair = bls.GenerateKeyPair()
 	}
 
-	peers := make(map[int32]string) //
+	peers := make(map[int32]string)
 	for _, nodeConf := range config.Peers {
-		peers[int32(nodeConf.Id)] = nodeConf.ConnectionAddress //
+		peers[int32(nodeConf.Id)] = nodeConf.ConnectionAddress
 	}
 
 	node := &Node{
-		config:       config,                               //
-		id:           int32(config.ID),                     //
-		keyPair:      keyPair,                              //
-		peers:        peers,                                //
-		connections:  make(map[int32]t_network.Connection), //
+		config:       config,
+		id:           int32(config.ID),
+		keyPair:      keyPair,
+		peers:        peers,
+		connections:  make(map[int32]t_network.Connection),
 		modules:      make([]core.Module, 0),
 		rootHandlers: make(map[string]func(t_network.Request) error),
 	}
@@ -70,51 +70,51 @@ func (n *Node) RegisterModule(m core.Module) {
 func (n *Node) Start() error {
 	rootHandler := network.NewHandler(n.rootHandlers, nil)
 
-	connectionsManager := network.NewConnectionsManager() //
+	connectionsManager := network.NewConnectionsManager()
 	var err error
-	n.server, err = network.NewSocketServer(n.keyPair, connectionsManager, rootHandler, "validator", "0.0.1") //
+	n.server, err = network.NewSocketServer(n.keyPair, connectionsManager, rootHandler, "validator", "0.0.1")
 	if err != nil {
-		return fmt.Errorf("failed to create socket server: %w", err) //
+		return fmt.Errorf("failed to create socket server: %w", err)
 	}
-	n.server.AddOnConnectedCallBack(n.onConnect)       //
-	n.server.AddOnDisconnectedCallBack(n.onDisconnect) //
+	n.server.AddOnConnectedCallBack(n.onConnect)
+	n.server.AddOnDisconnectedCallBack(n.onDisconnect)
 
-	addr := n.config.ConnectionAddress //
+	addr := n.config.ConnectionAddress
 	go func() {
-		logger.Info("Node %d listening on %s", n.id, addr) //
-		if err := n.server.Listen(addr); err != nil {      //
-			logger.Error("Server listening error on node %d: %v", n.id, err) //
+		logger.Info("Node %d listening on %s", n.id, addr)
+		if err := n.server.Listen(addr); err != nil {
+			logger.Error("Server listening error on node %d: %v", n.id, err)
 		}
 	}()
 
-	time.Sleep(time.Second * 2) //
+	time.Sleep(time.Second * 2)
 
-	logger.Info("Node %d attempting to connect to Master at %s", n.id, n.config.Master.ConnectionAddress) //
-	masterConn := network.NewConnection(common.HexToAddress("0x0"), m_common.MASTER_CONNECTION_TYPE)      //
-	masterConn.SetRealConnAddr(n.config.Master.ConnectionAddress)                                         //
-	if err := masterConn.Connect(); err != nil {                                                          //
-		logger.Error("Node %d failed to connect to Master: %v", n.id, err) //
+	logger.Info("Node %d attempting to connect to Master at %s", n.id, n.config.Master.ConnectionAddress)
+	masterConn := network.NewConnection(common.HexToAddress("0x0"), m_common.MASTER_CONNECTION_TYPE)
+	masterConn.SetRealConnAddr(n.config.Master.ConnectionAddress)
+	if err := masterConn.Connect(); err != nil {
+		logger.Error("Node %d failed to connect to Master: %v", n.id, err)
 	} else {
-		n.masterConn = masterConn                        //
-		n.AddConnection(-1, masterConn)                  //
-		go n.server.HandleConnection(masterConn)         //
-		logger.Info("Node %d connected to Master", n.id) //
+		n.masterConn = masterConn
+		n.AddConnection(-1, masterConn)
+		go n.server.HandleConnection(masterConn)
+		logger.Info("Node %d connected to Master", n.id)
 	}
 
-	for peerID, peerAddr := range n.peers { //
-		if peerID == n.id { //
+	for peerID, peerAddr := range n.peers {
+		if peerID == n.id {
 			continue
 		}
-		conn := network.NewConnection(common.HexToAddress("0x0"), "rbc_message")              //
-		conn.SetRealConnAddr(peerAddr)                                                        //
-		logger.Info("Node %d attempting to connect to Node %d at %s", n.id, peerID, peerAddr) //
-		err := conn.Connect()                                                                 //
+		conn := network.NewConnection(common.HexToAddress("0x0"), "rbc_message")
+		conn.SetRealConnAddr(peerAddr)
+		logger.Info("Node %d attempting to connect to Node %d at %s", n.id, peerID, peerAddr)
+		err := conn.Connect()
 		if err != nil {
-			logger.Warn("Node %d failed to connect to Node %d: %v", n.id, peerID, err) //
+			logger.Warn("Node %d failed to connect to Node %d: %v", n.id, peerID, err)
 			continue
 		}
-		n.AddConnection(peerID, conn)      //
-		go n.server.HandleConnection(conn) //
+		n.AddConnection(peerID, conn)
+		go n.server.HandleConnection(conn)
 	}
 	time.Sleep(10 * time.Second)
 
@@ -130,7 +130,7 @@ func (n *Node) Stop() {
 	for _, m := range n.modules {
 		m.Stop()
 	}
-	n.server.Stop() //
+	n.server.Stop()
 }
 
 // ID trả về ID của node.
@@ -151,58 +151,58 @@ func (n *Node) MasterConn() t_network.Connection {
 // Send gửi một thông điệp đến một peer cụ thể.
 func (n *Node) Send(targetID int32, command string, body []byte) error {
 	// time.Sleep(50 * time.Millisecond)
-	conn, ok := n.GetConnection(targetID) //
-	if !ok || !conn.IsConnect() {         //
-		return fmt.Errorf("node %d not connected to target %d", n.id, targetID) //
+	conn, ok := n.GetConnection(targetID)
+	if !ok || !conn.IsConnect() {
+		return fmt.Errorf("node %d not connected to target %d", n.id, targetID)
 	}
 
-	netMsg := network.NewMessage(&pb.Message{ //
-		Header: &pb.Header{Command: command}, //
-		Body:   body,                         //
+	netMsg := network.NewMessage(&pb.Message{
+		Header: &pb.Header{Command: command},
+		Body:   body,
 	})
 
-	return conn.SendMessage(netMsg) //
+	return conn.SendMessage(netMsg)
 }
 
 // Broadcast gửi một thông điệp đến tất cả các peer.
 func (n *Node) Broadcast(command string, body []byte) {
-	for peerID := range n.peers { //
-		if peerID == n.id { //
+	for peerID := range n.peers {
+		if peerID == n.id {
 			continue
 		}
-		go n.Send(peerID, command, body) //
+		go n.Send(peerID, command, body)
 	}
 }
 
 func (n *Node) onConnect(conn t_network.Connection) {
-	logger.Info("Node %d sees a new connection from %s", n.id, conn.RemoteAddrSafe()) //
+	logger.Info("Node %d sees a new connection from %s", n.id, conn.RemoteAddrSafe())
 }
 
 func (n *Node) onDisconnect(conn t_network.Connection) {
-	n.connMutex.Lock()                 //
-	defer n.connMutex.Unlock()         //
-	for id, c := range n.connections { //
-		if c == conn { //
-			logger.Warn("Node %d disconnected from Node %d", n.id, id) //
-			delete(n.connections, id)                                  //
+	n.connMutex.Lock()
+	defer n.connMutex.Unlock()
+	for id, c := range n.connections {
+		if c == conn {
+			logger.Warn("Node %d disconnected from Node %d", n.id, id)
+			delete(n.connections, id)
 			return
 		}
 	}
-	logger.Warn("Node %d disconnected from an unknown peer at %s", n.id, conn.RemoteAddrSafe()) //
+	logger.Warn("Node %d disconnected from an unknown peer at %s", n.id, conn.RemoteAddrSafe())
 }
 
 func (n *Node) AddConnection(peerID int32, conn t_network.Connection) {
-	n.connMutex.Lock()                                                             //
-	defer n.connMutex.Unlock()                                                     //
-	if existingConn, ok := n.connections[peerID]; ok && existingConn.IsConnect() { //
+	n.connMutex.Lock()
+	defer n.connMutex.Unlock()
+	if existingConn, ok := n.connections[peerID]; ok && existingConn.IsConnect() {
 		return
 	}
-	n.connections[peerID] = conn //
+	n.connections[peerID] = conn
 }
 
 func (n *Node) GetConnection(peerID int32) (t_network.Connection, bool) {
-	n.connMutex.RLock()               //
-	defer n.connMutex.RUnlock()       //
-	conn, ok := n.connections[peerID] //
-	return conn, ok                   //
+	n.connMutex.RLock()
+	defer n.connMutex.RUnlock()
+	conn, ok := n.connections[peerID]
+	return conn, ok
 }
