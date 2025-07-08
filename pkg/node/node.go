@@ -120,8 +120,9 @@ func (n *Node) Start() error {
 	// Đợi cho đến khi tất cả các kết nối đã sẵn sàng hoặc timeout (ví dụ 10 giây)
 	maxWait := 10 * time.Second
 	start := time.Now()
+	var allConnected bool
 	for {
-		allConnected := true
+		allConnected = true
 		// Kiểm tra kết nối master
 		if n.masterConn == nil || !n.masterConn.IsConnect() {
 			allConnected = false
@@ -141,6 +142,12 @@ func (n *Node) Start() error {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+
+	if allConnected {
+		logger.Info("Node %d đã kết nối thành công tới Master và tất cả các peer.", n.id)
+	} else {
+		logger.Warn("Node %d KHÔNG kết nối đủ tới Master hoặc các peer (timeout).", n.id)
 	}
 
 	for _, m := range n.modules {
