@@ -118,7 +118,7 @@ func (n *Node) Start() error {
 	}
 
 	// Đợi cho đến khi tất cả các kết nối đã sẵn sàng hoặc timeout (ví dụ 10 giây)
-	maxWait := 10 * time.Second
+	maxWait := 10000 * time.Second
 	start := time.Now()
 	var allConnected bool
 	for {
