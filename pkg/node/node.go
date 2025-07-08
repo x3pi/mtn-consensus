@@ -122,12 +122,43 @@ func (n *Node) Start() error {
 	start := time.Now()
 	var allConnected bool
 	for {
+		// Thử kết nối lại master nếu chưa kết nối
+		if n.masterConn == nil || !n.masterConn.IsConnect() {
+			masterConn := network.NewConnection(common.HexToAddress("0x0"), m_common.MASTER_CONNECTION_TYPE)
+			masterConn.SetRealConnAddr(n.config.Master.ConnectionAddress)
+			if err := masterConn.Connect(); err != nil {
+				logger.Warn("Node %d failed to connect to Master: %v", n.id, err)
+			} else {
+				n.masterConn = masterConn
+				n.AddConnection(-1, masterConn)
+				go n.server.HandleConnection(masterConn)
+				logger.Info("Node %d connected to Master", n.id)
+			}
+		}
+
+		// Thử kết nối lại các peer nếu chưa kết nối
+		for peerID, peerAddr := range n.peers {
+			if peerID == n.id {
+				continue
+			}
+			conn, ok := n.GetConnection(peerID)
+			if !ok || !conn.IsConnect() {
+				newConn := network.NewConnection(common.HexToAddress("0x0"), "rbc_message")
+				newConn.SetRealConnAddr(peerAddr)
+				if err := newConn.Connect(); err != nil {
+					logger.Warn("Node %d failed to connect to Node %d: %v", n.id, peerID, err)
+					continue
+				}
+				n.AddConnection(peerID, newConn)
+				go n.server.HandleConnection(newConn)
+			}
+		}
+
+		// Kiểm tra đã đủ kết nối chưa
 		allConnected = true
-		// Kiểm tra kết nối master
 		if n.masterConn == nil || !n.masterConn.IsConnect() {
 			allConnected = false
 		}
-		// Kiểm tra kết nối tới các peer
 		for peerID := range n.peers {
 			if peerID == n.id {
 				continue
