@@ -116,7 +116,32 @@ func (n *Node) Start() error {
 		n.AddConnection(peerID, conn)
 		go n.server.HandleConnection(conn)
 	}
-	time.Sleep(10 * time.Second)
+
+	// Đợi cho đến khi tất cả các kết nối đã sẵn sàng hoặc timeout (ví dụ 10 giây)
+	maxWait := 10 * time.Second
+	start := time.Now()
+	for {
+		allConnected := true
+		// Kiểm tra kết nối master
+		if n.masterConn == nil || !n.masterConn.IsConnect() {
+			allConnected = false
+		}
+		// Kiểm tra kết nối tới các peer
+		for peerID := range n.peers {
+			if peerID == n.id {
+				continue
+			}
+			conn, ok := n.GetConnection(peerID)
+			if !ok || !conn.IsConnect() {
+				allConnected = false
+				break
+			}
+		}
+		if allConnected || time.Since(start) > maxWait {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 
 	for _, m := range n.modules {
 		m.Start()
