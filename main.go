@@ -54,7 +54,7 @@ func NewApplication(config *config.NodeConfig) (*Application, error) {
 	agreementProcess := agreement.NewProcess(appNode, rbcProcess, bbaProcess)
 	app.agreementProcess = agreementProcess
 	// Đăng ký tất cả các module với node
-	time.Sleep(10 * time.Second)
+	time.Sleep(300 * time.Second)
 	app.node.RegisterModule(rbcProcess)
 	app.node.RegisterModule(bbaProcess)
 	app.node.RegisterModule(agreementProcess)
