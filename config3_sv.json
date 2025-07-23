@@ -1,11 +1,11 @@
 {
     "id": 3,
-    "ip": "127.0.0.1",
+    "ip": "0.0.0.0",
     "key_pair": "0000000000000000000000000000000000000000000000000000000000000003",
     "node_type": "validator",
-    "connection_address": "127.0.0.1:5003",
+    "connection_address": "0.0.0.0:5003",
     "master": {
-        "connection_address": "127.0.0.1:4301",
+        "connection_address": "0.0.0.0:4301",
         "public_key": "a03e3573aefeb30e5525eacbb773fd813e6d624896e5cc396654180ac9a0ced97f3564c869cc7838161bd184438715e6"
     },
     "version": "1.0.0",

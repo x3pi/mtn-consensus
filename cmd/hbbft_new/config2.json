@@ -1,11 +1,11 @@
 {
     "id": 2,
-    "ip": "127.0.0.1",
+    "ip": "0.0.0.0",
     "key_pair": "0000000000000000000000000000000000000000000000000000000000000002",
     "node_type": "validator",
-    "connection_address": "127.0.0.1:5002",
+    "connection_address": "0.0.0.0:5002",
     "master": {
-        "connection_address": "127.0.0.1:4201",
+        "connection_address": "0.0.0.0:4201",
         "public_key": "b623906071ae42ebac66ff8512d53510da7c5e5c271e7ef850dc7c1b31ca5365d21afab0b2f46546090726010a1f9f2e"
     },
     "version": "1.0.0",
@@ -13,27 +13,27 @@
     "peers": [
         {
             "id": 1,
-            "connection_address": "127.0.0.1:5001",
+            "connection_address": "0.0.0.0:5001",
             "public_key": "97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb"
         },
         {
             "id": 2,
-            "connection_address": "127.0.0.1:5002",
+            "connection_address": "0.0.0.0:5002",
             "public_key": "89ece308f9d1f0131765212deca99697b112d61f9be9a5f1f3780a51335b3ff981747a0b2ca2179b96d2c0c9024e5224"
         },
         {
             "id": 3,
-            "connection_address": "127.0.0.1:5003",
+            "connection_address": "0.0.0.0:5003",
             "public_key": "b0e7791fb972fe014159aa33a98622da3cdc98ff707965e536d8636b5fcc5ac7a91a8c46e59a00dca575af0f18fb13dc"
         },
         {
             "id": 4,
-            "connection_address": "127.0.0.1:5004",
+            "connection_address": "0.0.0.0:5004",
             "public_key": "ac9b60d5afcbd5663a8a44b7c5a02f19e9a77ab0a35bd65809bb5c67ec582c897feb04decc694b13e08587f3ff9b5b60"
         },
         {
             "id": 5,
-            "connection_address": "127.0.0.1:5005",
+            "connection_address": "0.0.0.0:5005",
             "public_key": "a572cbea904d67468808c8eb50a9450c9721db309128012543902d0ac358a62ae28f75bb8f1c7c42c39a8c5529bf0f4e"
         }
     ],
