@@ -130,7 +130,7 @@ func (p *Process) executeRound(round uint64) {
 	decision, err := p.bbaProcess.StartAgreementAndWait(sessionID, proposal, 600*time.Second)
 	if err != nil {
 		logger.Error("[AGREEMENT] Round %d: BBA failed: %v", round, err)
-		panic("AGREEMENT")
+		// panic("AGREEMENT")
 	}
 
 	// Nếu BBA quyết định 1 (true)
