@@ -244,6 +244,96 @@ for N in $(seq 0 $((NODE_COUNT - 1))); do
         "master_address IP → ${NODE_IP}"
 done
 
+# ─── Update TPS Blast Scripts ────────────────────────────────────────────────
+echo -e "\n${BOLD}═══ TPS Blast Scripts (run_multinode_load.sh, run_node0_only_load.sh) ═══${NC}"
+
+TPS_DIR="$GO_DIR/cmd/tool/tps_blast"
+
+# Go Master connection ports per node (same as config)
+GO_CONN_PORTS=(4201 6201 6211 6221 6241)
+# Go RPC ports per node
+GO_RPC_PORTS=(8747 10747 10749 10750 10748)
+
+# Build NODES array string: "IP0:4201" "IP1:6201" "IP2:6211" "IP3:6221"
+# Only use first 4 nodes (validators, exclude node4 SyncOnly)
+NODES_STR=""
+for P in 0 1 2 3; do
+    if [ -n "$NODES_STR" ]; then
+        NODES_STR="$NODES_STR "
+    fi
+    NODES_STR="${NODES_STR}\"${IPS[$P]}:${GO_CONN_PORTS[$P]}\""
+done
+
+# run_multinode_load.sh
+MULTI_SH="$TPS_DIR/run_multinode_load.sh"
+if [ -f "$MULTI_SH" ]; then
+    echo -e "\n  ${BOLD}📄 run_multinode_load.sh${NC}"
+
+    # NODES array (line 24)
+    safe_sed "$MULTI_SH" \
+        "s|^NODES=(.*)|NODES=(${NODES_STR})|" \
+        "NODES → (${NODES_STR})"
+
+    # -rpc parameter (use node1's RPC port)
+    safe_sed "$MULTI_SH" \
+        "s|-rpc \"[0-9.]*:[0-9]*\"|-rpc \"${IPS[1]}:${GO_RPC_PORTS[1]}\"|" \
+        "-rpc → ${IPS[1]}:${GO_RPC_PORTS[1]}"
+
+    # block_hash_checker nodes (master=node1, node4=node4)
+    safe_sed "$MULTI_SH" \
+        "s|\"master=http://[0-9.]*:[0-9]*,node4=http://[0-9.]*:[0-9]*\"|\"master=http://${IPS[1]}:${GO_RPC_PORTS[1]},node4=http://${IPS[4]}:${GO_RPC_PORTS[4]}\"|" \
+        "hash_checker → master=${IPS[1]}:${GO_RPC_PORTS[1]}, node4=${IPS[4]}:${GO_RPC_PORTS[4]}"
+fi
+
+# run_node0_only_load.sh
+NODE0_SH="$TPS_DIR/run_node0_only_load.sh"
+if [ -f "$NODE0_SH" ]; then
+    echo -e "\n  ${BOLD}📄 run_node0_only_load.sh${NC}"
+
+    safe_sed "$NODE0_SH" \
+        "s|^NODES=(.*)|NODES=(${NODES_STR})|" \
+        "NODES → (${NODES_STR})"
+
+    # -rpc parameter (use node0's RPC port for this script)
+    safe_sed "$NODE0_SH" \
+        "s|-rpc \"[0-9.]*:[0-9]*\"|-rpc \"${IPS[0]}:${GO_RPC_PORTS[0]}\"|" \
+        "-rpc → ${IPS[0]}:${GO_RPC_PORTS[0]}"
+fi
+
+# ─── Update Genesis JSON ─────────────────────────────────────────────────────
+echo -e "\n${BOLD}═══ Genesis (genesis.json) ═══${NC}"
+
+GENESIS="$GO_CONFIG_DIR/genesis.json"
+if [ -f "$GENESIS" ]; then
+    echo -e "\n  ${BOLD}📄 genesis.json${NC}"
+
+    # Validator port mapping: primary, worker, p2p(tcp)
+    GENESIS_PRIMARY_PORTS=(4000 4100 4200 4300)
+    GENESIS_WORKER_PORTS=(4012 4112 4212 4312)
+    GENESIS_P2P_PORTS=(9000 9011 9002 9003)
+
+    for V in 0 1 2 3; do
+        V_IP="${IPS[$V]}"
+
+        # primary_address: "IP:PORT"
+        safe_sed "$GENESIS" \
+            "s|\"primary_address\": \"[0-9.]*:${GENESIS_PRIMARY_PORTS[$V]}\"|\"primary_address\": \"${V_IP}:${GENESIS_PRIMARY_PORTS[$V]}\"|" \
+            "validator $V primary_address → ${V_IP}:${GENESIS_PRIMARY_PORTS[$V]}"
+
+        # worker_address: "IP:PORT"
+        safe_sed "$GENESIS" \
+            "s|\"worker_address\": \"[0-9.]*:${GENESIS_WORKER_PORTS[$V]}\"|\"worker_address\": \"${V_IP}:${GENESIS_WORKER_PORTS[$V]}\"|" \
+            "validator $V worker_address → ${V_IP}:${GENESIS_WORKER_PORTS[$V]}"
+
+        # p2p_address: "/ip4/IP/tcp/PORT"
+        safe_sed "$GENESIS" \
+            "s|\"p2p_address\": \"/ip4/[0-9.]*/tcp/${GENESIS_P2P_PORTS[$V]}\"|\"p2p_address\": \"/ip4/${V_IP}/tcp/${GENESIS_P2P_PORTS[$V]}\"|" \
+            "validator $V p2p_address → /ip4/${V_IP}/tcp/${GENESIS_P2P_PORTS[$V]}"
+    done
+else
+    echo -e "  ${YELLOW}⚠️  genesis.json không tồn tại${NC}"
+fi
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════════${NC}"
@@ -284,14 +374,14 @@ if ! $DRY_RUN; then
     for N in $(seq 0 $((NODE_COUNT - 1))); do
         MASTER_JSON="$GO_CONFIG_DIR/config-master-node${N}.json"
         if [ -f "$MASTER_JSON" ]; then
-            ADDR=$(grep 'meta_node_rpc_address' "$MASTER_JSON" | sed 's/.*: "//;s/".*//' | head -1)
+            ADDR=$(grep 'meta_node_rpc_address' "$MASTER_JSON" | sed 's/.*: "//;s/".*//' | head -1 || true)
             if [ -n "$ADDR" ]; then
                 echo -e "    Master $N: ${GREEN}${ADDR}${NC}"
             fi
         fi
         SUB_JSON="$GO_CONFIG_DIR/config-sub-node${N}.json"
         if [ -f "$SUB_JSON" ]; then
-            ADDR=$(grep 'meta_node_rpc_address' "$SUB_JSON" | sed 's/.*: "//;s/".*//' | head -1)
+            ADDR=$(grep 'meta_node_rpc_address' "$SUB_JSON" | sed 's/.*: "//;s/".*//' | head -1 || true)
             if [ -n "$ADDR" ]; then
                 echo -e "    Sub $N:    ${GREEN}${ADDR}${NC}"
             fi
