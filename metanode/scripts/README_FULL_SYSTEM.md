@@ -29,7 +29,7 @@ Mỗi lần chạy sẽ:
 
 **Cách sử dụng:**
 ```bash
-cd /home/abc/chain-new/mtn-consensus/metanode
+cd /home/abc/chain-n/mtn-consensus/metanode
 ./scripts/run_full_system.sh
 ```
 
@@ -72,7 +72,7 @@ cd /home/abc/chain-new/mtn-consensus/metanode
 
 **Cách sử dụng:**
 ```bash
-cd /home/abc/chain-new/mtn-consensus/metanode
+cd /home/abc/chain-n/mtn-consensus/metanode
 ./scripts/stop_full_system.sh
 ```
 

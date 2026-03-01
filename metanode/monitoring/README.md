@@ -45,13 +45,13 @@ Script sẽ tự động tạo virtual environment và install Flask + psutil:
 ./start_monitor.sh --development --port 3000 --path /custom/metanode
 
 # Tạo alias để chạy từ bất kỳ đâu
-echo 'alias mysticeti-monitor="/path/to/monitoring/start_monitor.sh"' >> ~/.bashrc
+echo 'alias mtn-monitor="/path/to/monitoring/start_monitor.sh"' >> ~/.bashrc
 source ~/.bashrc
-mysticeti-monitor --help
+mtn-monitor --help
 
 # Hoặc thêm vào PATH
-sudo ln -s /path/to/monitoring/start_monitor.sh /usr/local/bin/mysticeti-monitor
-mysticeti-monitor --production
+sudo ln -s /path/to/monitoring/start_monitor.sh /usr/local/bin/mtn-monitor
+mtn-monitor --production
 ```
 
 **Production Mode:**
@@ -330,7 +330,7 @@ Production mode sử dụng các settings tối ưu:
 - **Keep alive**: 10 seconds
 
 ### Systemd Service (Linux)
-Tạo file `/etc/systemd/system/mysticeti-monitor.service`:
+Tạo file `/etc/systemd/system/mtn-monitor.service`:
 ```ini
 [Unit]
 Description=mtn-consensus Node Monitor
@@ -338,7 +338,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=mysticeti
+User=mtn
 WorkingDirectory=/home/abc/chain-n/mtn-consensus/metanode/monitoring
 Environment=PATH=/home/abc/chain-n/mtn-consensus/metanode/monitoring/venv/bin
 ExecStart=/home/abc/chain-n/mtn-consensus/metanode/monitoring/start_monitor.sh
@@ -352,9 +352,9 @@ WantedBy=multi-user.target
 Enable và start service:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable mysticeti-monitor
-sudo systemctl start mysticeti-monitor
-sudo systemctl status mysticeti-monitor
+sudo systemctl enable mtn-monitor
+sudo systemctl start mtn-monitor
+sudo systemctl status mtn-monitor
 ```
 
 ## 🔒 Security & Best Practices

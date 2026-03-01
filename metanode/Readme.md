@@ -152,7 +152,7 @@ Xem chi tiết trong [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 ### 1. Build project
 
 ```bash
-cd /home/abc/chain-new/mtn-consensus/metanode
+cd /home/abc/chain-n/mtn-consensus/metanode
 cargo build --release --bin metanode
 ```
 
