@@ -34,7 +34,7 @@ gradual_shutdown_consensus_cert_drain_secs = 1
 gradual_shutdown_final_drain_secs = 1
 epoch_monitor_poll_interval_secs = 5
 peer_rpc_port = 19000
-peer_rpc_addresses = ["192.168.1.232:19001", "192.168.1.232:19002", "192.168.1.232:19003"]
+peer_rpc_addresses = ["127.0.0.1:19001", "127.0.0.1:19002", "127.0.0.1:19003", "127.0.0.1:19004"]
 
 # Number of epochs to keep for cross-epoch sync support (0 = archive mode)
 epochs_to_keep = 5
