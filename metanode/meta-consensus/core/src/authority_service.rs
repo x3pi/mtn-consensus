@@ -20,7 +20,7 @@ use rand::seq::SliceRandom as _;
 use tap::TapFallible;
 use tokio::sync::broadcast;
 use tokio_util::sync::ReusableBoxFuture;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, info, warn};
 
 use crate::{
     block::{BlockAPI as _, ExtendedBlock, SignedBlock, VerifiedBlock, GENESIS_ROUND},
@@ -649,9 +649,12 @@ impl<C: CoreThreadDispatcher> NetworkService for AuthorityService<C> {
                                 commit_range
                             );
                             if let Some(c) = legacy_commits.last() {
-                                if let Ok(votes) = legacy_store.read_commit_votes(c.index(), c.digest()) {
+                                if let Ok(votes) =
+                                    legacy_store.read_commit_votes(c.index(), c.digest())
+                                {
                                     if let Ok(blocks) = legacy_store.read_blocks(&votes) {
-                                        legacy_certifier_blocks = blocks.into_iter().flatten().collect();
+                                        legacy_certifier_blocks =
+                                            blocks.into_iter().flatten().collect();
                                     }
                                 }
                             }
