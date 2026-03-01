@@ -38,7 +38,7 @@ FILES=()
 [ -f "$NODE_DIR/rust.log" ] && FILES+=("$NODE_DIR/rust.log")
 
 # Go master — find latest epoch App.log, fallback to stdout
-GO_MASTER_LOG=$(ls -td "$NODE_DIR"/go-master/epoch_*/App.log 2>/dev/null | head -1)
+GO_MASTER_LOG=$(ls -td "$NODE_DIR"/go-master/epoch_*/App.log 2>/dev/null | head -1 || true)
 if [ -n "$GO_MASTER_LOG" ]; then
     FILES+=("$GO_MASTER_LOG")
 elif [ -f "$NODE_DIR/go-master-stdout.log" ]; then
@@ -46,7 +46,7 @@ elif [ -f "$NODE_DIR/go-master-stdout.log" ]; then
 fi
 
 # Go sub — find latest epoch App.log, fallback to stdout
-GO_SUB_LOG=$(ls -td "$NODE_DIR"/go-sub/epoch_*/App.log 2>/dev/null | head -1)
+GO_SUB_LOG=$(ls -td "$NODE_DIR"/go-sub/epoch_*/App.log 2>/dev/null | head -1 || true)
 if [ -n "$GO_SUB_LOG" ]; then
     FILES+=("$GO_SUB_LOG")
 elif [ -f "$NODE_DIR/go-sub-stdout.log" ]; then
