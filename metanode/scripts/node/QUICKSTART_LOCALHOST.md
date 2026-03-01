@@ -30,18 +30,18 @@ cd mtn-consensus/metanode/scripts/node
 ./update_ips.sh 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1
 ```
 
-## Bước 4 — Chạy tất cả nodes
+## Bước 4 — Chạy tất cả validators
 
 ```bash
-# Fresh start: tự động build Rust + Go, xóa data cũ, chạy 5 nodes
-./run_all.sh
+# Fresh start: tự động build Rust + Go, xóa data cũ, chạy 4 validator nodes
+./run_all_validator.sh
 ```
 
 Chờ script hoàn tất (~1-2 phút). Kiểm tra:
 
 ```bash
 tmux ls
-# Mong đợi 15 sessions: go-master-{0..4}, go-sub-{0..4}, metanode-{0..4}
+# Mong đợi 12 sessions: go-master-{0..3}, go-sub-{0..3}, metanode-{0..3}
 ```
 
 ## Bước 5 — Test TPS
@@ -92,7 +92,7 @@ cd mtn-consensus/metanode/scripts/node
 ./update_ips.sh 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1
 
 # 3. Chạy
-./run_all.sh
+./run_all_validator.sh
 
 # 4. Test TPS
 cd mtn-simple-2025/cmd/tool/tps_blast
