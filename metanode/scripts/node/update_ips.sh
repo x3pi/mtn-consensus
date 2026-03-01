@@ -330,6 +330,12 @@ if [ -f "$GENESIS" ]; then
             "s|\"p2p_address\": \"/ip4/[0-9.]*/tcp/${GENESIS_P2P_PORTS[$V]}\"|\"p2p_address\": \"/ip4/${V_IP}/tcp/${GENESIS_P2P_PORTS[$V]}\"|" \
             "validator $V p2p_address → /ip4/${V_IP}/tcp/${GENESIS_P2P_PORTS[$V]}"
     done
+
+    # epoch_timestamp_ms: set to current time
+    CURRENT_TS_MS=$(date +%s%3N)
+    safe_sed "$GENESIS" \
+        "s|\"epoch_timestamp_ms\": [0-9]*|\"epoch_timestamp_ms\": ${CURRENT_TS_MS}|" \
+        "epoch_timestamp_ms → ${CURRENT_TS_MS} ($(date '+%Y-%m-%d %H:%M:%S'))"
 else
     echo -e "  ${YELLOW}⚠️  genesis.json không tồn tại${NC}"
 fi
