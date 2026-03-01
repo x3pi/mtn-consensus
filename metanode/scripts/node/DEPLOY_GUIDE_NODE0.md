@@ -3,14 +3,14 @@
 ## 1. Cấu hình Firewall (Chỉ cần làm một lần)
 Mở các port cần thiết để Node 0 và các node khác có thể giao tiếp qua mạng LAN:
 ```bash
-cd Mysticeti/metanode/scripts/node
+cd mtn-consensus/metanode/scripts/node
 sudo ./setup_firewall.sh
 ```
 
 ## 2. Dừng toàn bộ hệ thống
 Để đảm bảo trạng thái sạch, hãy dừng tất cả các tiến trình đang chạy:
 ```bash
-cd Mysticeti/metanode/scripts/node
+cd mtn-consensus/metanode/scripts/node
 ./stop_all.sh
 ```
 
@@ -38,7 +38,7 @@ Các session mong đợi:
 - **Node 1-3**: `go-master-1..3`, `go-sub-1..3`, `metanode-1..3`
 
 ## 5. Log & Debug
-Log nằm tại: `Mysticeti/metanode/logs/node_N/`
+Log nằm tại: `mtn-consensus/metanode/logs/node_N/`
 - Rust log: `tail -f logs/node_0/rust.log`
 - Go log: `tail -f logs/node_0/go-master-stdout.log`
 

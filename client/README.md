@@ -5,7 +5,7 @@ Client để gửi transactions lên MetaNode Consensus Engine qua RPC endpoint.
 ## Cài đặt
 
 ```bash
-cd /home/abc/chain-new/Mysticeti/client
+cd /home/abc/chain-new/mtn-consensus/client
 cargo build --release
 ```
 

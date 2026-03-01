@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mysticeti Node Monitor Backend
+mtn-consensus Node Monitor Backend
 Collects real-time data from node logs and metrics endpoints
 """
 
@@ -441,7 +441,7 @@ def main():
     script_dir = Path(__file__).parent.parent
     metanode_path = script_dir
 
-    print("🔍 Mysticeti Node Monitor")
+    print("🔍 mtn-consensus Node Monitor")
     print(f"📁 Monitoring path: {metanode_path}")
 
     # Create monitor

@@ -19,7 +19,7 @@ pub trait BlockVerifier: Send + Sync + 'static {
     /// outcome for the same block, so any verification error should be due to equivocation.
     /// Returns the verified block.
     ///
-    /// When Mysticeti fastpath is enabled, it also votes on the transactions in verified blocks,
+    /// When mtn-consensus fastpath is enabled, it also votes on the transactions in verified blocks,
     /// and can return a non-empty list of rejected transaction indices. Different honest
     /// validators may vote differently on transactions.
     ///

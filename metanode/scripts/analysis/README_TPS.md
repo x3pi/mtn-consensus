@@ -131,7 +131,7 @@ TPS = (Committed Blocks/Second) × (Estimated TX/Block)
 curl http://localhost:9103/metrics
 
 # Kiểm tra config
-grep "metrics_port" ~/chain-n/Mysticeti/metanode/config/node_*.toml
+grep "metrics_port" ~/chain-n/mtn-consensus/metanode/config/node_*.toml
 ```
 
 ### TPS luôn = 0:

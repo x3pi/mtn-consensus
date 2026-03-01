@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script to open necessary ports for Mysticeti Metanode & Simple Chain communication
+# Script to open necessary ports for mtn-consensus Metanode & Simple Chain communication
 # Usage: sudo ./setup_firewall.sh
 
 if [[ $EUID -ne 0 ]]; then
@@ -7,7 +7,7 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-echo "🔧 Configuring firewall rules for Mysticeti cluster..."
+echo "🔧 Configuring firewall rules for mtn-consensus cluster..."
 
 # 1. Rust Metanode Ports
 echo "  - Opening Rust P2P & Peer RPC (9000-9004, 19000-19004)..."

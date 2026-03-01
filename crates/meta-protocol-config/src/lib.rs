@@ -233,29 +233,29 @@ const MAX_PROTOCOL_VERSION: u64 = 105;
 //             Introduce an explicit parameter for the tick limit per package (previously this was
 //             represented by the parameter for the tick limit per module).
 // Version 44: Enable consensus fork detection on mainnet.
-//             Switch between Narwhal and Mysticeti consensus in tests, devnet and testnet.
-// Version 45: Use tonic networking for Mysticeti consensus.
+//             Switch between Narwhal and mtn-consensus consensus in tests, devnet and testnet.
+// Version 45: Use tonic networking for mtn-consensus consensus.
 //             Set min Move binary format version to 6.
 //             Enable transactions to be signed with zkLogin inside multisig signature.
 //             Add native bridge.
 //             Enable native bridge in devnet
-//             Enable Leader Scoring & Schedule Change for Mysticeti consensus on testnet.
+//             Enable Leader Scoring & Schedule Change for mtn-consensus consensus on testnet.
 // Version 46: Enable native bridge in testnet
 //             Enable resharing at the same initial shared version.
 // Version 47: Deepbook changes (framework update)
-// Version 48: Use tonic networking for Mysticeti.
+// Version 48: Use tonic networking for mtn-consensus.
 //             Resolve Move abort locations to the package id instead of the runtime module ID.
 //             Enable random beacon in testnet.
 //             Use new VM when verifying framework packages.
 // Version 49: Enable Move enums on devnet.
 //             Enable VDF in devnet
 //             Enable consensus commit prologue V3 in devnet.
-//             Run Mysticeti consensus by default.
+//             Run mtn-consensus consensus by default.
 // Version 50: Add update_node_url to native bridge,
 //             New Move stdlib integer modules
 //             Enable checkpoint batching in testnet.
 //             Prepose consensus commit prologue in checkpoints.
-//             Set number of leaders per round for Mysticeti commits.
+//             Set number of leaders per round for mtn-consensus commits.
 // Version 51: Switch to DKG V1.
 //             Enable deny list v2 on devnet.
 // Version 52: Emit `CommitteeMemberUrlUpdateEvent` when updating bridge node url.
@@ -264,8 +264,8 @@ const MAX_PROTOCOL_VERSION: u64 = 105;
 //             Enable soft bundle in devnet and testnet.
 //             Core macro visibility in sui core framework.
 //             Enable checkpoint batching in mainnet.
-//             Enable Mysticeti on mainnet.
-//             Enable Leader Scoring & Schedule Change for Mysticeti consensus on mainnet.
+//             Enable mtn-consensus on mainnet.
+//             Enable Leader Scoring & Schedule Change for mtn-consensus consensus on mainnet.
 //             Turn on count based shared object congestion control in devnet.
 //             Enable consensus commit prologue V3 in testnet.
 //             Enable enums on testnet.
@@ -290,7 +290,7 @@ const MAX_PROTOCOL_VERSION: u64 = 105;
 //             Enable configuration of maximum number of type nodes in a type layout.
 // Version 61: Switch to distributed vote scoring in consensus in testnet
 //             Further reduce minimum number of random beacon shares.
-//             Add feature flag for Mysticeti fastpath.
+//             Add feature flag for mtn-consensus fastpath.
 // Version 62: Makes the event's sending module package upgrade-aware.
 // Version 63: Enable gas based congestion control in consensus commit.
 // Version 64: Revert congestion control change.
@@ -689,7 +689,7 @@ struct FeatureFlags {
     #[serde(skip_serializing_if = "Option::is_none")]
     zklogin_max_epoch_upper_bound_delta: Option<u64>,
 
-    // Controls leader scoring & schedule change in Mysticeti consensus.
+    // Controls leader scoring & schedule change in mtn-consensus consensus.
     #[serde(skip_serializing_if = "is_false")]
     mysticeti_leader_scoring_and_schedule: bool,
 
@@ -701,7 +701,7 @@ struct FeatureFlags {
     #[serde(skip_serializing_if = "is_false")]
     resolve_abort_locations_to_package_id: bool,
 
-    // Enables the use of the Mysticeti committed sub dag digest to the `ConsensusCommitInfo` in checkpoints.
+    // Enables the use of the mtn-consensus committed sub dag digest to the `ConsensusCommitInfo` in checkpoints.
     // When disabled the default digest is used instead. It's important to have this guarded behind
     // a flag as it will lead to checkpoint forks.
     #[serde(skip_serializing_if = "is_false")]
@@ -734,7 +734,7 @@ struct FeatureFlags {
     #[serde(skip_serializing_if = "is_false")]
     prepend_prologue_tx_in_consensus_commit_in_checkpoints: bool,
 
-    // Set number of leaders per round for Mysticeti commits.
+    // Set number of leaders per round for mtn-consensus commits.
     #[serde(skip_serializing_if = "Option::is_none")]
     mysticeti_num_leaders_per_round: Option<usize>,
 
@@ -774,7 +774,7 @@ struct FeatureFlags {
     #[serde(skip_serializing_if = "is_false")]
     disallow_self_identifier: bool,
 
-    // Enables Mysticeti fastpath.
+    // Enables mtn-consensus fastpath.
     #[serde(skip_serializing_if = "is_false")]
     mysticeti_fastpath: bool,
 
@@ -1112,7 +1112,7 @@ pub enum ConsensusChoice {
     #[default]
     Narwhal,
     SwapEachEpoch,
-    Mysticeti,
+    mtn-consensus,
 }
 
 impl ConsensusChoice {
@@ -2546,7 +2546,7 @@ impl ProtocolConfig {
         let address_aliases = self.feature_flags.address_aliases;
         assert!(
             !address_aliases || self.mysticeti_fastpath(),
-            "Address aliases requires Mysticeti fastpath to be enabled"
+            "Address aliases requires mtn-consensus fastpath to be enabled"
         );
         if address_aliases {
             // TODO: when flag for disabling CertifiedTransaction is added, add assertion for it here.
@@ -3536,7 +3536,7 @@ impl ProtocolConfig {
                 44 => {
                     // Enable consensus digest in consensus commit prologue on all networks..
                     cfg.feature_flags.include_consensus_digest_in_prologue = true;
-                    // Switch between Narwhal and Mysticeti per epoch in tests, devnet and testnet.
+                    // Switch between Narwhal and mtn-consensus per epoch in tests, devnet and testnet.
                     if chain != Chain::Mainnet {
                         cfg.feature_flags.consensus_choice = ConsensusChoice::SwapEachEpoch;
                     }
@@ -3572,7 +3572,7 @@ impl ProtocolConfig {
                 }
                 47 => {}
                 48 => {
-                    // Use tonic networking for Mysticeti.
+                    // Use tonic networking for mtn-consensus.
                     cfg.feature_flags.consensus_network = ConsensusNetwork::Tonic;
 
                     // Enable resolving abort code IDs to package ID instead of runtime module ID
@@ -3609,9 +3609,9 @@ impl ProtocolConfig {
                             .record_consensus_determined_version_assignments_in_prologue = true;
                     }
 
-                    // Run Mysticeti consensus in testnet.
+                    // Run mtn-consensus consensus in testnet.
                     if chain != Chain::Mainnet {
-                        cfg.feature_flags.consensus_choice = ConsensusChoice::Mysticeti;
+                        cfg.feature_flags.consensus_choice = ConsensusChoice::mtn-consensus;
                     }
 
                     // Run Move verification on framework upgrades in its own VM
@@ -3658,8 +3658,8 @@ impl ProtocolConfig {
                             PerObjectCongestionControlMode::TotalTxCount;
                     }
 
-                    // Enable Mysticeti on mainnet.
-                    cfg.feature_flags.consensus_choice = ConsensusChoice::Mysticeti;
+                    // Enable mtn-consensus on mainnet.
+                    cfg.feature_flags.consensus_choice = ConsensusChoice::mtn-consensus;
 
                     // Enable leader scoring & schedule change on mainnet for mysticeti.
                     cfg.feature_flags.mysticeti_leader_scoring_and_schedule = true;
@@ -3803,7 +3803,7 @@ impl ProtocolConfig {
                     cfg.random_beacon_reduction_lower_bound = Some(700);
 
                     if chain != Chain::Mainnet && chain != Chain::Testnet {
-                        // Enable Mysticeti fastpath for devnet
+                        // Enable mtn-consensus fastpath for devnet
                         cfg.feature_flags.mysticeti_fastpath = true;
                     }
                 }
@@ -4314,7 +4314,7 @@ impl ProtocolConfig {
                     cfg.feature_flags.passkey_auth = true;
                     cfg.feature_flags.check_for_init_during_upgrade = true;
 
-                    // Enable Mysticeti fastpath handlers on testnet.
+                    // Enable mtn-consensus fastpath handlers on testnet.
                     if chain != Chain::Mainnet {
                         cfg.feature_flags.mysticeti_fastpath = true;
                     }
@@ -4367,7 +4367,7 @@ impl ProtocolConfig {
                     cfg.feature_flags.cancel_for_failed_dkg_early = true;
                     cfg.feature_flags.enable_coin_registry = true;
 
-                    // Enable Mysticeti fastpath handlers on mainnet.
+                    // Enable mtn-consensus fastpath handlers on mainnet.
                     cfg.feature_flags.mysticeti_fastpath = true;
                 }
                 97 => {

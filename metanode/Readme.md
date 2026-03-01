@@ -1,6 +1,6 @@
 # MetaNode Consensus Engine
 
-Hệ thống consensus đa node dựa trên **Sui Mysticeti Consensus Protocol**, tích hợp với Go executor để xử lý transactions và quản lý state.
+Hệ thống consensus đa node dựa trên **Sui mtn-consensus Consensus Protocol**, tích hợp với Go executor để xử lý transactions và quản lý state.
 
 ## 📋 Mục lục
 
@@ -18,7 +18,7 @@ Hệ thống consensus đa node dựa trên **Sui Mysticeti Consensus Protocol**
 
 ## 🎯 Tổng quan
 
-**MetaNode Consensus Engine** là một wrapper production-ready trên Sui Mysticeti consensus protocol, tích hợp với Go executor để:
+**MetaNode Consensus Engine** là một wrapper production-ready trên Sui mtn-consensus consensus protocol, tích hợp với Go executor để:
 
 - ✅ **Multi-node Consensus**: Chạy nhiều consensus nodes với cấu hình dễ dàng
 - ✅ **Go Integration**: Tất cả nodes lấy committee từ Go state qua Unix Domain Socket
@@ -31,7 +31,7 @@ Hệ thống consensus đa node dựa trên **Sui Mysticeti Consensus Protocol**
 ## ✨ Tính năng chính
 
 ### Consensus Engine
-- **Mysticeti Protocol**: DAG-based consensus với leader election
+- **mtn-consensus Protocol**: DAG-based consensus với leader election
 - **High Throughput**: Xử lý hàng trăm commits/second
 - **Low Latency**: End-to-end transaction finalization ~300-600ms
 - **Ordered Execution**: Đảm bảo commits được xử lý theo thứ tự
@@ -108,7 +108,7 @@ Hệ thống consensus đa node dựa trên **Sui Mysticeti Consensus Protocol**
 │         │                                                      │
 │         ▼                                                      │
 │  ┌──────────────────────────────────────┐                      │
-│  │    Sui Mysticeti Consensus Core      │                      │
+│  │    Sui mtn-consensus Consensus Core      │                      │
 │  │  - DAG-based consensus               │                      │
 │  │  - Transaction ordering              │                      │
 │  │  - Byzantine fault tolerance         │                      │
@@ -152,7 +152,7 @@ Xem chi tiết trong [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 ### 1. Build project
 
 ```bash
-cd /home/abc/chain-new/Mysticeti/metanode
+cd /home/abc/chain-new/mtn-consensus/metanode
 cargo build --release --bin metanode
 ```
 
@@ -396,7 +396,7 @@ Xem thêm tài liệu chi tiết trong thư mục [docs/](./docs/):
 ### Tài liệu Tham khảo
 
 - [Sui Documentation](https://docs.sui.io/)
-- [Mysticeti Consensus Paper](https://arxiv.org/pdf/2310.14821)
+- [mtn-consensus Consensus Paper](https://arxiv.org/pdf/2310.14821)
 - [Sui GitHub Repository](https://github.com/MystenLabs/sui)
 
 ---
@@ -407,4 +407,4 @@ Apache 2.0 - Giống như Sui
 
 ---
 
-**MetaNode Consensus Engine** - Production-ready consensus engine dựa trên Sui Mysticeti Protocol với Go executor integration.
+**MetaNode Consensus Engine** - Production-ready consensus engine dựa trên Sui mtn-consensus Protocol với Go executor integration.

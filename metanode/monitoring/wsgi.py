@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WSGI Application for Mysticeti Node Monitor
+WSGI Application for mtn-consensus Node Monitor
 Used by Gunicorn in production mode
 """
 

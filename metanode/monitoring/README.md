@@ -1,6 +1,6 @@
-# Mysticeti Node Monitoring System
+# mtn-consensus Node Monitoring System
 
-Hệ thống monitoring thời gian thực cho các node blockchain Mysticeti.
+Hệ thống monitoring thời gian thực cho các node blockchain mtn-consensus.
 
 ## 📁 Cấu trúc
 
@@ -80,7 +80,7 @@ pip install flask psutil
 ### 2. Chạy monitoring server
 
 ```bash
-cd /home/abc/chain-n/Mysticeti/metanode/monitoring
+cd /home/abc/chain-n/mtn-consensus/metanode/monitoring
 chmod +x start_monitor.sh
 ./start_monitor.sh
 ```
@@ -88,7 +88,7 @@ chmod +x start_monitor.sh
 Hoặc chạy trực tiếp:
 
 ```bash
-cd /home/abc/chain-n/Mysticeti/metanode
+cd /home/abc/chain-n/mtn-consensus/metanode
 python3 monitoring/monitor.py
 ```
 
@@ -292,10 +292,10 @@ python -c "import flask, psutil; print('OK')"
 ### No data displayed
 ```bash
 # Check log files exist
-ls -la /home/abc/chain-n/Mysticeti/metanode/logs/latest/
+ls -la /home/abc/chain-n/mtn-consensus/metanode/logs/latest/
 
 # Check file permissions
-ls -la /home/abc/chain-n/Mysticeti/metanode/logs/latest/node_0.log
+ls -la /home/abc/chain-n/mtn-consensus/metanode/logs/latest/node_0.log
 ```
 
 ### High CPU usage
@@ -317,7 +317,7 @@ let refreshInterval = 5000; // 5 seconds
 ### Environment Variables
 ```bash
 export PORT=8080                       # Server port (default: 8080)
-export MYSTICETI_METANODE_DIR=/path/to/metanode  # Path to metanode directory
+export MTN_CONSENSUS_METANODE_DIR=/path/to/metanode  # Path to metanode directory
 export MONITORING_MODE=production       # production/development (legacy)
 ```
 
@@ -333,15 +333,15 @@ Production mode sử dụng các settings tối ưu:
 Tạo file `/etc/systemd/system/mysticeti-monitor.service`:
 ```ini
 [Unit]
-Description=Mysticeti Node Monitor
+Description=mtn-consensus Node Monitor
 After=network.target
 
 [Service]
 Type=simple
 User=mysticeti
-WorkingDirectory=/home/abc/chain-n/Mysticeti/metanode/monitoring
-Environment=PATH=/home/abc/chain-n/Mysticeti/metanode/monitoring/venv/bin
-ExecStart=/home/abc/chain-n/Mysticeti/metanode/monitoring/start_monitor.sh
+WorkingDirectory=/home/abc/chain-n/mtn-consensus/metanode/monitoring
+Environment=PATH=/home/abc/chain-n/mtn-consensus/metanode/monitoring/venv/bin
+ExecStart=/home/abc/chain-n/mtn-consensus/metanode/monitoring/start_monitor.sh
 Restart=always
 RestartSec=5
 
@@ -381,12 +381,12 @@ sudo systemctl status mysticeti-monitor
 
 ### Cannot Find Metanode Directory
 
-**Error:** `❌ Cannot find Mysticeti metanode directory!`
+**Error:** `❌ Cannot find mtn-consensus metanode directory!`
 
 **Solutions:**
 1. **Set environment variable:**
    ```bash
-   export MYSTICETI_METANODE_DIR=/path/to/metanode
+   export MTN_CONSENSUS_METANODE_DIR=/path/to/metanode
    ./start_monitor.sh
    ```
 

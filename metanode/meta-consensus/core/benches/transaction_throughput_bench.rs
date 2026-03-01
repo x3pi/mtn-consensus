@@ -4,7 +4,7 @@
 //! TPS Benchmark: Transaction submission and consumption throughput.
 //!
 //! Run with:
-//!   cd /home/abc/chain-n/Mysticeti/metanode/meta-consensus/core
+//!   cd /home/abc/chain-n/mtn-consensus/metanode/meta-consensus/core
 //!   cargo bench --bench transaction_throughput_bench
 //!
 //! This benchmark measures:

@@ -1,6 +1,6 @@
 # Chuyển Đổi SyncOnly → Validator
 
-Tài liệu mô tả chi tiết quá trình chuyển đổi một Full Node (SyncOnly) thành Validator trong hệ thống Mysticeti Metanode.
+Tài liệu mô tả chi tiết quá trình chuyển đổi một Full Node (SyncOnly) thành Validator trong hệ thống mtn-consensus Metanode.
 
 ## 1. Tổng Quan Hai Chế Độ
 
@@ -126,7 +126,7 @@ global_exec_index = epoch_base_index + commit_index
 | Trường | Nguồn | Ý nghĩa |
 |:---|:---|:---|
 | `epoch_base_index` | `GetEpochBoundaryData.boundary_block` | Block cuối cùng của epoch trước |
-| `commit_index` | Mysticeti consensus sequence | Index của SubDAG trong epoch hiện tại |
+| `commit_index` | mtn-consensus consensus sequence | Index của SubDAG trong epoch hiện tại |
 
 > [!CAUTION]
 > **KHÔNG** dùng local `shared_last_global_exec_index` cho `epoch_base_index`! Phải fetch từ `GetEpochBoundaryData` để đảm bảo consistency.

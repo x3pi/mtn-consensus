@@ -205,7 +205,7 @@ impl CommitProcessor {
         // This is the last_global_exec_index at the END of previous epoch (or 0 for epoch 0).
         // All nodes receive this same value from Go via GetEpochBoundaryData API.
         // Formula: global_exec_index = epoch_base_index + commit_index
-        // Since commit_index is consensus-agreed (from Mysticeti), all nodes compute same result.
+        // Since commit_index is consensus-agreed (from mtn-consensus), all nodes compute same result.
         let epoch_base_index = if let Some(ref shared_index) = self.shared_last_global_exec_index {
             let index_guard = shared_index.lock().await;
             *index_guard
@@ -270,7 +270,7 @@ impl CommitProcessor {
                         // --- [FORK SAFETY v2: CONSENSUS-BASED FORMULA] ---
                         // global_exec_index = epoch_base_index + commit_index
                         // - epoch_base_index: Fixed at epoch start, same for all nodes
-                        // - commit_index: From Mysticeti consensus, same for all nodes
+                        // - commit_index: From mtn-consensus consensus, same for all nodes
                         // Result: Deterministic across all nodes, even late joiners!
                         let global_exec_index = calculate_global_exec_index(
                             current_epoch,

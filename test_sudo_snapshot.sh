@@ -3,8 +3,8 @@
 echo "=== Testing Sudo LVM Snapshot ==="
 echo
 
-BIN_PATH="/home/abc/chain-n/Mysticeti/metanode/bin/lvm-snap-rsync"
-BIN_DIR="/home/abc/chain-n/Mysticeti/metanode/bin"
+BIN_PATH="/home/abc/chain-n/mtn-consensus/metanode/bin/lvm-snap-rsync"
+BIN_DIR="/home/abc/chain-n/mtn-consensus/metanode/bin"
 
 echo "Testing sudo execution simulation..."
 echo "Command: sudo $BIN_PATH --id 999"
@@ -31,7 +31,7 @@ if sudo -n true 2>/dev/null; then
     
 else
     echo "❌ Sudo requires password - need to setup NOPASSWD"
-    echo "    Run: bash /home/abc/chain-n/Mysticeti/metanode/scripts/setup_sudo_snapshot.sh"
+    echo "    Run: bash /home/abc/chain-n/mtn-consensus/metanode/scripts/setup_sudo_snapshot.sh"
 fi
 
 echo

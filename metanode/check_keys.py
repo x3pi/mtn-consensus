@@ -6,7 +6,7 @@ import sys
 # Mock verification or simple string check if we can't do crypto
 # Assuming Ed25519 or BLS.
 # If BLS, length is different. 
-# Protocol Key is typically Ed25519 in Mysticeti? 32 bytes pub, 64 priv.
+# Protocol Key is typically Ed25519 in mtn-consensus? 32 bytes pub, 64 priv.
 
 def check_keys():
     committee_file = 'config/committee.json'

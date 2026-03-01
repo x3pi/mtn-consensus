@@ -1,6 +1,6 @@
-# Mysticeti Metanode
+# mtn-consensus Metanode
 
-Mysticeti là một high-performance consensus engine được viết bằng Rust, tích hợp với execution engine Go (Simple Chain) để tạo thành một blockchain hoàn chỉnh.
+mtn-consensus là một high-performance consensus engine được viết bằng Rust, tích hợp với execution engine Go (Simple Chain) để tạo thành một blockchain hoàn chỉnh.
 
 ## Kiến Trúc Tổng Quan
 
@@ -23,7 +23,7 @@ Mysticeti là một high-performance consensus engine được viết bằng Rus
 ## Thành Phần Chính
 
 ### Consensus Engine (Rust)
-- **Mysticeti DAG**: High-throughput consensus algorithm
+- **mtn-consensus DAG**: High-throughput consensus algorithm
 - **Multi-node**: Hỗ trợ 4 nodes với Byzantine fault tolerance
 - **Epoch Management**: Tự động chuyển đổi epoch dựa trên thời gian
 - **Network Layer**: gRPC-based peer-to-peer communication
@@ -141,7 +141,7 @@ curl http://localhost:8080/health  # Nếu có health endpoint
 ## Architecture Details
 
 ### Consensus Algorithm
-- **Naru+Mysticeti**: DAG-based consensus
+- **Naru+mtn-consensus**: DAG-based consensus
 - **Leaderless**: Tất cả nodes đều có thể propose blocks
 - **Byzantine Fault Tolerant**: Chịu được f/3 faulty nodes
 

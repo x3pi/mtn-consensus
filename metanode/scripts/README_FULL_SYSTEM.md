@@ -19,7 +19,7 @@ Mỗi lần chạy sẽ:
 **Chức năng:**
 1. Xóa dữ liệu cũ:
    - `mtn-simple-2025/cmd/simple_chain/sample/` (Go data)
-   - `Mysticeti/metanode/config/storage/` (Rust data)
+   - `mtn-consensus/metanode/config/storage/` (Rust data)
 2. Dừng các nodes đang chạy
 3. Tạo committee mới cho 4 nodes (epoch 0)
 4. Enable executor cho Node 0
@@ -29,7 +29,7 @@ Mỗi lần chạy sẽ:
 
 **Cách sử dụng:**
 ```bash
-cd /home/abc/chain-new/Mysticeti/metanode
+cd /home/abc/chain-new/mtn-consensus/metanode
 ./scripts/run_full_system.sh
 ```
 
@@ -72,7 +72,7 @@ cd /home/abc/chain-new/Mysticeti/metanode
 
 **Cách sử dụng:**
 ```bash
-cd /home/abc/chain-new/Mysticeti/metanode
+cd /home/abc/chain-new/mtn-consensus/metanode
 ./scripts/stop_full_system.sh
 ```
 

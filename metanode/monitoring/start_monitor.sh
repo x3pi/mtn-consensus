@@ -1,21 +1,21 @@
 #!/bin/bash
 
-# Mysticeti Node Monitor Startup Script
+# mtn-consensus Node Monitor Startup Script
 # This script can be run from any directory and will automatically find the metanode directory
 
-echo "🔍 Starting Mysticeti Node Monitor..."
+echo "🔍 Starting mtn-consensus Node Monitor..."
 
 # Function to find metanode directory
 find_metanode_dir() {
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
     # Option 1: Use environment variable if set
-    if [ ! -z "$MYSTICETI_METANODE_DIR" ]; then
-        if [ -d "$MYSTICETI_METANODE_DIR" ]; then
-            echo "$MYSTICETI_METANODE_DIR"
+    if [ ! -z "$MTN_CONSENSUS_METANODE_DIR" ]; then
+        if [ -d "$MTN_CONSENSUS_METANODE_DIR" ]; then
+            echo "$MTN_CONSENSUS_METANODE_DIR"
             return 0
         else
-            echo "⚠️  MYSTICETI_METANODE_DIR is set but directory doesn't exist: $MYSTICETI_METANODE_DIR" >&2
+            echo "⚠️  MTN_CONSENSUS_METANODE_DIR is set but directory doesn't exist: $MTN_CONSENSUS_METANODE_DIR" >&2
         fi
     fi
 
@@ -41,9 +41,9 @@ find_metanode_dir() {
     local relative_paths=(
         "."
         "../metanode"
-        "../../Mysticeti/metanode"
-        "../../../chain-n/Mysticeti/metanode"
-        "$HOME/chain-n/Mysticeti/metanode"
+        "../../mtn-consensus/metanode"
+        "../../../chain-n/mtn-consensus/metanode"
+        "$HOME/chain-n/mtn-consensus/metanode"
     )
 
     for path in "${relative_paths[@]}"; do
@@ -59,10 +59,10 @@ find_metanode_dir() {
 # Find metanode directory
 METANODE_DIR=$(find_metanode_dir)
 if [ $? -ne 0 ]; then
-    echo "❌ Cannot find Mysticeti metanode directory!"
+    echo "❌ Cannot find mtn-consensus metanode directory!"
     echo ""
-    echo "Please set the MYSTICETI_METANODE_DIR environment variable:"
-    echo "  export MYSTICETI_METANODE_DIR=/path/to/metanode"
+    echo "Please set the MTN_CONSENSUS_METANODE_DIR environment variable:"
+    echo "  export MTN_CONSENSUS_METANODE_DIR=/path/to/metanode"
     echo ""
     echo "Or run this script from within the metanode directory structure."
     exit 1
@@ -158,7 +158,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --help, -h           Show this help message"
             echo ""
             echo "Environment Variables:"
-            echo "  MYSTICETI_METANODE_DIR    Path to metanode directory"
+            echo "  MTN_CONSENSUS_METANODE_DIR    Path to metanode directory"
             echo "  PORT                      Server port (can also use --port)"
             echo ""
             echo "Examples:"

@@ -42,7 +42,7 @@ global_exec_index = epoch_base_index + commit_index
 | Trường | Định nghĩa | Nguồn Authority |
 |:---|:---|:---|
 | `epoch_base_index` | Block cuối của epoch trước | `GetEpochBoundaryData.boundary_block` |
-| `commit_index` | Sequence number của SubDAG | Mysticeti consensus |
+| `commit_index` | Sequence number của SubDAG | mtn-consensus consensus |
 | `global_exec_index` | Block number tuyệt đối trên chain | Tính toán deterministic |
 
 **Ví dụ**:

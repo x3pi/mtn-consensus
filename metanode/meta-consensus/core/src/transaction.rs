@@ -411,7 +411,7 @@ pub trait TransactionVerifier: Send + Sync + 'static {
 
     /// Returns indices of transactions to reject, or a transaction validation error.
     /// Currently only uncertified user transactions can be voted to reject, which are created
-    /// by Mysticeti fastpath client.
+    /// by mtn-consensus fastpath client.
     /// Honest validators may disagree on voting for uncertified user transactions.
     /// The other types of transactions are implicitly voted to be accepted if they pass validation.
     ///

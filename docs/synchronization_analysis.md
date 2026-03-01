@@ -1,6 +1,6 @@
-# Phân Tích Quá Trình Đồng Bộ Dữ Liệu Khi Khởi Động Lại Node (Mysticeti)
+# Phân Tích Quá Trình Đồng Bộ Dữ Liệu Khi Khởi Động Lại Node (mtn-consensus)
 
-Tài liệu này mô tả chi tiết quy trình một node Mysticeti (có thể là Validator) thực hiện khi khởi động lại để đồng bộ dữ liệu với mạng lưới.
+Tài liệu này mô tả chi tiết quy trình một node mtn-consensus (có thể là Validator) thực hiện khi khởi động lại để đồng bộ dữ liệu với mạng lưới.
 
 ## 1. Tổng Quan Quy Trình Khởi Động
 
@@ -30,7 +30,7 @@ Quá trình bắt đầu từ `main.rs` gọi đến `InitializedNode::initializ
     *   Hành động:
         *   Gọi `get_validators_at_block` từ Go Master (Local hoặc Peer tùy thuộc vào ai giữ Epoch đúng).
         *   Lấy `epoch_timestamp_ms` để đảm bảo Genesis Block Hash khớp với mạng lưới.
-        *   Dùng `committee::build_committee_from_validator_list` để dựng đối tượng `Committee` cho Mysticeti.
+        *   Dùng `committee::build_committee_from_validator_list` để dựng đối tượng `Committee` cho mtn-consensus.
         *   **Quan trọng:** Nếu Epoch được sync từ Peer, danh sách Validator cũng phải được lấy từ Peer đó để đảm bảo tính nhất quán.
 
 3.  **Startup Catchup Loop:**

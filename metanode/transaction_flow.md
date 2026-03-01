@@ -2,7 +2,7 @@
 
 Tài liệu này mô tả chi tiết vòng đời của một giao dịch (Transaction) từ lúc được Client gửi lên cho đến khi được đóng gói thành một Block, lưu trữ vào Database và trả kết quả về cho người dùng. 
 
-Quy trình này trải dài qua cả hai thành phần: **Go Execution Engine** (xử lý state, smart contract) và **Rust Consensus Engine** (Mysticeti).
+Quy trình này trải dài qua cả hai thành phần: **Go Execution Engine** (xử lý state, smart contract) và **Rust Consensus Engine** (mtn-consensus).
 
 ---
 
@@ -27,11 +27,11 @@ Quy trình này trải dài qua cả hai thành phần: **Go Execution Engine** 
 - `cmd/simple_chain/processor/block_processor_txs.go` (Go): Có hạ tầng `TxsProcessor2` chạy một vòng lặp liên tục (`Run()`), chuyên lấy hàng loạt giao dịch từ Transaction Pool (bằng `ProcessTransactionsInPoolSub`), đóng gói và gửi thẳng qua Unix Domain Socket (UDS) sang tiến trình Rust.
 - `metanode/src/network/tx_socket_server.rs` (Rust): Server Socket tại tầng Rust, tiếp nhận các batch giao dịch từ Go thông qua hàm `handle_connection`. Sau đó Rust sẽ gỡ batch, đưa các giao dịch này trực tiếp vào hàng đợi chờ chốt (`pending_transactions_queue`).
 
-## 4. Giai đoạn Đồng Thuận (Mysticeti Consensus)
-**Mô tả:** Động cơ Rust Consensus sẽ lấy các giao dịch trong khay chờ, vận hành thuật toán Mysticeti (DAG-based BFT) để thỏa hiệp thứ tự với các Validator khác trên mạng lưới thành chuỗi block tuyến tính.
+## 4. Giai đoạn Đồng Thuận (mtn-consensus Consensus)
+**Mô tả:** Động cơ Rust Consensus sẽ lấy các giao dịch trong khay chờ, vận hành thuật toán mtn-consensus (DAG-based BFT) để thỏa hiệp thứ tự với các Validator khác trên mạng lưới thành chuỗi block tuyến tính.
 
 **Các file chịu trách nhiệm chính:**
-- Thư mục `metanode/src/node/consensus/`: Chứa mã nguồn thuật toán Mysticeti để gom batch và chốt đồng thuận.
+- Thư mục `metanode/src/node/consensus/`: Chứa mã nguồn thuật toán mtn-consensus để gom batch và chốt đồng thuận.
 - `metanode/src/node/transition/...`: Sau khi Validator Node đã chốt được Block nào đi trước, giao dịch nào đi trước, Rust sẽ gọi ngược gRPC/Socket về tiến trình Go Master node yêu cầu **Thực thi** lô giao dịch này (vì Rust không giữ State Trie).
 
 ## 5. Thực thi Giao dịch và State (Execution Phase)
