@@ -6,8 +6,10 @@
 #   ./go-master.sh 2 -f       # Follow mode
 
 NODE_ID="${1:?Usage: $0 <node_id> [lines|-f]}"
-LOG_DIR="/home/abc/chain-n/Mysticeti/metanode/logs/node_${NODE_ID}/go-master"
-STDOUT_LOG="/home/abc/chain-n/Mysticeti/metanode/logs/node_${NODE_ID}/go-master-stdout.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+METANODE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOG_DIR="$METANODE_ROOT/logs/node_${NODE_ID}/go-master"
+STDOUT_LOG="$METANODE_ROOT/logs/node_${NODE_ID}/go-master-stdout.log"
 ARG="${2:-50}"
 
 # Try epoch-based App.log first, fallback to stdout log

@@ -6,7 +6,9 @@
 #   ./rust.sh 0 -f       # Follow mode
 
 NODE_ID="${1:?Usage: $0 <node_id> [lines|-f]}"
-LOGFILE="/home/abc/chain-n/Mysticeti/metanode/logs/node_${NODE_ID}/rust.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+METANODE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOGFILE="$METANODE_ROOT/logs/node_${NODE_ID}/rust.log"
 ARG="${2:-50}"
 
 if [ ! -f "$LOGFILE" ]; then

@@ -5,7 +5,8 @@
 
 set -euo pipefail
 
-LOGS_DIR="/home/abc/chain-n/Mysticeti/metanode/logs"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOGS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)/logs"
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <node_id>"
