@@ -17,7 +17,7 @@ use node::startup::{StartupConfig, InitializedNode};
 
 #[derive(Parser)]
 #[command(name = "metanode")]
-#[command(about = "MetaNode Consensus Engine - Multi-node consensus based on Sui mtn-consensus")]
+#[command(about = "MetaNode Consensus Engine - Multi-node consensus based on Sui Mysticeti")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

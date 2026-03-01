@@ -11,7 +11,7 @@
 ///
 /// New formula: global_exec_index = epoch_base_index + commit_index
 ///   - epoch_base_index: last_global_exec_index at the START of current epoch (from Go)
-///   - commit_index: Consensus-agreed value from mtn-consensus (same for all nodes)
+///   - commit_index: Consensus-agreed value from Mysticeti (same for all nodes)
 ///   - Result: Deterministic across all nodes, even for late joiners
 ///
 /// Example:
@@ -20,11 +20,11 @@
 /// - Node-X joins at commit 500 of epoch 1: base=4000, commit 500 → global=4500 ✓
 pub fn calculate_global_exec_index(
     _epoch: u64,           // Not used in formula but kept for logging/debugging
-    commit_index: u32,     // Consensus-agreed value from mtn-consensus
+    commit_index: u32,     // Consensus-agreed value from Mysticeti
     epoch_base_index: u64, // last_global_exec_index at epoch START (not current!)
 ) -> u64 {
     // FORK-SAFE FORMULA: All nodes with same commit_index will get same global_exec_index
-    // because commit_index is agreed upon by mtn-consensus consensus
+    // because commit_index is agreed upon by Mysticeti consensus
     epoch_base_index + commit_index as u64
 }
 
@@ -57,7 +57,7 @@ mod tests {
         // This is the key property that prevents fork
 
         let epoch_base = 10000; // Set at epoch start, same for all nodes
-        let commit_index = 500; // From mtn-consensus consensus, same for all nodes
+        let commit_index = 500; // From Mysticeti consensus, same for all nodes
 
         // Simulate different nodes computing the same commit
         let node_0_result = calculate_global_exec_index(1, commit_index, epoch_base);

@@ -245,7 +245,7 @@ impl RustSyncNode {
             }
         } else {
             // PHASE 2.5: Use Peer Go Sync when network_client is None (SyncOnly mode)
-            info!("[RUST-SYNC] PHASE 2.5: No mtn-consensus network, using Peer Go Sync");
+            info!("[RUST-SYNC] PHASE 2.5: No Mysticeti network, using Peer Go Sync");
 
             let peer_addresses = self.get_peer_go_addresses();
             if !peer_addresses.is_empty() {
