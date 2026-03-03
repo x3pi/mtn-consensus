@@ -18,6 +18,7 @@ echo -e "${YELLOW}📤 Sending SIGTERM to all processes...${NC}"
 pkill -f "simple_chain" 2>/dev/null || true
 pkill -f "metanode start" 2>/dev/null || true
 pkill -f "metanode run" 2>/dev/null || true
+pkill -f "tps_blast" 2>/dev/null || true
 
 echo "⏳ Waiting 5s for graceful shutdown..."
 sleep 5
