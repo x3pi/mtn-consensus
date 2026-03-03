@@ -252,7 +252,7 @@ TPS_DIR="$GO_DIR/cmd/tool/tps_blast"
 # Go Master connection ports per node (same as config)
 GO_CONN_PORTS=(4201 6201 6211 6221 6241)
 # Go RPC ports per node
-GO_RPC_PORTS=(8747 10747 10749 10750 10748)
+GO_RPC_PORTS=(8757 10747 10749 10750 10748)
 
 # Build NODES array string: "IP0:4201" "IP1:6201" "IP2:6211" "IP3:6221"
 # Only use first 4 nodes (validators, exclude node4 SyncOnly)
