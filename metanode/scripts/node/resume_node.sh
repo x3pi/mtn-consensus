@@ -116,7 +116,7 @@ cd "$GO_SIMPLE_ROOT"
 
 XAPIAN_MASTER="sample/$DATA/data/data/xapian_node"
 tmux new-session -d -s "${GO_MASTER_SESSION[$NODE_ID]}" -c "$GO_SIMPLE_ROOT" \
-    "export GOTOOLCHAIN=go1.23.5 && export GOGC=20 && export XAPIAN_BASE_PATH='$XAPIAN_MASTER' && go run . -config=${GO_MASTER_CONFIG[$NODE_ID]} >> \"$LOG_DIR/node_$NODE_ID/go-master-stdout.log\" 2>&1"
+    "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOGC=400 && export GOMEMLIMIT=3GiB && export XAPIAN_BASE_PATH='$XAPIAN_MASTER' && ./simple_chain -config=${GO_MASTER_CONFIG[$NODE_ID]} >> \"$LOG_DIR/node_$NODE_ID/go-master-stdout.log\" 2>&1"
 
 echo -e "${GREEN}  🚀 Go Master started (${GO_MASTER_SESSION[$NODE_ID]})${NC}"
 
@@ -125,7 +125,7 @@ echo -e "${BLUE}📋 Step 4: Start Go Sub...${NC}"
 
 XAPIAN_SUB="sample/$DATA/data-write/data/xapian_node"
 tmux new-session -d -s "${GO_SUB_SESSION[$NODE_ID]}" -c "$GO_SIMPLE_ROOT" \
-    "export GOTOOLCHAIN=go1.23.5 && export GOGC=20 && export XAPIAN_BASE_PATH='$XAPIAN_SUB' && go run . -config=${GO_SUB_CONFIG[$NODE_ID]} >> \"$LOG_DIR/node_$NODE_ID/go-sub-stdout.log\" 2>&1"
+    "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOGC=400 && export GOMEMLIMIT=3GiB && export XAPIAN_BASE_PATH='$XAPIAN_SUB' && ./simple_chain -config=${GO_SUB_CONFIG[$NODE_ID]} >> \"$LOG_DIR/node_$NODE_ID/go-sub-stdout.log\" 2>&1"
 
 echo -e "${GREEN}  🚀 Go Sub started (${GO_SUB_SESSION[$NODE_ID]})${NC}"
 
