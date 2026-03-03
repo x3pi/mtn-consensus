@@ -20,6 +20,16 @@
 #          mtn-simple-2025/cmd/simple_chain/config-sub-node{0..4}.json
 #          - meta_node_rpc_address (Rust RPC endpoint)
 #          - nodes.master_address (Go Master endpoint cho sub node)
+#   Tools: mtn-simple-2025/cmd/tool/tps_blast/run_multinode_load.sh
+#          - NODES, RPCS arrays, block_hash_checker nodes
+#          mtn-simple-2025/cmd/tool/tps_blast/run_node0_only_load.sh
+#          - NODES array, -rpc parameter
+#          mtn-simple-2025/cmd/tool/tx_sender/config.json
+#          - parent_connection_address
+#          mtn-simple-2025/cmd/tool/tps_blast/config.json
+#          - parent_connection_address
+#          mtn-simple-2025/cmd/tool/tps_benchmark_multi_node/config.json
+#          - parent_connection_address
 # ============================================================================
 
 set -euo pipefail
@@ -264,25 +274,39 @@ for P in 0 1 2 3; do
     NODES_STR="${NODES_STR}\"${IPS[$P]}:${GO_CONN_PORTS[$P]}\""
 done
 
+# Build RPCS array string: "IP0:8757" "IP1:10747" "IP2:10749" "IP3:10750"
+RPCS_STR=""
+for P in 0 1 2 3; do
+    if [ -n "$RPCS_STR" ]; then
+        RPCS_STR="$RPCS_STR "
+    fi
+    # Node 0 uses localhost RPC since script runs on node 0
+    if [ $P -eq 0 ]; then
+        RPCS_STR="${RPCS_STR}\"127.0.0.1:${GO_RPC_PORTS[$P]}\""
+    else
+        RPCS_STR="${RPCS_STR}\"${IPS[$P]}:${GO_RPC_PORTS[$P]}\""
+    fi
+done
+
 # run_multinode_load.sh
 MULTI_SH="$TPS_DIR/run_multinode_load.sh"
 if [ -f "$MULTI_SH" ]; then
     echo -e "\n  ${BOLD}📄 run_multinode_load.sh${NC}"
 
-    # NODES array (line 24)
+    # NODES array
     safe_sed "$MULTI_SH" \
         "s|^NODES=(.*)|NODES=(${NODES_STR})|" \
         "NODES → (${NODES_STR})"
 
-    # -rpc parameter (use node1's RPC port)
+    # RPCS array (each client verifies against its node's RPC)
     safe_sed "$MULTI_SH" \
-        "s|-rpc \"[0-9.]*:[0-9]*\"|-rpc \"${IPS[1]}:${GO_RPC_PORTS[1]}\"|" \
-        "-rpc → ${IPS[1]}:${GO_RPC_PORTS[1]}"
+        "s|^RPCS=(.*)|RPCS=(${RPCS_STR})|" \
+        "RPCS → (${RPCS_STR})"
 
-    # block_hash_checker nodes (master=node1, node4=node4)
+    # block_hash_checker: master=node0 (localhost), compare with node3 (remote)
     safe_sed "$MULTI_SH" \
-        "s|\"master=http://[0-9.]*:[0-9]*,node4=http://[0-9.]*:[0-9]*\"|\"master=http://${IPS[1]}:${GO_RPC_PORTS[1]},node4=http://${IPS[4]}:${GO_RPC_PORTS[4]}\"|" \
-        "hash_checker → master=${IPS[1]}:${GO_RPC_PORTS[1]}, node4=${IPS[4]}:${GO_RPC_PORTS[4]}"
+        "s|-nodes \"master=http://[^\"]*\"|-nodes \"master=http://127.0.0.1:${GO_RPC_PORTS[0]},node3=http://${IPS[3]}:${GO_RPC_PORTS[3]}\"|" \
+        "hash_checker → master=127.0.0.1:${GO_RPC_PORTS[0]}, node3=${IPS[3]}:${GO_RPC_PORTS[3]}"
 fi
 
 # run_node0_only_load.sh
@@ -294,10 +318,40 @@ if [ -f "$NODE0_SH" ]; then
         "s|^NODES=(.*)|NODES=(${NODES_STR})|" \
         "NODES → (${NODES_STR})"
 
-    # -rpc parameter (use node0's RPC port for this script)
+    # -rpc parameter (use node0's RPC port for this script, localhost since we run on node0)
     safe_sed "$NODE0_SH" \
-        "s|-rpc \"[0-9.]*:[0-9]*\"|-rpc \"${IPS[0]}:${GO_RPC_PORTS[0]}\"|" \
-        "-rpc → ${IPS[0]}:${GO_RPC_PORTS[0]}"
+        "s|-rpc \"[0-9.]*:[0-9]*\"|-rpc \"127.0.0.1:${GO_RPC_PORTS[0]}\"|" \
+        "-rpc → 127.0.0.1:${GO_RPC_PORTS[0]}"
+fi
+
+# ─── Update Tool Config JSONs ────────────────────────────────────────────────
+echo -e "\n${BOLD}═══ Tool Configs (tx_sender, tps_blast, tps_benchmark_multi_node) ═══${NC}"
+
+# tx_sender/config.json — connects to node0 Sub port
+TX_SENDER_CFG="$GO_DIR/cmd/tool/tx_sender/config.json"
+if [ -f "$TX_SENDER_CFG" ]; then
+    echo -e "\n  ${BOLD}📄 tx_sender/config.json${NC}"
+    safe_sed "$TX_SENDER_CFG" \
+        "s|\"parent_connection_address\": \"[^\"]*\"|\"parent_connection_address\": \"${IPS[0]}:${GO_SUB_CONN_PORTS[0]}\"|" \
+        "parent_connection_address → ${IPS[0]}:${GO_SUB_CONN_PORTS[0]}"
+fi
+
+# tps_blast/config.json — connects to node0 Master port
+TPS_BLAST_CFG="$TPS_DIR/config.json"
+if [ -f "$TPS_BLAST_CFG" ]; then
+    echo -e "\n  ${BOLD}📄 tps_blast/config.json${NC}"
+    safe_sed "$TPS_BLAST_CFG" \
+        "s|\"parent_connection_address\": \"[^\"]*\"|\"parent_connection_address\": \"${IPS[0]}:${GO_MASTER_CONN_PORTS[0]}\"|" \
+        "parent_connection_address → ${IPS[0]}:${GO_MASTER_CONN_PORTS[0]}"
+fi
+
+# tps_benchmark_multi_node/config.json — connects to node0 Sub port
+TPS_BENCH_CFG="$GO_DIR/cmd/tool/tps_benchmark_multi_node/config.json"
+if [ -f "$TPS_BENCH_CFG" ]; then
+    echo -e "\n  ${BOLD}📄 tps_benchmark_multi_node/config.json${NC}"
+    safe_sed "$TPS_BENCH_CFG" \
+        "s|\"parent_connection_address\": \"[^\"]*\"|\"parent_connection_address\": \"${IPS[0]}:${GO_SUB_CONN_PORTS[0]}\"|" \
+        "parent_connection_address → ${IPS[0]}:${GO_SUB_CONN_PORTS[0]}"
 fi
 
 # ─── Update Genesis JSON ─────────────────────────────────────────────────────
