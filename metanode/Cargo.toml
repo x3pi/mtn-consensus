@@ -64,6 +64,7 @@ socket2 = "0.5"  # For TCP socket keepalive support
 clap = { version = "4.4", features = ["derive", "wrap_help"] }
 once_cell = "1.21.3"
 futures = "0.3.31"
+rayon = "1.11.0"
 
 [build-dependencies]
 prost-build = "0.14.1"

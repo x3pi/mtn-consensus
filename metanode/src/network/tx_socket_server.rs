@@ -197,84 +197,131 @@ impl TxSocketServer {
                 data_len
             );
 
-            // THỐNG NHẤT: Go LUÔN gửi pb.Transactions (nhiều transactions)
-            // Rust CHỈ xử lý Transactions message, không xử lý single Transaction hoặc raw data
-            use prost::Message;
+            // ═══════════════════════════════════════════════════════════════
+            // ZERO-COPY PROTOBUF EXTRACTION (TPS OPTIMIZATION)
+            // Go LUÔN gửi pb.Transactions (nhiều transactions).
+            // Thay vì dùng `Transactions::decode` tốn CPU để tạo Rust structs
+            // rồi lại `tx.encode` từng transaction thành byte array, chúng ta
+            // parse trực tiếp raw protobuf format để cắt (slice) byte arrays.
+            // Biến `pb.Transactions` có cấu trúc: repeated Transaction Transactions = 1;
+            // Tag cho struct này luôn là 0x0A (Field 1, Wire Type 2).
+            // ═══════════════════════════════════════════════════════════════
+            use prost::bytes::Buf;
+            let mut individual_txs = Vec::new();
+            let mut offset = 0;
+            let data_len = tx_data.len();
+            let mut parse_error = false;
 
-            #[allow(dead_code)]
-            mod proto {
-                include!(concat!(env!("OUT_DIR"), "/transaction.rs"));
+            while offset < data_len {
+                let mut buf = &tx_data[offset..];
+                let initial_remaining = buf.remaining();
+
+                // Read Tag (Varint)
+                let tag = match prost::encoding::decode_varint(&mut buf) {
+                    Ok(t) => t,
+                    Err(_) => {
+                        parse_error = true;
+                        warn!("❌ [TX FLOW] Failed to decode tag at offset {}", offset);
+                        break;
+                    }
+                };
+
+                let tag_len = initial_remaining - buf.remaining();
+                if tag_len == 0 {
+                    parse_error = true;
+                    warn!("❌ [TX FLOW] Zero tag length at offset {}", offset);
+                    break;
+                }
+                offset += tag_len;
+
+                // Field 1, Length-Delimited (Wire Type 2) == 0x0A
+                if tag == 0x0A {
+                    let mut buf_len = &tx_data[offset..];
+                    let initial_remaining_len = buf_len.remaining();
+
+                    // Read Length (Varint)
+                    let tx_len = match prost::encoding::decode_varint(&mut buf_len) {
+                        Ok(l) => l as usize,
+                        Err(_) => {
+                            parse_error = true;
+                            warn!("❌ [TX FLOW] Failed to decode length at offset {}", offset);
+                            break;
+                        }
+                    };
+
+                    let len_len = initial_remaining_len - buf_len.remaining();
+                    if len_len == 0 {
+                        parse_error = true;
+                        warn!("❌ [TX FLOW] Invalid length varint at offset {}", offset);
+                        break;
+                    }
+                    offset += len_len;
+
+                    if offset + tx_len > data_len {
+                        parse_error = true;
+                        warn!("❌ [TX FLOW] Transaction length exceeds buffer");
+                        break;
+                    }
+
+                    // Slice the raw transaction bytes WITHOUT re-encoding
+                    individual_txs.push(tx_data[offset..offset + tx_len].to_vec());
+                    offset += tx_len;
+                } else {
+                    // Unknown field -> skip it
+                    let wire_type = tag & 0x07;
+                    match wire_type {
+                        0 => {
+                            // Varint
+                            let mut buf_varint = &tx_data[offset..];
+                            let init_rem = buf_varint.remaining();
+                            if prost::encoding::decode_varint(&mut buf_varint).is_err() {
+                                parse_error = true;
+                                break;
+                            }
+                            offset += init_rem - buf_varint.remaining();
+                        }
+                        1 => offset += 8, // 64-bit
+                        2 => {
+                            // Length-delimited
+                            let mut buf_len = &tx_data[offset..];
+                            let init_rem = buf_len.remaining();
+                            let skip_len = match prost::encoding::decode_varint(&mut buf_len) {
+                                Ok(l) => l as usize,
+                                Err(_) => {
+                                    parse_error = true;
+                                    break;
+                                }
+                            };
+                            offset += (init_rem - buf_len.remaining()) + skip_len;
+                        }
+                        5 => offset += 4, // 32-bit
+                        _ => {
+                            parse_error = true;
+                            warn!("❌ [TX FLOW] Unknown wire type {}", wire_type);
+                            break;
+                        }
+                    }
+                }
             }
-            use proto::Transactions;
 
-            // Go LUÔN gửi Transactions message
-            let transactions_to_submit = match Transactions::decode(&tx_data[..]) {
-                Ok(transactions_msg) => {
-                    if transactions_msg.transactions.is_empty() {
-                        warn!("⚠️  [TX FLOW] Empty Transactions message received from Go via UDS");
-                        let error_response =
-                            r#"{"success":false,"error":"Empty Transactions message"}"#;
-                        if let Err(e) =
-                            Self::send_response_string(&mut stream, error_response).await
-                        {
-                            error!("❌ [TX FLOW] Failed to send error response: {}", e);
-                            return Err(e.into());
-                        }
-                        continue; // Tiếp tục xử lý request tiếp theo
-                    }
-
-                    info!("📦 [TX FLOW] Received Transactions message from Go via UDS with {} transactions, splitting into individual transactions", 
-                    transactions_msg.transactions.len());
-
-                    // Split Transactions message into individual Transaction messages
-                    // Mỗi transaction được encode riêng để submit vào consensus
-                    let mut individual_txs = Vec::new();
-                    for (idx, tx) in transactions_msg.transactions.iter().enumerate() {
-                        // Encode each Transaction as individual protobuf message
-                        let mut buf = Vec::new();
-                        if let Err(e) = tx.encode(&mut buf) {
-                            error!("❌ [TX FLOW] Failed to encode transaction[{}] from Go Transactions message via UDS: {}", idx, e);
-                            continue;
-                        }
-                        individual_txs.push(buf);
-                    }
-
-                    if individual_txs.is_empty() {
-                        error!("❌ [TX FLOW] No valid transactions after encoding from Go Transactions message via UDS");
-                        let error_response =
-                            r#"{"success":false,"error":"No valid transactions after encoding"}"#;
-                        if let Err(e) =
-                            Self::send_response_string(&mut stream, error_response).await
-                        {
-                            error!("❌ [TX FLOW] Failed to send error response: {}", e);
-                            return Err(e.into());
-                        }
-                        continue; // Tiếp tục xử lý request tiếp theo
-                    }
-
-                    info!("✅ [TX FLOW] Split Go Transactions message into {} individual transactions for consensus via UDS", individual_txs.len());
-                    individual_txs
+            if parse_error || individual_txs.is_empty() {
+                error!(
+                    "❌ [TX FLOW] Failed to decode Transactions message from Go via UDS natively"
+                );
+                let error_response =
+                    r#"{"success":false,"error":"Invalid Transactions protobuf layout"}"#;
+                if let Err(e) = Self::send_response_string(&mut stream, error_response).await {
+                    error!("❌ [TX FLOW] Failed to send error response: {}", e);
+                    return Err(e.into());
                 }
-                Err(e) => {
-                    // Go LUÔN gửi Transactions, nếu không decode được thì là lỗi
-                    error!("❌ [TX FLOW] Failed to decode Transactions message from Go via UDS (expected pb.Transactions): {}", e);
-                    error!(
-                        "❌ [TX FLOW] Data preview (first 100 bytes): {}",
-                        hex::encode(&tx_data[..tx_data.len().min(100)])
-                    );
-                    let error_response = format!(
-                        r#"{{"success":false,"error":"Invalid Transactions protobuf: {}"}}"#,
-                        e.to_string().replace('"', "\\\"")
-                    );
-                    if let Err(send_err) =
-                        Self::send_response_string(&mut stream, &error_response).await
-                    {
-                        error!("❌ [TX FLOW] Failed to send error response: {}", send_err);
-                        return Err(send_err.into());
-                    }
-                    continue; // Tiếp tục xử lý request tiếp theo
-                }
-            };
+                continue;
+            }
+
+            info!(
+                "✅ [TX FLOW] Zero-copy extracted {} individual transactions via UDS",
+                individual_txs.len()
+            );
+            let transactions_to_submit = individual_txs;
 
             // LOCK-FREE CHECK: Fast path - check is_transitioning BEFORE touching the lock
             // FIX: Queue TXs instead of rejecting — Go-sub doesn't retry, rejection = permanent loss

@@ -1,6 +1,6 @@
 node_id = 1
 rust_tx_socket_path = "/tmp/metanode-tx-1.sock"
-network_address = "192.168.1.231:9001"
+network_address = "127.0.0.1:9001"
 protocol_key_path = "config/node_1_protocol_key.json"
 network_key_path = "config/node_1_network_key.json"
 storage_path = "config/storage/node_1"
@@ -35,7 +35,7 @@ gradual_shutdown_consensus_cert_drain_secs = 1
 gradual_shutdown_final_drain_secs = 1
 epoch_monitor_poll_interval_secs = 5
 peer_rpc_port = 19001
-peer_rpc_addresses = ["192.168.1.40:19000", "192.168.1.232:19002", "192.168.1.232:19003", "192.168.1.232:19004"]
+peer_rpc_addresses = ["127.0.0.1:19000", "127.0.0.1:19002", "127.0.0.1:19003", "127.0.0.1:19004"]
 
 # Number of epochs to keep for cross-epoch sync support (0 = archive mode)
 epochs_to_keep = 5
