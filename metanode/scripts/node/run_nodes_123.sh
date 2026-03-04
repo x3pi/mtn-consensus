@@ -103,7 +103,7 @@ for id in 1 2 3; do
     XAPIAN="sample/$DATA/data/data/xapian_node"
     echo -e "${GREEN}  🚀 Starting Go Master $id...${NC}"
     tmux new-session -d -s "${GO_MASTER_SESSION[$id]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOGC=400 && export XAPIAN_BASE_PATH='$XAPIAN' && ./simple_chain -config=${GO_MASTER_CONFIG[$id]} >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && ./simple_chain -config=${GO_MASTER_CONFIG[$id]} >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
     sleep 1
 done
 
@@ -119,7 +119,7 @@ for id in 1 2 3; do
     XAPIAN_SUB="sample/$DATA/data-write/data/xapian_node"
     echo -e "${GREEN}  🚀 Starting Go Sub $id...${NC}"
     tmux new-session -d -s "${GO_SUB_SESSION[$id]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOGC=400 && export XAPIAN_BASE_PATH='$XAPIAN_SUB' && ./simple_chain -config=${GO_SUB_CONFIG[$id]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN_SUB' && ./simple_chain -config=${GO_SUB_CONFIG[$id]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
     sleep 1
 done
 
