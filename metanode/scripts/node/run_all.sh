@@ -98,6 +98,10 @@ rm -rf "$METANODE_ROOT/config/storage" 2>/dev/null || true
 # Clean logs
 rm -rf "$LOG_DIR" 2>/dev/null || true
 
+# Clean old MVM log files
+# rm -f "$LOG_DIR/mvm_debug.log" 2>/dev/null || true
+# rm -f "$LOG_DIR/mvm_cpp_"*.log 2>/dev/null || true
+
 # Recreate directories
 for id in 0 1 2 3 4; do
     DATA="${GO_DATA_DIR[$id]}"
@@ -127,7 +131,7 @@ for id in 0 1 2 3 4; do
         PPROF_ARG="--pprof-addr=localhost:6060"
     fi
     tmux new-session -d -s "${GO_MASTER_SESSION[$id]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && ./simple_chain -config=${GO_MASTER_CONFIG[$id]} $PPROF_ARG >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && export MVM_LOG_DIR='$LOG_DIR/node_$id' && ./simple_chain -config=${GO_MASTER_CONFIG[$id]} $PPROF_ARG >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
     
     sleep 2  # Brief pause between Go Masters
 done
@@ -150,7 +154,7 @@ for id in 0 1 2 3 4; do
     
     echo -e "${GREEN}  🚀 Starting Go Sub $id (${GO_SUB_SESSION[$id]})...${NC}"
     tmux new-session -d -s "${GO_SUB_SESSION[$id]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && ./simple_chain -config=${GO_SUB_CONFIG[$id]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && export MVM_LOG_DIR='$LOG_DIR/node_$id' && ./simple_chain -config=${GO_SUB_CONFIG[$id]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
     
     sleep 1
 done
@@ -188,5 +192,22 @@ for id in 0 1 2 3 4; do
 done
 echo ""
 echo -e "${GREEN}  📁 Logs: $LOG_DIR/node_N/${NC}"
+echo -e "${GREEN}  📝 MVM debug log: tail -f $LOG_DIR/node_N/mvm_cpp_*.log${NC}"
 echo -e "${GREEN}  🔍 Check: tmux ls${NC}"
+echo ""
+
+# ==============================================================================
+# Step 9: Run SetGet test
+# ==============================================================================
+echo -e "${BLUE}📋 Step 9: Running SetGet test...${NC}"
+CLIENT_DIR="$HOME/nhat/client/cmd/client/call_tool_example_new"
+if [ -d "$CLIENT_DIR" ]; then
+    cd "$CLIENT_DIR"
+    echo -e "${GREEN}  🚀 Running: go run . -data=SetGet.json -config=config-local-genis.json${NC}"
+    # Run the command and pipe 3 enters to it
+    (sleep 2; echo ""; sleep 2; echo ""; sleep 2; echo "") | go run . -data=SetGet.json -config=config-local-genis.json
+    echo -e "${GREEN}  ✅ SetGet test completed${NC}"
+else
+    echo -e "${YELLOW}  ⚠️ Client directory not found: $CLIENT_DIR${NC}"
+fi
 echo ""
