@@ -550,4 +550,240 @@ mod tests {
         assert_eq!(coordinator.next_expected(), 3);
         assert_eq!(coordinator.queue_size().await, 2); // 5, 6 still in queue
     }
+
+    // ============================================================================
+    // Extended test coverage
+    // ============================================================================
+
+    fn make_block(index: u64, source: BlockSource) -> QueuedBlock {
+        QueuedBlock {
+            global_exec_index: index,
+            commit_index: index,
+            epoch: 0,
+            data: vec![index as u8],
+            source,
+            received_at: Instant::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_old_block_rejected() {
+        // next_expected = 5, so blocks with index < 5 should be rejected
+        let coordinator = BlockCoordinator::new(5, CoordinatorConfig::default());
+        assert!(
+            !coordinator
+                .push_block(make_block(1, BlockSource::Consensus))
+                .await
+        );
+        assert!(
+            !coordinator
+                .push_block(make_block(4, BlockSource::Sync))
+                .await
+        );
+        assert!(
+            coordinator
+                .push_block(make_block(5, BlockSource::Consensus))
+                .await
+        );
+        assert_eq!(coordinator.queue_size().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_sync_standby_rejects_non_gap_blocks() {
+        let coordinator = BlockCoordinator::new(1, CoordinatorConfig::default());
+        coordinator.set_sync_standby(true);
+
+        // Add a consensus block at index 3 (creating gap at 1,2)
+        assert!(
+            coordinator
+                .push_block(make_block(3, BlockSource::Consensus))
+                .await
+        );
+
+        // Sync block at index 1 fills gap → accepted
+        assert!(
+            coordinator
+                .push_block(make_block(1, BlockSource::Sync))
+                .await
+        );
+
+        // Sync block at index 5 does NOT fill gap → rejected (queue not empty, no gap before existing)
+        assert!(
+            !coordinator
+                .push_block(make_block(5, BlockSource::Sync))
+                .await
+        );
+
+        // Consensus block at index 5 → always accepted regardless of standby
+        assert!(
+            coordinator
+                .push_block(make_block(5, BlockSource::Consensus))
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_standby_accepts_sync_when_queue_empty() {
+        let coordinator = BlockCoordinator::new(1, CoordinatorConfig::default());
+        coordinator.set_sync_standby(true);
+
+        // When queue is empty, sync blocks should be accepted even in standby
+        assert!(
+            coordinator
+                .push_block(make_block(1, BlockSource::Sync))
+                .await
+        );
+        assert_eq!(coordinator.queue_size().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_sync_with_go_advances_state() {
+        let coordinator = BlockCoordinator::new(1, CoordinatorConfig::default());
+
+        // Add blocks 1-5
+        for i in 1..=5 {
+            coordinator
+                .push_block(make_block(i, BlockSource::Consensus))
+                .await;
+        }
+
+        // Go reports it has processed through block 3
+        coordinator.sync_with_go(3).await;
+
+        // next_expected should now be 4
+        assert_eq!(coordinator.next_expected(), 4);
+        // Blocks 1-3 should be cleaned from queue
+        assert_eq!(coordinator.queue_size().await, 2); // only 4, 5 remain
+    }
+
+    #[tokio::test]
+    async fn test_sync_with_go_no_change_if_same() {
+        let coordinator = BlockCoordinator::new(5, CoordinatorConfig::default());
+        coordinator.sync_with_go(4).await; // go_last_block=4 → next=5, same as current
+        assert_eq!(coordinator.next_expected(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_stats_tracking() {
+        let coordinator = BlockCoordinator::new(1, CoordinatorConfig::default());
+
+        coordinator
+            .push_block(make_block(1, BlockSource::Consensus))
+            .await;
+        coordinator
+            .push_block(make_block(2, BlockSource::Sync))
+            .await;
+        coordinator
+            .push_block(make_block(3, BlockSource::Consensus))
+            .await;
+
+        // Duplicate — sync at index 1 should be rejected (consensus already there)
+        coordinator
+            .push_block(make_block(1, BlockSource::Sync))
+            .await;
+
+        let stats = coordinator.get_stats().await;
+        assert_eq!(stats.blocks_from_consensus, 2);
+        assert_eq!(stats.blocks_from_sync, 1);
+        assert_eq!(stats.blocks_deduplicated, 1);
+    }
+
+    #[tokio::test]
+    async fn test_max_drain_batch_limit() {
+        let config = CoordinatorConfig {
+            max_drain_batch: 3,
+            ..Default::default()
+        };
+        let coordinator = BlockCoordinator::new(1, config);
+
+        // Add 10 sequential blocks
+        for i in 1..=10 {
+            coordinator
+                .push_block(make_block(i, BlockSource::Consensus))
+                .await;
+        }
+
+        // First drain should return at most 3
+        let drained = coordinator.drain_ready().await;
+        assert_eq!(drained.len(), 3);
+        assert_eq!(coordinator.next_expected(), 4);
+
+        // Second drain gets next 3
+        let drained2 = coordinator.drain_ready().await;
+        assert_eq!(drained2.len(), 3);
+        assert_eq!(coordinator.next_expected(), 7);
+    }
+
+    #[tokio::test]
+    async fn test_drain_empty_queue() {
+        let coordinator = BlockCoordinator::new(1, CoordinatorConfig::default());
+        let drained = coordinator.drain_ready().await;
+        assert!(drained.is_empty());
+        assert_eq!(coordinator.next_expected(), 1); // Unchanged
+    }
+
+    #[tokio::test]
+    async fn test_consensus_does_not_dedup_consensus() {
+        let coordinator = BlockCoordinator::new(1, CoordinatorConfig::default());
+
+        // First consensus block
+        assert!(
+            coordinator
+                .push_block(make_block(1, BlockSource::Consensus))
+                .await
+        );
+        // Second consensus block at same index → rejected (not replaced)
+        assert!(
+            !coordinator
+                .push_block(make_block(1, BlockSource::Consensus))
+                .await
+        );
+
+        let stats = coordinator.get_stats().await;
+        assert_eq!(stats.blocks_deduplicated, 1);
+    }
+
+    #[tokio::test]
+    async fn test_gap_fill_channel_receives_request() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<(u64, u64)>();
+        let config = CoordinatorConfig {
+            gap_threshold: 2,
+            ..Default::default()
+        };
+        let coordinator = BlockCoordinator::new(1, config).with_gap_fill_channel(tx);
+
+        // Add block at index 10 (gap of 9 from next_expected=1)
+        coordinator
+            .push_block(make_block(10, BlockSource::Consensus))
+            .await;
+
+        // check_and_fill_gaps should send (1, 10) on the channel
+        coordinator.check_and_fill_gaps().await;
+
+        let (from, to) = rx.try_recv().unwrap();
+        assert_eq!(from, 1);
+        assert_eq!(to, 10);
+
+        let stats = coordinator.get_stats().await;
+        assert_eq!(stats.gaps_detected, 1);
+    }
+
+    #[tokio::test]
+    async fn test_gap_below_threshold_no_fill_request() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<(u64, u64)>();
+        let config = CoordinatorConfig {
+            gap_threshold: 10, // High threshold
+            ..Default::default()
+        };
+        let coordinator = BlockCoordinator::new(1, config).with_gap_fill_channel(tx);
+
+        // Add block at index 5 (gap of 4 from next_expected=1, below threshold of 10)
+        coordinator
+            .push_block(make_block(5, BlockSource::Consensus))
+            .await;
+        coordinator.check_and_fill_gaps().await;
+
+        // No message should be sent
+        assert!(rx.try_recv().is_err());
+    }
 }
