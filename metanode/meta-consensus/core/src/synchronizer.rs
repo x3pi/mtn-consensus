@@ -387,7 +387,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
                             let timeout = if self.fetch_blocks_scheduler_task.is_empty() {
                                 Instant::now()
                             } else {
-                                Instant::now() + PERIODIC_FETCH_INTERVAL.checked_div(2).unwrap()
+                                Instant::now() + PERIODIC_FETCH_INTERVAL.checked_div(2).expect("dividing Duration by 2 should never fail")
                             };
 
                             // only reset if it is earlier than the next deadline

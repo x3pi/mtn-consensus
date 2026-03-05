@@ -133,7 +133,13 @@ impl CommitFinalizer {
                 // Transaction certifier state should be GC'ed as soon as new commits are finalized.
                 // But this is done outside of process_commit(), because during recovery process_commit()
                 // is not called to finalize commits, but GC still needs to run.
-                self.try_update_gc_round(finalized_commits.last().unwrap().leader.round);
+                self.try_update_gc_round(
+                    finalized_commits
+                        .last()
+                        .expect("finalized_commits is non-empty (checked above)")
+                        .leader
+                        .round,
+                );
                 let mut dag_state = self.dag_state.write();
                 if !already_finalized {
                     // Records rejected transactions in newly finalized commits.
@@ -210,7 +216,10 @@ impl CommitFinalizer {
             // -  And the latest commit is less than 3 (WAVE_LENGTH) rounds above this commit.
             // In this case, this commit's leader certificate is not guaranteed to be in local DAG.
             if !commit_state.commit.decided_with_local_blocks {
-                let last_commit_state = self.pending_commits.back().unwrap();
+                let last_commit_state = self
+                    .pending_commits
+                    .back()
+                    .expect("pending_commits should not be empty during direct finalization");
                 if commit_state.commit.leader.round + DEFAULT_WAVE_LENGTH
                     > last_commit_state.commit.leader.round
                 {
@@ -390,12 +399,12 @@ impl CommitFinalizer {
             // Also, block verification ensures each authority appears at most once among ancestors.
             let mut origin_ancestor_ref = *blocks_map
                 .get(&committed_block_ref)
-                .unwrap()
+                .expect("block must exist in blocks_map")
                 .read()
                 .block
                 .ancestors()
                 .first()
-                .unwrap();
+                .expect("block must have at least one ancestor");
             while origin_ancestor_ref.author == committed_block_ref.author {
                 let Some(origin_ancestor_block) = blocks_map.get(&origin_ancestor_ref) else {
                     break;
@@ -409,7 +418,7 @@ impl CommitFinalizer {
                     .block
                     .ancestors()
                     .first()
-                    .unwrap();
+                    .expect("origin ancestor block must have at least one ancestor");
             }
         }
     }
@@ -445,7 +454,10 @@ impl CommitFinalizer {
             let mut rejected_transactions = vec![];
             for &transaction_index in pending_transactions {
                 // Pending transactions should always have reject votes.
-                let reject_stake = reject_votes.get(&transaction_index).copied().unwrap();
+                let reject_stake = reject_votes
+                    .get(&transaction_index)
+                    .copied()
+                    .expect("pending transaction must have reject vote entry");
                 if reject_stake < self.context.committee.quorum_threshold() {
                     // The transaction cannot be rejected yet.
                     continue;
@@ -570,7 +582,13 @@ impl CommitFinalizer {
 
     fn try_indirect_reject_pending_transactions_in_first_commit(&mut self) {
         let curr_leader_round = self.pending_commits[0].commit.leader.round;
-        let last_commit_leader_round = self.pending_commits.back().unwrap().commit.leader.round;
+        let last_commit_leader_round = self
+            .pending_commits
+            .back()
+            .expect("pending_commits should not be empty")
+            .commit
+            .leader
+            .round;
         if curr_leader_round + INDIRECT_REJECT_DEPTH <= last_commit_leader_round {
             let curr_commit_state = &mut self.pending_commits[0];
             // This function is called after trying to indirectly finalize pending blocks.
@@ -619,7 +637,10 @@ impl CommitFinalizer {
         let blocks_map = blocks.read();
         // Use BTreeSet for to_visit_blocks, to visit blocks in the earliest round first.
         let (pending_commit_index, mut to_visit_blocks) = {
-            let block_state = blocks_map.get(&pending_block_ref).unwrap().read();
+            let block_state = blocks_map
+                .get(&pending_block_ref)
+                .expect("pending block must exist in blocks_map")
+                .read();
             (block_state.commit_index, block_state.children.clone())
         };
         // Blocks that have been visited.
@@ -745,7 +766,7 @@ impl CommitFinalizer {
         // from the leader of the previous commit (current_commit_index - 1).
         let (commit_index, gc_round) = *gc_rounds
             .get((current_commit_index - 1 - pending_commit_index) as usize)
-            .unwrap();
+            .expect("gc_rounds must contain entry for current_commit_index - 1");
         assert_eq!(
             commit_index,
             current_commit_index - 1,
@@ -766,7 +787,10 @@ impl CommitFinalizer {
             }
 
             // Pop the finalized commit and set its rejected transactions.
-            let commit_state = self.pending_commits.pop_front().unwrap();
+            let commit_state = self
+                .pending_commits
+                .pop_front()
+                .expect("pending_commits front must exist (checked in while condition)");
             let mut commit = commit_state.commit;
             for (block_ref, rejected_transactions) in commit_state.rejected_transactions {
                 commit

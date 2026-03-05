@@ -207,9 +207,10 @@ impl Core {
             system_transaction_provider,
         }
         .recover()
+        .expect("Core::recover() failed")
     }
 
-    fn recover(mut self) -> Self {
+    fn recover(mut self) -> ConsensusResult<Self> {
         let _s = self
             .context
             .metrics
@@ -219,10 +220,9 @@ impl Core {
             .start_timer();
 
         // Try to commit and propose, since they may not have run after the last storage write.
-        self.try_commit(vec![]).unwrap();
+        self.try_commit(vec![])?;
 
-        let last_proposed_block = if let Some(last_proposed_block) = self.try_propose(true).unwrap()
-        {
+        let last_proposed_block = if let Some(last_proposed_block) = self.try_propose(true)? {
             last_proposed_block
         } else {
             let last_proposed_block = self.dag_state.read().get_last_proposed_block();
@@ -240,7 +240,10 @@ impl Core {
                     block: last_proposed_block.clone(),
                     excluded_ancestors: vec![],
                 })
-                .unwrap();
+                .map_err(|e| {
+                    tracing::warn!("Failed to signal new block during recovery: {e}");
+                    ConsensusError::Shutdown
+                })?;
             last_proposed_block
         };
 
@@ -254,7 +257,7 @@ impl Core {
             last_proposed_block
         );
 
-        self
+        Ok(self)
     }
 
     /// Processes the provided blocks and accepts them if possible when their causal history exists.
@@ -1479,7 +1482,12 @@ impl Core {
 
     /// Returns the 1st leader of the round.
     fn first_leader(&self, round: Round) -> AuthorityIndex {
-        self.leaders(round).first().unwrap().authority
+        self.leaders(round)
+            .first()
+            .expect(
+                "leaders() returned empty list — committee must have at least one leader per round",
+            )
+            .authority
     }
 
     fn last_proposed_timestamp_ms(&self) -> BlockTimestampMs {

@@ -555,12 +555,12 @@ impl DagState {
         // Iterate through ancestors of later_block in round descending order.
         let mut linked: BTreeSet<BlockRef> = later_block.ancestors().iter().cloned().collect();
         while !linked.is_empty() {
-            let round = linked.last().unwrap().round;
+            let round = linked.last().expect("linked set should not be empty").round;
             // Stop after finishing traversal for ancestors above earlier_round.
             if round <= earlier_round {
                 break;
             }
-            let block_ref = linked.pop_last().unwrap();
+            let block_ref = linked.pop_last().expect("linked set should not be empty");
             let Some(block) = self.get_block(&block_ref) else {
                 panic!("Block {:?} should exist in DAG!", block_ref);
             };
@@ -713,7 +713,7 @@ impl DagState {
                 .context
                 .committee
                 .to_authority_index(authority_index)
-                .unwrap();
+                .expect("authority_index must be valid for committee");
 
             let last_evicted_round = self.evicted_rounds[authority_index];
             if end_round.saturating_sub(1) <= last_evicted_round {
@@ -789,7 +789,12 @@ impl DagState {
             let recent_refs = &self.recent_refs_by_authority[block_ref.author];
             if recent_refs.contains(&block_ref) || self.genesis.contains_key(&block_ref) {
                 exist[index] = true;
-            } else if recent_refs.is_empty() || recent_refs.last().unwrap().round < block_ref.round
+            } else if recent_refs.is_empty()
+                || recent_refs
+                    .last()
+                    .expect("recent_refs checked non-empty")
+                    .round
+                    < block_ref.round
             {
                 // Optimization: recent_refs contain the most recent blocks known to this authority.
                 // If a block ref is not found there and has a higher round, it definitely is
@@ -828,7 +833,10 @@ impl DagState {
 
     pub(crate) fn contains_block(&self, block_ref: &BlockRef) -> bool {
         let blocks = self.contains_blocks(vec![*block_ref]);
-        blocks.first().cloned().unwrap()
+        blocks
+            .first()
+            .cloned()
+            .expect("contains_blocks must return exactly one element")
     }
 
     // Sets the block as committed in the cache. If the block is set as committed for first time, then true is returned, otherwise false is returned instead.
@@ -987,7 +995,11 @@ impl DagState {
         }
 
         for (i, round) in self.last_committed_rounds.iter().enumerate() {
-            let index = self.context.committee.to_authority_index(i).unwrap();
+            let index = self
+                .context
+                .committee
+                .to_authority_index(i)
+                .expect("authority index must be valid");
             let hostname = &self.context.committee.authority(index).hostname;
             self.context
                 .metrics
@@ -1044,7 +1056,11 @@ impl DagState {
     pub(crate) fn take_commit_votes(&mut self, limit: usize) -> Vec<CommitVote> {
         let mut votes = Vec::new();
         while !self.pending_commit_votes.is_empty() && votes.len() < limit {
-            votes.push(self.pending_commit_votes.pop_front().unwrap());
+            votes.push(
+                self.pending_commit_votes
+                    .pop_front()
+                    .expect("checked non-empty in while condition"),
+            );
         }
         votes
     }
