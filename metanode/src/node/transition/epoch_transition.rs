@@ -372,6 +372,25 @@ pub async fn transition_to_epoch_from_system_tx(
         *g = synced_index;
     }
     node.last_global_exec_index = synced_index;
+
+    // =========================================================================
+    // MEMORY LEAK FIX: Clear committed_transaction_hashes on epoch transition
+    // This HashSet grows ~1.1GB/hour at 10K TPS (32 bytes per TX hash).
+    // It's only needed for dedup during epoch transitions, so clearing it
+    // when the new epoch starts is safe — old epoch's hashes are irrelevant.
+    // =========================================================================
+    {
+        let mut hashes = node.committed_transaction_hashes.lock().await;
+        let old_count = hashes.len();
+        hashes.clear();
+        hashes.shrink_to_fit(); // Release allocated memory back to OS
+        if old_count > 0 {
+            info!(
+                "🧹 [MEMORY CLEANUP] Cleared {} committed_transaction_hashes from previous epoch (freed ~{}KB)",
+                old_count, (old_count * 32) / 1024
+            );
+        }
+    }
     node.update_execution_lock_epoch(new_epoch).await;
 
     // EPOCH STATE LOG: Comprehensive state dump for debugging transitions
@@ -496,6 +515,24 @@ pub async fn transition_to_epoch_from_system_tx(
             "⚠️ [TRANSITION] Failed to update epoch_eth_addresses: {}",
             e
         );
+    }
+
+    // =========================================================================
+    // MEMORY LEAK FIX: Prune old epochs from epoch_eth_addresses
+    // Only keep current + previous epoch (2 entries max).
+    // Old epoch committees are never needed after transition completes.
+    // =========================================================================
+    {
+        let mut addrs = node.epoch_eth_addresses.lock().await;
+        let before_count = addrs.len();
+        if before_count > 2 {
+            let min_epoch_to_keep = new_epoch.saturating_sub(1);
+            addrs.retain(|&epoch, _| epoch >= min_epoch_to_keep);
+            info!(
+                "🧹 [MEMORY CLEANUP] Pruned epoch_eth_addresses: {} -> {} entries (keeping epochs >= {})",
+                before_count, addrs.len(), min_epoch_to_keep
+            );
+        }
     }
 
     node.check_and_update_node_mode(&committee, config, true)

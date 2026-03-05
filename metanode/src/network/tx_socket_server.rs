@@ -690,15 +690,10 @@ impl TxSocketServer {
                             recycler.track_submitted(&chunk_vec).await;
                         }
 
-                        // Track submitted transactions for epoch transition recovery
-                        if let Some(ref node_arc) = node.as_ref() {
-                            let node_guard = node_arc.lock().await;
-                            let mut epoch_pending =
-                                node_guard.epoch_pending_transactions.lock().await;
-                            for tx_data in &chunk_vec {
-                                epoch_pending.push(tx_data.clone());
-                            }
-                        }
+                        // NOTE: epoch_pending_transactions tracking removed (memory leak fix).
+                        // At 10K TPS this Vec grew ~3.6GB/hour by cloning every TX.
+                        // TxRecycler already handles re-submission of stale TXs,
+                        // and committed_transaction_hashes prevents duplicates during epoch recovery.
 
                         let _client_clone = client.clone();
                         let _chunk_clone = chunk_vec.clone();
