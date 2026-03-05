@@ -477,6 +477,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
                                 commit_vote_monitor.clone(),
                                 context.clone(),
                                 commands_sender.clone(),
+                                dag_state.clone(),
                                 "live"
                             ).await {
                                 warn!("Error while processing fetched blocks from peer {peer_index} {peer_hostname}: {err}");
@@ -515,6 +516,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
         commit_vote_monitor: Arc<CommitVoteMonitor>,
         context: Arc<Context>,
         commands_sender: Sender<Command>,
+        dag_state: Arc<RwLock<DagState>>,
         sync_method: &str,
     ) -> ConsensusResult<()> {
         if serialized_blocks.is_empty() {
@@ -529,6 +531,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
             .spawn_blocking({
                 let block_verifier = block_verifier.clone();
                 let context = context.clone();
+                let dag_state = dag_state.clone();
                 move || {
                     Self::verify_blocks(
                         serialized_blocks,
@@ -536,6 +539,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
                         transaction_certifier,
                         &context,
                         peer_index,
+                        dag_state,
                     )
                 }
             })
@@ -617,6 +621,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
         transaction_certifier: TransactionCertifier,
         context: &Context,
         peer_index: AuthorityIndex,
+        dag_state: Arc<RwLock<DagState>>,
     ) -> ConsensusResult<Vec<VerifiedBlock>> {
         let mut verified_blocks = Vec::new();
         let mut voted_blocks = Vec::new();
@@ -624,7 +629,33 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
             let signed_block: SignedBlock =
                 bcs::from_bytes(&serialized_block).map_err(ConsensusError::MalformedBlock)?;
 
-            // TODO: cache received and verified block refs to avoid duplicated work.
+            // Dedup: skip verification if block is already accepted in dag_state.
+            // This avoids redundant signature verification for blocks received via both
+            // broadcast and fetch paths.
+            {
+                let block_digest = VerifiedBlock::compute_digest(&serialized_block);
+                let block_ref =
+                    BlockRef::new(signed_block.round(), signed_block.author(), block_digest);
+                if context.committee.is_valid_index(signed_block.author())
+                    && dag_state.read().contains_block(&block_ref)
+                {
+                    trace!(
+                        "Skipping already-verified block {} in synchronizer",
+                        block_ref
+                    );
+                    context
+                        .metrics
+                        .node_metrics
+                        .synchronizer_fetched_blocks_by_peer
+                        .with_label_values(&[
+                            &context.committee.authority(peer_index).hostname,
+                            "dedup_skip",
+                        ])
+                        .inc();
+                    continue;
+                }
+            }
+
             let (verified_block, reject_txn_votes) = block_verifier
                 .verify_and_vote(signed_block, serialized_block)
                 .tap_err(|e| {
@@ -914,7 +945,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
                     blocks_to_fetch.clone(),
                     network_client,
                     missing_blocks,
-                    dag_state,
+                    dag_state.clone(),
                 )
                 .await;
                 context
@@ -941,6 +972,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
                         commit_vote_monitor.clone(),
                         context.clone(),
                         commands_sender.clone(),
+                        dag_state.clone(),
                         "periodic",
                     )
                     .await
@@ -1953,6 +1985,7 @@ mod tests {
             commit_vote_monitor,
             context.clone(),
             commands_sender,
+            dag_state.clone(),
             "test",
         )
         .await;

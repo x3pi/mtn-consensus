@@ -1143,8 +1143,11 @@ struct PeerInfo {
 
 impl SizedRequest for http::request::Parts {
     fn size(&self) -> usize {
-        // TODO: implement this.
-        0
+        self.headers
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0)
     }
 
     fn route(&self) -> String {
@@ -1158,8 +1161,11 @@ impl SizedRequest for http::request::Parts {
 
 impl SizedResponse for http::response::Parts {
     fn size(&self) -> usize {
-        // TODO: implement this.
-        0
+        self.headers
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0)
     }
 
     fn error_type(&self) -> Option<String> {

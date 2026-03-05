@@ -35,11 +35,16 @@ impl SuspendedBlock {
     }
 }
 
+/// Maximum number of suspended blocks allowed per authority. When the total suspended blocks
+/// across all authorities exceeds `MAX_SUSPENDED_BLOCKS_PER_AUTHORITY * committee_size`,
+/// new blocks will be skipped to prevent OOM from Byzantine validators sending blocks
+/// without valid causal history.
+const MAX_SUSPENDED_BLOCKS_PER_AUTHORITY: usize = 1000;
+
 /// Block manager suspends incoming blocks until they are connected to the existing graph,
 /// returning newly connected blocks.
-/// TODO: As it is possible to have Byzantine validators who produce Blocks without valid causal
-/// history we need to make sure that BlockManager takes care of that and avoid OOM (Out Of Memory)
-/// situations.
+/// Byzantine OOM protection: total suspended blocks are bounded by
+/// `MAX_SUSPENDED_BLOCKS_PER_AUTHORITY * committee_size`.
 pub(crate) struct BlockManager {
     context: Arc<Context>,
     dag_state: Arc<RwLock<DagState>>,
@@ -281,6 +286,32 @@ impl BlockManager {
         let mut ancestors_to_fetch = BTreeSet::new();
         let dag_state = self.dag_state.read();
         let gc_round = dag_state.gc_round();
+
+        // OOM guard: reject blocks when suspended blocks limit is reached to prevent Byzantine
+        // validators from causing unbounded memory growth.
+        let max_suspended = MAX_SUSPENDED_BLOCKS_PER_AUTHORITY * self.context.committee.size();
+        if self.suspended_blocks.len() >= max_suspended {
+            let hostname = self
+                .context
+                .committee
+                .authority(block.author())
+                .hostname
+                .as_str();
+            warn!(
+                "Suspended blocks limit reached ({}/{}), skipping block {} from {}",
+                self.suspended_blocks.len(),
+                max_suspended,
+                block_ref,
+                hostname
+            );
+            self.context
+                .metrics
+                .node_metrics
+                .block_manager_skipped_blocks
+                .with_label_values(&[hostname])
+                .inc();
+            return TryAcceptResult::Skipped;
+        }
 
         // If block has been already received and suspended, or already processed and stored, or is a genesis block, then skip it.
         if self.suspended_blocks.contains_key(&block_ref) || dag_state.contains_block(&block_ref) {
