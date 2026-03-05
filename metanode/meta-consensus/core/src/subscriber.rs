@@ -95,19 +95,15 @@ impl<C: NetworkClient, S: NetworkService> Subscriber<C, S> {
         }
     }
 
-    fn unsubscribe_locked(&self, peer: AuthorityIndex, subscription: &mut Option<JoinHandle<()>>) {
-        let peer_hostname = &self.context.committee.authority(peer).hostname;
+    fn unsubscribe_locked(&self, _peer: AuthorityIndex, subscription: &mut Option<JoinHandle<()>>) {
         if let Some(subscription) = subscription.take() {
             subscription.abort();
         }
-        // There is a race between shutting down the subscription task and clearing the metric here.
-        // TODO: fix the race when unsubscribe_locked() gets called outside of stop().
-        self.context
-            .metrics
-            .node_metrics
-            .subscribed_to
-            .with_label_values(&[peer_hostname])
-            .set(0);
+        // NOTE: The `subscribed_to` metric is intentionally NOT cleared here.
+        // The subscription_loop already sets it to 0 at the start of each retry
+        // (line ~136), which avoids a race where we clear the metric while the
+        // old task hasn't exited yet. During stop(), all tasks are aborted and
+        // the metric will be stale but harmless (node is shutting down).
     }
 
     async fn subscription_loop(
@@ -247,11 +243,11 @@ mod test {
 
     use super::*;
     use crate::{
-        VerifiedBlock,
         commit::CommitRange,
         error::ConsensusResult,
-        network::{BlockStream, ExtendedSerializedBlock, test_network::TestService},
+        network::{test_network::TestService, BlockStream, ExtendedSerializedBlock},
         storage::mem_store::MemStore,
+        VerifiedBlock,
     };
 
     struct SubscriberTestClient {}
