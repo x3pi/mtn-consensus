@@ -1,0 +1,82 @@
+# Metanode Configuration with Network Sockets
+# This is an example showing how to configure a node for distributed deployment across multiple machines
+
+node_id = 0
+network_address = "192.168.1.100:9000"  # Public network address for consensus P2P
+protocol_key_path = "config/node_0_protocol_key.json"
+network_key_path = "config/node_0_network_key.json"
+storage_path = "config/storage/node_0"
+enable_metrics = true
+metrics_port = 9100
+speed_multiplier = 1.0
+time_based_epoch_change = true
+epoch_duration_seconds = 60
+max_clock_drift_seconds = 5
+enable_ntp_sync = true
+ntp_servers = [
+    "pool.ntp.org",
+    "time.google.com",
+]
+ntp_sync_interval_seconds = 300
+executor_read_enabled = true
+executor_commit_enabled = true
+
+# ============================================================================
+# Socket Configuration - Supports both Unix and TCP formats
+# ============================================================================
+#
+# Socket addresses can be specified in multiple formats:
+#
+# 1. UNIX DOMAIN SOCKET (local only):
+#    executor_send_socket_path = "/tmp/executor0.sock"
+#    executor_receive_socket_path = "/tmp/rust-go-master.sock"
+#
+# 2. TCP SOCKET with explicit prefix (local or network):
+#    executor_send_socket_path = "tcp://127.0.0.1:19100"
+#    executor_receive_socket_path = "tcp://127.0.0.1:19101"
+#
+# 3. TCP SOCKET without prefix (auto-detected):
+#    executor_send_socket_path = "192.168.1.200:19100"
+#    executor_receive_socket_path = "192.168.1.200:19101"
+#
+# Use TCP sockets when running Rust and Go on different machines!
+# ============================================================================
+
+# Example: Go Master running on a different machine (192.168.1.200)
+executor_send_socket_path = "tcp://192.168.1.200:19100"
+executor_receive_socket_path = "tcp://192.168.1.200:19101"
+
+# Example: Local deployment with Unix sockets (default)
+# executor_send_socket_path = "/tmp/executor0.sock"
+# executor_receive_socket_path = "/tmp/rust-go-standard-master.sock"
+
+commit_sync_batch_size = 200
+commit_sync_parallel_fetches = 16
+commit_sync_batches_ahead = 64
+adaptive_catchup_enabled = true
+adaptive_delay_enabled = true
+adaptive_delay_ms = 50
+epoch_transition_optimization = "balanced"
+enable_gradual_shutdown = true
+gradual_shutdown_user_cert_drain_secs = 2
+gradual_shutdown_consensus_cert_drain_secs = 1
+gradual_shutdown_final_drain_secs = 1
+
+# ============================================================================
+# Peer Discovery Configuration
+# ============================================================================
+#
+# Peer Go Master sockets for discovering validators from other nodes
+# Supports both Unix and TCP formats:
+#
+# Local example:
+#   peer_go_master_sockets = ["/tmp/rust-go-standard-master.sock"]
+#
+# Distributed example:
+peer_go_master_sockets = [
+    "tcp://192.168.1.101:19201",  # Node 1 Go Master
+    "tcp://192.168.1.102:19202",  # Node 2 Go Master
+    "tcp://192.168.1.103:19203",  # Node 3 Go Master
+]
+
+peer_rpc_port = 19000
