@@ -158,7 +158,7 @@ impl ExecutorClient {
                 global_exec_index,
                 (epoch_data_bytes, epoch, subdag.commit_ref.index),
             );
-            info!("📦 [SEQUENTIAL-BUFFER] Added block to buffer: global_exec_index={}, commit_index={}, epoch={}, blocks={}, total_tx={}, buffer_size={}",
+            trace!("📦 [SEQUENTIAL-BUFFER] Added block to buffer: global_exec_index={}, commit_index={}, epoch={}, blocks={}, total_tx={}, buffer_size={}",
                 global_exec_index, subdag.commit_ref.index, epoch, subdag.blocks.len(), total_tx, buffer.len());
         }
 
@@ -275,7 +275,7 @@ impl ExecutorClient {
 
             if let Some((epoch_data_bytes, epoch, commit_index)) = block_data {
                 // This is the next expected block - send it immediately
-                info!("📤 [SEQUENTIAL-BUFFER] Sending block: global_exec_index={}, commit_index={}, epoch={}, size={} bytes",
+                trace!("📤 [SEQUENTIAL-BUFFER] Sending block: global_exec_index={}, commit_index={}, epoch={}, size={} bytes",
                     current_expected, commit_index, epoch, epoch_data_bytes.len());
                 if let Err(e) = self
                     .send_block_data(&epoch_data_bytes, current_expected, epoch, commit_index)
@@ -293,7 +293,7 @@ impl ExecutorClient {
                 {
                     let mut next_expected = self.next_expected_index.lock().await;
                     *next_expected += 1;
-                    info!("✅ [SEQUENTIAL-BUFFER] Successfully sent block global_exec_index={}, next_expected={}", 
+                    trace!("✅ [SEQUENTIAL-BUFFER] Successfully sent block global_exec_index={}, next_expected={}", 
                         current_expected, *next_expected);
 
                     // DUAL-STREAM TRACKING: Mark this index as successfully sent
@@ -496,7 +496,7 @@ impl ExecutorClient {
 
             match send_result {
                 Ok(_) => {
-                    info!("📤 [TX FLOW] Sent committed sub-DAG to Go executor: global_exec_index={}, commit_index={}, epoch={}, data_size={} bytes", 
+                    trace!("📤 [TX FLOW] Sent committed sub-DAG to Go executor: global_exec_index={}, commit_index={}, epoch={}, data_size={} bytes", 
                         global_exec_index, commit_index, epoch, epoch_data_bytes.len());
                     Ok(())
                 }
@@ -530,7 +530,7 @@ impl ExecutorClient {
 
                         match retry_result {
                             Ok(Ok(())) => {
-                                info!("✅ [EXECUTOR] Successfully sent committed sub-DAG after reconnection: global_exec_index={}, commit_index={}", 
+                                trace!("✅ [EXECUTOR] Successfully sent committed sub-DAG after reconnection: global_exec_index={}, commit_index={}", 
                                     global_exec_index, commit_index);
                                 Ok(())
                             }
@@ -592,7 +592,7 @@ impl ExecutorClient {
                 use crate::types::tx_hash::calculate_transaction_hash;
                 let tx_hash = calculate_transaction_hash(tx_data);
                 let tx_hash_hex = hex::encode(&tx_hash[..8.min(tx_hash.len())]);
-                let _tx_hash_full_hex = hex::encode(&tx_hash);
+                let _tx_hash_full_hex = ""; // Removed: was hex::encode(&tx_hash) — unused computation
 
                 // 🔍 FILTER: Check if this is a SystemTransaction (BCS format) - skip if so
                 // SystemTransaction should not be sent to Go executor as Go doesn't understand BCS
@@ -705,7 +705,7 @@ impl ExecutorClient {
 
         // Count total transactions in encoded data
         let total_tx_encoded: usize = epoch_data.blocks.iter().map(|b| b.transactions.len()).sum();
-        info!("📦 [TX INTEGRITY] Encoded CommittedEpochData: global_exec_index={}, commit_index={}, epoch={}, blocks={}, total_tx={}, total_size={} bytes (using protobuf encoding)", 
+        trace!("📦 [TX INTEGRITY] Encoded CommittedEpochData: global_exec_index={}, commit_index={}, epoch={}, blocks={}, total_tx={}, total_size={} bytes (using protobuf encoding)", 
             global_exec_index, subdag.commit_ref.index, epoch, epoch_data.blocks.len(), total_tx_encoded, buf.len());
 
         Ok(buf)
