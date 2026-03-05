@@ -197,7 +197,7 @@ impl RustSyncNode {
             let next_expected = queue.next_expected();
 
             // CRITICAL DEBUG: Log at INFO level to understand queue state
-            info!(
+            debug!(
                 "[RUST-SYNC] State after sync_with_go: go_block={}, go_epoch={}, queue_next_expected={}, pending_count={}, epoch_base={}",
                 go_last_block,
                 go_epoch,
@@ -221,7 +221,7 @@ impl RustSyncNode {
                     queue.next_expected() - 1 // Fetch from the block before what we need
                 };
 
-                info!(
+                debug!(
                     "[RUST-SYNC] PHASE 2: Fetching from index {} (committee has {} authorities)",
                     fetch_from_index,
                     committee.size()
@@ -245,7 +245,7 @@ impl RustSyncNode {
             }
         } else {
             // PHASE 2.5: Use Peer Go Sync when network_client is None (SyncOnly mode)
-            info!("[RUST-SYNC] PHASE 2.5: No Mysticeti network, using Peer Go Sync");
+            debug!("[RUST-SYNC] PHASE 2.5: No Mysticeti network, using Peer Go Sync");
 
             let peer_addresses = self.get_peer_go_addresses();
             if !peer_addresses.is_empty() {
@@ -263,7 +263,7 @@ impl RustSyncNode {
                 {
                     Ok(synced) => {
                         if synced > 0 {
-                            info!("✅ [PEER-GO-SYNC] Synced {} blocks via Peer Go", synced);
+                            debug!("✅ [PEER-GO-SYNC] Synced {} blocks via Peer Go", synced);
                         }
                     }
                     Err(e) => {
