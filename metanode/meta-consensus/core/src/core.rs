@@ -1052,9 +1052,11 @@ impl Core {
     /// if attempt to do multiple times.
     pub(crate) fn set_last_known_proposed_round(&mut self, round: Round) {
         if self.last_known_proposed_round.is_some() {
-            panic!(
-                "Should not attempt to set the last known proposed round if that has been already set"
+            warn!(
+                "set_last_known_proposed_round called again (already set to {:?}), ignoring new value {}",
+                self.last_known_proposed_round, round
             );
+            return;
         }
         self.last_known_proposed_round = Some(round);
         info!("Last known proposed round set to {round}");

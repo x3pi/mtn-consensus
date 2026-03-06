@@ -110,7 +110,9 @@ impl ConsensusAuthority {
     pub fn transaction_client(&self) -> Arc<TransactionClient> {
         match self {
             Self::WithTonic(Some(authority)) => authority.transaction_client(),
-            Self::WithTonic(None) => panic!("Authority already stopped"),
+            Self::WithTonic(None) => {
+                panic!("transaction_client() called after authority was stopped — caller must check lifecycle before access")
+            }
         }
     }
 
@@ -118,7 +120,9 @@ impl ConsensusAuthority {
     fn context(&self) -> &Arc<Context> {
         match self {
             Self::WithTonic(Some(authority)) => &authority.context,
-            Self::WithTonic(None) => panic!("Authority already stopped"),
+            Self::WithTonic(None) => {
+                panic!("context() called after authority was stopped — caller must check lifecycle before access")
+            }
         }
     }
 
@@ -127,7 +131,9 @@ impl ConsensusAuthority {
     pub fn take_store(&self) -> Arc<dyn crate::storage::Store> {
         match self {
             Self::WithTonic(Some(authority)) => authority.store.clone(),
-            Self::WithTonic(None) => panic!("Authority already stopped"),
+            Self::WithTonic(None) => {
+                panic!("take_store() called after authority was stopped — caller must check lifecycle before access")
+            }
         }
     }
 }

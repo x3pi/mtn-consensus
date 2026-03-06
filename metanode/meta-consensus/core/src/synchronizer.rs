@@ -405,7 +405,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
                             } else if e.is_panic() {
                                 std::panic::resume_unwind(e.into_panic());
                             } else {
-                                panic!("fetch our last block task failed: {e}");
+                                error!("fetch our last block task failed (non-panic, non-cancel JoinError): {e}");
                             }
                         },
                     };
@@ -418,7 +418,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
                             } else if e.is_panic() {
                                 std::panic::resume_unwind(e.into_panic());
                             } else {
-                                panic!("fetch blocks scheduler task failed: {e}");
+                                error!("fetch blocks scheduler task failed (non-panic, non-cancel JoinError): {e}");
                             }
                         },
                     };
