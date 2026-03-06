@@ -976,8 +976,9 @@ impl<C: NetworkClient> Inner<C> {
                 }
             } else {
                 // Verify next commit increments index and references the previous digest.
-                let (last_commit_digest, last_commit): &(CommitDigest, Commit) =
-                    commits.last().unwrap();
+                let (last_commit_digest, last_commit): &(CommitDigest, Commit) = commits
+                    .last()
+                    .expect("commits is non-empty: checked at loop entry");
                 if commit.index() != last_commit.index() + 1
                     || &commit.previous_digest() != last_commit_digest
                 {
