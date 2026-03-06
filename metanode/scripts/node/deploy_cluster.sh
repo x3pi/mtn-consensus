@@ -11,7 +11,7 @@
 # ║         ./deploy_cluster.sh --stop       # Stop cluster           ║
 # ╚═══════════════════════════════════════════════════════════════════╝
 
-set -euo pipefail
+set -uo pipefail
 
 # Colors
 GREEN='\033[0;32m'
@@ -439,13 +439,10 @@ if $DO_START; then
         for id in $nodes; do
             log_info "Starting Rust Node $id on $server..."
 
-            ssh_cmd "$server" "
-                cd '${REMOTE_METANODE}'
-                BINARY='${REMOTE_METANODE}/target/release/metanode'
-                LOG_DIR='${REMOTE_METANODE}/logs'
-                tmux new-session -d -s 'metanode-${id}' -c '${REMOTE_METANODE}' \
-                    \"ulimit -n 100000; export RUST_LOG=info,consensus_core=debug; export DB_WRITE_BUFFER_SIZE_MB=256; export DB_WAL_SIZE_MB=256; \\\$BINARY start --config ${RUST_CONFIGS[$id]} >> \\\"\${LOG_DIR}/node_${id}/rust.log\\\" 2>&1\"
-            "
+            RUST_BIN="${REMOTE_METANODE}/target/release/metanode"
+            RUST_LOG_FILE="${REMOTE_METANODE}/logs/node_${id}/rust.log"
+            RUST_CFG="${RUST_CONFIGS[$id]}"
+            ssh_cmd "$server" "tmux new-session -d -s metanode-${id} -c ${REMOTE_METANODE} '${RUST_BIN} start --config ${RUST_CFG} >> ${RUST_LOG_FILE} 2>&1'"
             log_ok "Rust Node $id started"
             sleep 1
         done
