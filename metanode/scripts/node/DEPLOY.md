@@ -1,6 +1,6 @@
 # 🚀 Multi-Server Cluster Deployment Guide
 
-Hệ thống deploy tự động: **build trên máy local → đẩy binary + config qua SSH → update IPs → start nodes trên remote servers**.
+Hệ thống deploy tự động: **chỉ cần sửa `deploy.env` → script tự build, push, update IPs, start**.
 
 ## Kiến trúc Cluster
 
@@ -14,160 +14,94 @@ Hệ thống deploy tự động: **build trên máy local → đẩy binary + c
 └─────────────────────┘    └─────────────────────┘
 ```
 
-Mỗi node gồm **3 process**:
-| Process | Mô tả | tmux session |
-|---------|--------|--------------|
-| Go Master | Xử lý block, consensus | `go-master-N` |
-| Go Sub | Ghi data song song | `go-sub-N` |
-| Rust Metanode | Consensus protocol | `metanode-N` |
+Mỗi node = 3 process: `go-master-N` + `go-sub-N` + `metanode-N` (tmux sessions)
 
 ---
 
-## Yêu cầu trước khi deploy
+## Cấu hình — `deploy.env`
 
-### Máy local (build machine)
-- Go 1.23.5+
-- Rust nightly toolchain
-- `sshpass` (nếu dùng password auth): `sudo apt install sshpass`
-- Source code tại `/home/abc/chain-n/`
-
-### Mỗi server remote
-- SSH accessible (key hoặc password)
-- `tmux` installed: `sudo apt install tmux`
-- `curl` installed
-- Đủ RAM (khuyến nghị 8GB+)
-
----
-
-## Cấu hình
-
-Sửa file **`deploy.env`** trước khi chạy:
+**Đây là file duy nhất cần sửa.** Tất cả IPs trong config files sẽ tự động cập nhật theo `NODE_SERVER` mapping.
 
 ```bash
 # SSH
 SSH_USER="abc"
 SSH_AUTH="password"          # "key" hoặc "password"
-SSH_PASSWORD="1234@abcd"     # Nếu dùng password
-SSH_KEY=""                   # Nếu dùng key, path tới private key
+SSH_PASSWORD="1234@abcd"
 
 # Server IPs
-SERVER_B="192.168.1.231"     # Node 0, Node 1
-SERVER_C="192.168.1.232"     # Node 2, Node 3
+SERVER_B="192.168.1.231"
+SERVER_C="192.168.1.232"
 
-# Node → Server mapping
-NODE_SERVER[0]="$SERVER_B"
-NODE_SERVER[1]="$SERVER_B"
-NODE_SERVER[2]="$SERVER_C"
-NODE_SERVER[3]="$SERVER_C"
+# Node → Server mapping (chỉ cần sửa ở đây)
+NODE_SERVER[0]="$SERVER_B"   # Node 0 chạy trên Server B
+NODE_SERVER[1]="$SERVER_B"   # Node 1 chạy trên Server B
+NODE_SERVER[2]="$SERVER_C"   # Node 2 chạy trên Server C
+NODE_SERVER[3]="$SERVER_C"   # Node 3 chạy trên Server C
 ```
-
-> **Lưu ý**: Nếu thay đổi số node hoặc server, cần cập nhật cả port mapping trong `deploy_status.sh`.
 
 ---
 
 ## Sử dụng
 
-### Full Deploy (lần đầu hoặc update code)
-
+### Full Deploy
 ```bash
-cd /home/abc/chain-n/mtn-consensus/metanode/scripts/node
 ./deploy_cluster.sh --all
 ```
 
-Thực hiện tuần tự:
-1. ✅ **Phase 0** — Validate SSH tới tất cả servers
-2. 🔨 **Phase 1** — Build Rust + Go binary từ source local
-3. 🛑 **Phase 2** — Stop cluster cũ trên remote
-4. 📦 **Phase 3** — Push binaries + configs tới từng server
-5. 🌐 **Phase 4** — **Update IPs** trong config files (gọi `update_ips.sh`)
-6. 🧹 **Phase 5** — Clean data cũ + Start nodes
+Tự động thực hiện:
+1. ✅ Validate SSH tới tất cả servers
+2. 🔨 Build Rust + Go binary local
+3. 🛑 Stop cluster cũ trên remote
+4. 📦 Push binaries + configs tới từng server
+5. 🌐 **Update IPs** — tự lấy từ `deploy.env`, gọi `update_ips.sh` trên mỗi server
+6. 🧹 Clean data + 🚀 Start nodes
 
-### Các lệnh riêng lẻ
-
+### Các lệnh khác
 ```bash
-# Full deploy
-./deploy_cluster.sh --all
-
-# Chỉ build (không push, không start)
-./deploy_cluster.sh --build
-
-# Chỉ push binary + config + update IPs
-./deploy_cluster.sh --push --ips
-
-# Chỉ start (đã push trước đó)
-./deploy_cluster.sh --start
-
-# Kết hợp: build + push (không start)
-./deploy_cluster.sh --build --push --ips
-
-# Stop toàn bộ cluster
-./deploy_stop.sh
-
-# Check trạng thái
-./deploy_status.sh
+./deploy_cluster.sh --build              # Chỉ build
+./deploy_cluster.sh --push --ips         # Chỉ push + update IPs
+./deploy_cluster.sh --start              # Chỉ start
+./deploy_cluster.sh --build --push --ips # Build + push (không start)
+./deploy_stop.sh                         # Dừng cluster
+./deploy_status.sh                       # Check trạng thái
 ```
 
 ---
 
-## Update IPs — Chi tiết hoạt động
+## Tự động Update IPs
 
-Khi deploy `--all` hoặc dùng flag `--ips`, script tự động gọi `update_ips.sh` trên **mỗi remote server** để cập nhật IP vào tất cả config files.
+> **Chỉ cần sửa `deploy.env` → tất cả config files tự cập nhật khi deploy.**
 
-### Cách gọi
-```bash
-# deploy_cluster.sh tự động chạy trên remote:
-bash update_ips.sh <NODE0_IP> <NODE1_IP> <NODE2_IP> <NODE3_IP> [NODE4_IP]
+Khi chạy `--all` hoặc `--ips`, script tự động:
+1. Đọc `NODE_SERVER[0..3]` từ `deploy.env`
+2. SSH vào mỗi remote server
+3. Gọi `update_ips.sh` → cập nhật IP vào **tất cả** config files
 
-# Ví dụ thực tế:
-bash update_ips.sh 192.168.1.231 192.168.1.231 192.168.1.232 192.168.1.232
-```
+### Files được tự động update
 
-IPs được lấy từ `NODE_SERVER[0..3]` trong `deploy.env`.
+| File | Field | Mô tả |
+|------|-------|--------|
+| `config/node_N.toml` | `network_address` | Rust P2P consensus |
+| | `peer_rpc_addresses` | Peer discovery |
+| `config-master-nodeN.json` | `meta_node_rpc_address` | Go → Rust RPC |
+| `config-sub-nodeN.json` | `meta_node_rpc_address`, `master_address` | Go Sub → Rust, Sub → Master |
+| `genesis.json` | `primary_address`, `worker_address`, `p2p_address` | Validator addresses |
+| `tps_blast/config.json` | `parent_connection_address` | TPS tool |
 
-### Files bị ảnh hưởng
+> Chỉ thay IP, giữ nguyên port. **Không cần sửa thủ công bất kỳ config nào.**
 
-| File | Field được update | Mô tả |
-|------|-------------------|--------|
-| **Rust** `config/node_N.toml` | `network_address` | Địa chỉ P2P consensus (IP:900N) |
-| | `peer_rpc_addresses` | Danh sách peer discovery của các node khác |
-| **Go Master** `config-master-nodeN.json` | `meta_node_rpc_address` | Rust RPC endpoint (chỉ thay IP, giữ port) |
-| **Go Sub** `config-sub-nodeN.json` | `meta_node_rpc_address` | Rust RPC endpoint |
-| | `master_address` | Địa chỉ Go Master trên cùng server |
-| **Genesis** `genesis.json` | `primary_address` | Validator primary address |
-| | `worker_address` | Validator worker address |
-| | `p2p_address` | P2P address dạng `/ip4/IP/tcp/PORT` |
-| | `epoch_timestamp_ms` | Cập nhật timestamp epoch hiện tại |
-| **TPS Tools** `run_multinode_load.sh` | `NODES`, `RPCS` | Danh sách nodes, RPC endpoints |
-| | `block_hash_checker` | Nodes để check hash |
-| **TPS configs** `tps_blast/config.json` | `parent_connection_address` | Node 0 Master port |
-| | `tx_sender/config.json` | `parent_connection_address` | Node 0 Sub port |
+---
 
-### Port Mapping cố định
+## Port Mapping (cố định)
 
-| Mục | Node 0 | Node 1 | Node 2 | Node 3 |
-|-----|--------|--------|--------|--------|
-| Consensus P2P | 9000 | 9001 | 9002 | 9003 |
-| Peer RPC | 19000 | 19001 | 19002 | 19003 |
-| Go Master Connection | 4201 | 6201 | 6211 | 6221 |
-| Go Sub Connection | 4200 | 6200 | 6210 | 6220 |
+| | Node 0 | Node 1 | Node 2 | Node 3 |
+|---|--------|--------|--------|--------|
 | Go Master RPC | 8757 | 10747 | 10749 | 10750 |
 | Go Sub RPC | 8646 | 10646 | 10650 | 10651 |
+| Go Master Connection | 4201 | 6201 | 6211 | 6221 |
+| Rust P2P | 9000 | 9001 | 9002 | 9003 |
+| Rust Peer RPC | 19000 | 19001 | 19002 | 19003 |
 | Rust Metrics | 9100 | 9101 | 9102 | 9103 |
-
-> **Quan trọng**: `update_ips.sh` chỉ thay đổi phần IP, giữ nguyên port. Ports là cố định và không cần thay đổi.
-
-### Chạy thủ công (debug)
-
-```bash
-# Preview thay đổi (không ghi file)
-./update_ips.sh --dry-run 192.168.1.231 192.168.1.231 192.168.1.232 192.168.1.232
-
-# Thay đổi thật
-./update_ips.sh 192.168.1.231 192.168.1.231 192.168.1.232 192.168.1.232
-
-# Chạy localhost (single machine)
-./update_ips.sh 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1
-```
 
 ---
 
@@ -177,120 +111,41 @@ IPs được lấy từ `NODE_SERVER[0..3]` trong `deploy.env`.
 ./deploy_status.sh
 ```
 
-Kiểm tra trên mỗi server:
-- ✅/❌ tmux sessions (go-master, go-sub, metanode)
-- ✅/❌ RPC health (`/health` endpoint)
-- 📊 Block height mỗi node
-- 🔄 Consensus sync (chênh ≤2 blocks = OK)
-- 📋 3 dòng log cuối Go Master
-
----
-
-## Cấu trúc thư mục trên Remote
-
-```
-/home/abc/chain-n/
-├── mtn-consensus/metanode/
-│   ├── target/release/metanode          # Rust binary
-│   ├── config/
-│   │   ├── node_N.toml                  # Rust config (per node)
-│   │   ├── node_N_network_key.json      # Network key
-│   │   ├── node_N_protocol_key.json     # Protocol key
-│   │   ├── committee.json               # Committee config
-│   │   └── storage/node_N/              # Rust storage data
-│   ├── logs/node_N/                     # Log files
-│   │   ├── go-master-stdout.log
-│   │   ├── go-sub-stdout.log
-│   │   └── rust.log
-│   └── scripts/node/
-│       ├── update_ips.sh                # Cập nhật IPs (tự động bởi deploy)
-│       ├── deploy_cluster.sh
-│       ├── deploy_stop.sh
-│       └── deploy_status.sh
-└── mtn-simple-2025/cmd/simple_chain/
-    ├── simple_chain                     # Go binary
-    ├── genesis.json
-    ├── config-master-nodeN.json         # Go Master config
-    ├── config-sub-nodeN.json            # Go Sub config
-    └── sample/nodeN/                    # Node data
-        ├── data/
-        ├── data-write/
-        ├── back_up/
-        └── back_up_write/
-```
-
----
-
-## RPC Endpoints
-
-```bash
-# Health check
-curl http://<server_ip>:<master_rpc_port>/health
-
-# Block number
-curl http://<server_ip>:<master_rpc_port>/block_number
-
-# Pipeline stats
-curl http://<server_ip>:<master_rpc_port>/pipeline/stats
-```
+Kiểm tra: tmux sessions, RPC health, block height, consensus sync, log tails.
 
 ---
 
 ## Troubleshooting
 
-### SSH không kết nối được
 ```bash
-# Test SSH thủ công
+# SSH test
 sshpass -p "password" ssh -o StrictHostKeyChecking=no abc@192.168.1.231 "echo ok"
 
-# Thiếu sshpass?
-sudo apt install sshpass
-```
+# Xem log
+ssh abc@192.168.1.231 "tail -50 .../logs/node_0/go-master-stdout.log"
+ssh abc@192.168.1.231 "tail -50 .../logs/node_0/rust.log"
 
-### Node không start
-```bash
-# Xem log trên remote server
-ssh abc@192.168.1.231 "tail -50 /home/abc/chain-n/mtn-consensus/metanode/logs/node_0/go-master-stdout.log"
-ssh abc@192.168.1.231 "tail -50 /home/abc/chain-n/mtn-consensus/metanode/logs/node_0/rust.log"
-
-# Xem tmux session trực tiếp
+# Attach tmux
 ssh abc@192.168.1.231 "tmux attach -t go-master-0"
-ssh abc@192.168.1.231 "tmux attach -t metanode-0"
-```
 
-### Nodes out of sync
-```bash
-# Check trạng thái
-./deploy_status.sh
+# Disk đầy → dọn
+ssh abc@192.168.1.231 "rm -rf .../metanode/target .../metanode/logs/*"
 
-# Nếu chênh > 10 blocks, restart cluster
-./deploy_stop.sh
-./deploy_cluster.sh --start
-```
+# Out of sync → restart
+./deploy_stop.sh && ./deploy_cluster.sh --start
 
-### Clean restart (xóa tất cả data)
-```bash
-./deploy_cluster.sh --all   # Build + push + clean data + start
-```
-
-### Disk đầy trên remote
-```bash
-# Check disk
-ssh abc@192.168.1.231 "df -h / && du -sh /home/abc/chain-n/*/"
-
-# Dọn dẹp (xóa data cũ, logs, build cache)
-ssh abc@192.168.1.231 "rm -rf /home/abc/chain-n/mtn-consensus/metanode/target"
-ssh abc@192.168.1.231 "rm -rf /home/abc/chain-n/mtn-consensus/metanode/logs/*"
+# Clean restart (xóa data)
+./deploy_cluster.sh --all
 ```
 
 ---
 
-## Files tổng quan
+## Files
 
 | File | Mô tả |
 |------|--------|
-| `deploy.env` | Cấu hình SSH, IPs, paths, node mapping |
-| `deploy_cluster.sh` | Script deploy chính (build → push → ips → start) |
-| `deploy_stop.sh` | Dừng cluster trên tất cả servers |
-| `deploy_status.sh` | Check trạng thái (tmux, RPC, block height, sync) |
-| `update_ips.sh` | Cập nhật IPs trong Rust/Go/Genesis/TPS configs |
+| `deploy.env` | **Cấu hình duy nhất cần sửa** — SSH, IPs, node mapping |
+| `deploy_cluster.sh` | Deploy chính (build → push → update IPs → start) |
+| `deploy_stop.sh` | Dừng cluster |
+| `deploy_status.sh` | Check trạng thái |
+| `update_ips.sh` | Cập nhật IPs (tự động gọi bởi deploy) |
