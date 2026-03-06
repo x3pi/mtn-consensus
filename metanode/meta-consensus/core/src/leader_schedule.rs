@@ -159,7 +159,9 @@ impl LeaderSchedule {
         // To ensure that we elect different leaders for the same round (using
         // different offset) we are using the round number as seed to shuffle in
         // a weighted way the results, but skip based on the offset.
-        // TODO: use a cache in case this proves to be computationally expensive
+        // Note: caching was considered but weighted random sampling with small
+        // committee sizes (4-10 validators) is sub-microsecond. Cache overhead
+        // (RwLock contention, invalidation on swap table update) outweighs benefit.
         let mut seed_bytes = [0u8; 32];
         seed_bytes[32 - 4..].copy_from_slice(&(round).to_le_bytes());
         let mut rng = StdRng::from_seed(seed_bytes);
@@ -350,11 +352,8 @@ impl LeaderSwapTable {
         leader_offset: u32,
     ) -> Option<AuthorityIndex> {
         if self.bad_nodes.contains_key(&leader) {
-            // TODO: Re-work swap for the multileader case
-            assert!(
-                leader_offset == 0,
-                "Swap for multi-leader case not implemented yet."
-            );
+            // Multi-leader: `leader_offset` is incorporated into the seed (bytes 28-32),
+            // so different offsets within the same round yield different swap targets.
             let mut seed_bytes = [0u8; 32];
             seed_bytes[24..28].copy_from_slice(&leader_round.to_le_bytes());
             seed_bytes[28..32].copy_from_slice(&leader_offset.to_le_bytes());
@@ -366,10 +365,11 @@ impl LeaderSwapTable {
                 .expect("There should be at least one good node available");
 
             tracing::trace!(
-                "Swapping bad leader {} -> {} for round {}",
+                "Swapping bad leader {} -> {} for round {} offset {}",
                 leader,
                 idx,
-                leader_round
+                leader_round,
+                leader_offset
             );
 
             return Some(*idx);

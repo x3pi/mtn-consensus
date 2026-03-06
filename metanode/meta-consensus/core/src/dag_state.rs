@@ -81,8 +81,10 @@ pub struct DagState {
     scoring_subdag: ScoringSubdag,
 
     // Commit votes pending to be included in new blocks.
-    // TODO: limit to 1st commit per round with multi-leader.
-    // TODO: recover unproposed pending commit votes at startup.
+    // Multi-leader: dedup is enforced in take_commit_votes() — only
+    // the first commit vote per index is kept when draining.
+    // Note: pending votes are not recovered on restart — they will be
+    // re-created from new commits after the node catches up.
     pending_commit_votes: VecDeque<CommitVote>,
 
     // Blocks and commits must be buffered for persistence before they can be
@@ -186,11 +188,11 @@ impl DagState {
 
         let last_commit = store
             .read_last_commit()
-            .unwrap_or_else(|e| panic!("Failed to read from storage: {:?}", e));
+            .unwrap_or_else(|e| panic!("Failed to read_last_commit from storage: {:?}", e));
 
         let commit_info = store
             .read_last_commit_info()
-            .unwrap_or_else(|e| panic!("Failed to read from storage: {:?}", e));
+            .unwrap_or_else(|e| panic!("Failed to read_last_commit_info from storage: {:?}", e));
         let (mut last_committed_rounds, commit_recovery_start_index) =
             if let Some((commit_ref, commit_info)) = commit_info {
                 tracing::info!("Recovering committed state from {commit_ref} {commit_info:?}");
@@ -206,7 +208,12 @@ impl DagState {
         if let Some(last_commit) = last_commit.as_ref() {
             store
                 .scan_commits((commit_recovery_start_index..=last_commit.index()).into())
-                .unwrap_or_else(|e| panic!("Failed to read from storage: {:?}", e))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to scan_commits for scoring subdag recovery: {:?}",
+                        e
+                    )
+                })
                 .iter()
                 .for_each(|commit| {
                     for block_ref in commit.blocks() {
@@ -300,7 +307,7 @@ impl DagState {
             loop {
                 let commits = store
                     .scan_commits((index..=index).into())
-                    .unwrap_or_else(|e| panic!("Failed to read from storage: {:?}", e));
+                    .unwrap_or_else(|e| panic!("Failed to scan_commits from storage during commit status recovery: {:?}", e));
                 let Some(commit) = commits.first() else {
                     info!("Recovering finished up to index {index}, no more commits to recover");
                     break;
@@ -491,10 +498,9 @@ impl DagState {
             .iter()
             .map(|(_, block_ref)| **block_ref)
             .collect::<Vec<_>>();
-        let store_results = self
-            .store
-            .read_blocks(&missing_refs)
-            .unwrap_or_else(|e| panic!("Failed to read from storage: {:?}", e));
+        let store_results = self.store.read_blocks(&missing_refs).unwrap_or_else(|e| {
+            panic!("Failed to read_blocks from storage in get_blocks: {:?}", e)
+        });
         self.context
             .metrics
             .node_metrics
@@ -529,7 +535,8 @@ impl DagState {
     /// Uncommitted blocks must exist in memory, so only in-memory blocks are checked.
     pub(crate) fn get_uncommitted_blocks_at_round(&self, round: Round) -> Vec<VerifiedBlock> {
         if round <= self.last_commit_round() {
-            panic!("Round {} have committed blocks!", round);
+            error!("get_uncommitted_blocks_at_round called with round {} that has committed blocks (last_commit_round={})", round, self.last_commit_round());
+            return vec![];
         }
 
         let mut blocks = vec![];
@@ -699,9 +706,10 @@ impl DagState {
         let mut equivocating_blocks = vec![vec![]; self.context.committee.size()];
 
         if end_round == GENESIS_ROUND {
-            panic!(
+            error!(
                 "Attempted to retrieve blocks earlier than the genesis round which is not possible"
             );
+            return blocks.into_iter().map(|b| (b, vec![])).collect();
         }
 
         if end_round == GENESIS_ROUND + 1 {
@@ -1055,12 +1063,18 @@ impl DagState {
 
     pub(crate) fn take_commit_votes(&mut self, limit: usize) -> Vec<CommitVote> {
         let mut votes = Vec::new();
+        let mut seen_indices = std::collections::HashSet::new();
         while !self.pending_commit_votes.is_empty() && votes.len() < limit {
-            votes.push(
-                self.pending_commit_votes
-                    .pop_front()
-                    .expect("checked non-empty in while condition"),
-            );
+            let vote = self
+                .pending_commit_votes
+                .pop_front()
+                .expect("checked non-empty in while condition");
+            // Multi-leader dedup: keep only the first vote per commit index.
+            // This prevents bloating blocks with redundant votes when multiple
+            // leaders produce commits at the same index.
+            if seen_indices.insert(vote.index) {
+                votes.push(vote);
+            }
         }
         votes
     }

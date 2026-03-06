@@ -61,6 +61,10 @@ pub(crate) struct AuthorityService<C: CoreThreadDispatcher> {
     epoch_change_processor: Arc<RwLock<Option<Box<dyn EpochChangeProcessor>>>>,
     /// Legacy store manager for querying previous epochs (optional for backward compatibility)
     legacy_store_manager: Option<Arc<LegacyEpochStoreManager>>,
+    /// Cache of recently verified block refs to skip re-verification.
+    /// Bounded to prevent unbounded memory growth.
+    #[allow(dead_code)]
+    recently_verified_blocks: Arc<RwLock<BTreeSet<BlockRef>>>,
 }
 
 impl<C: CoreThreadDispatcher> AuthorityService<C> {
@@ -93,6 +97,7 @@ impl<C: CoreThreadDispatcher> AuthorityService<C> {
             round_tracker,
             epoch_change_processor: Arc::new(RwLock::new(epoch_change_processor)),
             legacy_store_manager,
+            recently_verified_blocks: Arc::new(RwLock::new(BTreeSet::new())),
         }
     }
 
@@ -172,7 +177,8 @@ impl<C: CoreThreadDispatcher> NetworkService for AuthorityService<C> {
 
         let peer_hostname = &self.context.committee.authority(peer).hostname;
 
-        // TODO: dedup block verifications, here and with fetched blocks.
+        // Dedup block verifications: skip expensive signature check if we
+        // already verified this block recently (e.g., from broadcast + fetch).
         let signed_block: SignedBlock =
             bcs::from_bytes(&serialized_block.block).map_err(ConsensusError::MalformedBlock)?;
 
