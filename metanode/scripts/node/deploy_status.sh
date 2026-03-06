@@ -112,13 +112,17 @@ for server in $SERVERS; do
             echo -e "    $(fail) Go Master RPC (:${MASTER_PORT}/health) — no response"
         fi
 
-        # 3. Go Master block number
-        BLOCK=$(ssh_cmd "$server" "curl -sf http://127.0.0.1:${MASTER_PORT}/block_number 2>/dev/null" || echo "")
-        if [ -n "$BLOCK" ]; then
+        # 3. Go Master block number (from /metrics/json)
+        METRICS_JSON=$(ssh_cmd "$server" "curl -sf http://127.0.0.1:${MASTER_PORT}/metrics/json 2>/dev/null" || echo "")
+        BLOCK=$(echo "$METRICS_JSON" | grep -oP '"block_number":\s*\K[0-9]+' 2>/dev/null || echo "")
+        if [ -n "$BLOCK" ] && [ "$BLOCK" != "0" ]; then
             echo -e "    $(ok) Block height: ${GREEN}${BLOCK}${NC}"
             BLOCK_HEIGHTS+=("node${id}=$BLOCK")
+        elif [ -n "$METRICS_JSON" ]; then
+            echo -e "    $(ok) Block height: ${GREEN}0${NC} (genesis)"
+            BLOCK_HEIGHTS+=("node${id}=0")
         else
-            echo -e "    ${YELLOW}   ⚠️  Block number not available yet${NC}"
+            echo -e "    ${YELLOW}   ⚠️  Block number not available${NC}"
         fi
 
         # 4. Pipeline stats
@@ -136,13 +140,10 @@ for server in $SERVERS; do
             echo -e "    $(fail) Go Sub RPC   (:${SUB_PORT}/health) — no response"
         fi
 
-        # 6. Rust metrics port
-        METRICS_PORT="${RUST_METRICS[$id]}"
-        METRICS=$(ssh_cmd "$server" "curl -sf http://127.0.0.1:${METRICS_PORT}/metrics 2>/dev/null | head -1" || echo "FAIL")
-        if [ "$METRICS" != "FAIL" ] && [ -n "$METRICS" ]; then
-            echo -e "    $(ok) Rust metrics  (:${METRICS_PORT}) — responded"
-        else
-            echo -e "    ${YELLOW}   ⚠️  Rust metrics (:${METRICS_PORT}) — no response${NC}"
+        # 6. Rust node — check process is running
+        RUST_PROC=$(ssh_cmd "$server" "pgrep -f 'metanode start.*node_${id}' >/dev/null 2>&1 && echo UP || echo DOWN")
+        if [ "$RUST_PROC" == "UP" ]; then
+            echo -e "    $(ok) Rust process  — running"
         fi
 
         # 7. Recent log tail
