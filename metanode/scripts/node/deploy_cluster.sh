@@ -45,19 +45,26 @@ fi
 
 # ─── Helper Functions ───────────────────────────────────────────────
 
-# Build SSH command with key if specified
+# Build SSH command — supports both key and password auth
 ssh_cmd() {
     local host="$1"; shift
     local ssh_args="$SSH_OPTS"
-    [ -n "${SSH_KEY:-}" ] && ssh_args="$ssh_args -i $SSH_KEY"
-    ssh $ssh_args "${SSH_USER}@${host}" "$@"
+    if [ "${SSH_AUTH:-key}" == "password" ]; then
+        sshpass -p "$SSH_PASSWORD" ssh $ssh_args "${SSH_USER}@${host}" "$@"
+    elif [ -n "${SSH_KEY:-}" ]; then
+        ssh $ssh_args -i "$SSH_KEY" "${SSH_USER}@${host}" "$@"
+    else
+        ssh $ssh_args "${SSH_USER}@${host}" "$@"
+    fi
 }
 
 rsync_cmd() {
     local src="$1" dst_host="$2" dst_path="$3"
     local rsync_args="-azP --delete"
-    [ -n "${SSH_KEY:-}" ] && rsync_args="$rsync_args -e 'ssh -i $SSH_KEY $SSH_OPTS'"
-    [ -z "${SSH_KEY:-}" ] && rsync_args="$rsync_args -e 'ssh $SSH_OPTS'"
+
+    # Build SSH transport command
+    local ssh_transport="ssh $SSH_OPTS"
+    [ -n "${SSH_KEY:-}" ] && [ "${SSH_AUTH:-key}" != "password" ] && ssh_transport="$ssh_transport -i $SSH_KEY"
 
     # Build exclude args
     local excludes=""
@@ -65,7 +72,11 @@ rsync_cmd() {
         excludes="$excludes --exclude='$pattern'"
     done
 
-    eval rsync $rsync_args $excludes "$src" "${SSH_USER}@${dst_host}:${dst_path}"
+    if [ "${SSH_AUTH:-key}" == "password" ]; then
+        eval sshpass -p "'$SSH_PASSWORD'" rsync $rsync_args -e "'$ssh_transport'" $excludes "$src" "${SSH_USER}@${dst_host}:${dst_path}"
+    else
+        eval rsync $rsync_args -e "'$ssh_transport'" $excludes "$src" "${SSH_USER}@${dst_host}:${dst_path}"
+    fi
 }
 
 # Get unique server list

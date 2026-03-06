@@ -17,8 +17,13 @@ NC='\033[0m'
 ssh_cmd() {
     local host="$1"; shift
     local ssh_args="$SSH_OPTS"
-    [ -n "${SSH_KEY:-}" ] && ssh_args="$ssh_args -i $SSH_KEY"
-    ssh $ssh_args "${SSH_USER}@${host}" "$@"
+    if [ "${SSH_AUTH:-key}" == "password" ]; then
+        sshpass -p "$SSH_PASSWORD" ssh $ssh_args "${SSH_USER}@${host}" "$@"
+    elif [ -n "${SSH_KEY:-}" ]; then
+        ssh $ssh_args -i "$SSH_KEY" "${SSH_USER}@${host}" "$@"
+    else
+        ssh $ssh_args "${SSH_USER}@${host}" "$@"
+    fi
 }
 
 get_unique_servers() {
