@@ -18,6 +18,7 @@ mod commit_syncer;
 mod commit_vote_monitor;
 mod context;
 mod core;
+mod core_signals;
 mod core_thread;
 mod dag_state;
 mod epoch_change;
