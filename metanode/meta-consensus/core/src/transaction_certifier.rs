@@ -10,12 +10,12 @@ use parking_lot::RwLock;
 use tracing::{debug, info};
 
 use crate::{
-    BlockAPI as _, CertifiedBlock, CertifiedBlocksOutput, VerifiedBlock,
     block::{BlockTransactionVotes, GENESIS_ROUND},
     block_verifier::BlockVerifier,
     context::Context,
     dag_state::DagState,
     stake_aggregator::{QuorumThreshold, StakeAggregator},
+    BlockAPI as _, CertifiedBlock, CertifiedBlocksOutput, VerifiedBlock,
 };
 
 /// TransactionCertifier has the following purposes:
@@ -98,7 +98,7 @@ impl TransactionCertifier {
         for authority_index in authorities {
             let blocks = store
                 .scan_blocks_by_author(authority_index, recovery_start_round)
-                .unwrap();
+                .expect("Failed to scan blocks by author during certifier recovery");
             info!(
                 "Recovered and voting on {} blocks from authority {} {}",
                 blocks.len(),
@@ -627,8 +627,8 @@ mod test {
     use rand::seq::SliceRandom as _;
 
     use crate::{
-        TestBlock, Transaction, block::BlockTransactionVotes, context::Context,
-        test_dag_builder::DagBuilder,
+        block::BlockTransactionVotes, context::Context, test_dag_builder::DagBuilder, TestBlock,
+        Transaction,
     };
 
     use super::*;

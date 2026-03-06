@@ -8,11 +8,11 @@ use crate::node::executor_client::ExecutorClient;
 use crate::node::sync_metrics::SyncMetrics;
 use anyhow::Result;
 use consensus_config::{Committee, NetworkKeyPair};
+use consensus_core::storage::rocksdb_store::RocksDBStore;
 use consensus_core::Context;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
-use consensus_core::storage::rocksdb_store::RocksDBStore;
 
 /// Start the Rust P2P sync task for SyncOnly nodes
 #[allow(dead_code)]
@@ -84,7 +84,12 @@ pub async fn start_rust_sync_task_with_network(
 
     let metrics = SyncMetrics::new(prometheus::default_registry());
 
-    let store_path = context.parameters.db_path.as_path().to_str().unwrap();
+    let store_path = context
+        .parameters
+        .db_path
+        .as_path()
+        .to_str()
+        .expect("DB path should be valid UTF-8");
     let store = Arc::new(RocksDBStore::new(store_path));
 
     let sync_node = RustSyncNode::new(

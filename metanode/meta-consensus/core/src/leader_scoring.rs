@@ -117,7 +117,10 @@ impl ScoringSubdag {
                     subdag.commit_ref.index..=subdag.commit_ref.index,
                 ));
             } else {
-                let commit_range = self.commit_range.as_mut().unwrap();
+                let commit_range = self
+                    .commit_range
+                    .as_mut()
+                    .expect("commit_range checked Some above");
                 commit_range.extend_to(subdag.commit_ref.index);
             }
 

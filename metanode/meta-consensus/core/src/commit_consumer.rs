@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
-use mysten_metrics::monitored_mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use mysten_metrics::monitored_mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::watch;
 use tracing::debug;
 
-use crate::{CommitIndex, CommittedSubDag, block::CertifiedBlocksOutput};
+use crate::{block::CertifiedBlocksOutput, CommitIndex, CommittedSubDag};
 
 /// Arguments from commit consumer to this consensus instance.
 /// This includes both parameters and components for communications.
@@ -112,7 +112,9 @@ impl CommitConsumerMonitor {
             if highest_handled >= self.consumer_last_processed_commit_index {
                 return;
             }
-            rx.changed().await.unwrap();
+            rx.changed()
+                .await
+                .expect("commit consumer watch channel closed unexpectedly — all senders dropped");
         }
     }
 }

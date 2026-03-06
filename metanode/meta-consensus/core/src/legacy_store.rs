@@ -51,7 +51,7 @@ impl LegacyEpochStoreManager {
         // Cleanup: keep only the most recent max_epochs
         // max_epochs == 0: archive mode — keep all stores
         if self.max_epochs > 0 && stores.len() > self.max_epochs {
-            let oldest_epoch = *stores.keys().min().unwrap();
+            let oldest_epoch = *stores.keys().min().expect("stores checked non-empty above");
             stores.remove(&oldest_epoch);
             info!(
                 "🗑️ [LEGACY STORE] Removed oldest epoch {} store",

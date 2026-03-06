@@ -218,7 +218,7 @@ impl CommitObserver {
                 .expect("Scanning commits should not fail");
             assert_eq!(
                 unsent_commits.len() as u32,
-                end_index.checked_sub(start_index).unwrap() + 1,
+                end_index.checked_sub(start_index).expect("end_index must be >= start_index in commit scan range") + 1,
                 "Gap in scanned commits: start index: {start_index}, end index: {end_index}, commits: {:?}",
                 unsent_commits,
             );
@@ -282,9 +282,9 @@ impl CommitObserver {
                         .recover_and_vote_on_blocks(committed_sub_dag.blocks.clone());
                 }
 
-                self.commit_finalizer_handle
-                    .send(committed_sub_dag)
-                    .unwrap();
+                self.commit_finalizer_handle.send(committed_sub_dag).expect(
+                    "Failed to send recovered commit to finalizer — channel closed unexpectedly",
+                );
 
                 self.context
                     .metrics

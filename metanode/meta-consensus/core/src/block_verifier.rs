@@ -6,11 +6,11 @@ use consensus_types::block::{BlockRef, TransactionIndex};
 use std::{collections::BTreeSet, sync::Arc};
 
 use crate::{
-    VerifiedBlock,
-    block::{BlockAPI, GENESIS_ROUND, SignedBlock, genesis_blocks},
+    block::{genesis_blocks, BlockAPI, SignedBlock, GENESIS_ROUND},
     context::Context,
     error::{ConsensusError, ConsensusResult},
     transaction::TransactionVerifier,
+    VerifiedBlock,
 };
 
 pub trait BlockVerifier: Send + Sync + 'static {
@@ -135,7 +135,12 @@ impl SignedBlockVerifier {
             }
             seen_ancestors[ancestor.author] = true;
             // Block must have round >= 1 so checked_sub(1) should be safe.
-            if ancestor.round == block.round().checked_sub(1).unwrap() {
+            if ancestor.round
+                == block
+                    .round()
+                    .checked_sub(1)
+                    .expect("block round verified >= 1, checked_sub(1) cannot underflow")
+            {
                 parent_stakes += committee.stake(ancestor.author);
             }
         }

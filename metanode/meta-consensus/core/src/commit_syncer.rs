@@ -221,7 +221,7 @@ impl<C: NetworkClient> CommitSyncer<C> {
                         self.inflight_fetches.shutdown().await;
                         return;
                     }
-                    let (target_end, commits) = result.unwrap();
+                    let (target_end, commits) = result.expect("inflight fetch result should be Ok after error handling above");
                     self.handle_fetch_result(target_end, commits).await;
                 }
                 _ = &mut rx_shutdown => {
@@ -444,8 +444,16 @@ impl<C: NetworkClient> CommitSyncer<C> {
             .inc_by(total_blocks_size_bytes);
 
         let (commit_start, commit_end) = (
-            certified_commits.commits().first().unwrap().index(),
-            certified_commits.commits().last().unwrap().index(),
+            certified_commits
+                .commits()
+                .first()
+                .expect("certified_commits checked non-empty above")
+                .index(),
+            certified_commits
+                .commits()
+                .last()
+                .expect("certified_commits checked non-empty above")
+                .index(),
         );
         self.highest_fetched_commit_index = self.highest_fetched_commit_index.max(commit_end);
         metrics
@@ -472,7 +480,9 @@ impl<C: NetworkClient> CommitSyncer<C> {
             // Note: start, end and synced_commit_index are all inclusive.
             let (fetched_commit_range, commits) =
                 if fetched_commit_range.start() <= self.synced_commit_index + 1 {
-                    self.fetched_ranges.pop_first().unwrap()
+                    self.fetched_ranges
+                        .pop_first()
+                        .expect("checked first_key_value above")
                 } else {
                     // Found gap between earliest fetched block and latest synced block,
                     // so not sending additional blocks to Core.
@@ -793,7 +803,7 @@ impl<C: NetworkClient> CommitSyncer<C> {
                         }
                         match result {
                             Some(blocks) => blocks,
-                            None => return Err(last_err.unwrap()),
+                            None => return Err(last_err.expect("last_err must be set after failed retries")),
                         }
                     };
                     // 5. Verify the same number of blocks are returned as requested.

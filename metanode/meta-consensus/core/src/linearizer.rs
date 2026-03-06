@@ -455,7 +455,10 @@ fn median_timestamps_by_stake_inner(
         }
     }
 
-    timestamps.last().unwrap().0
+    timestamps
+        .last()
+        .expect("timestamps non-empty — empty case handled above")
+        .0
 }
 
 #[cfg(test)]

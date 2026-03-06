@@ -2,16 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Adaptive delay mechanism to automatically adjust node speed based on network average.
-//! 
+//!
 //! When a node is faster than the network average, it will automatically add delay
 //! to sync with the network speed. This helps prevent forks and improves network stability.
 
+use parking_lot::RwLock;
 use std::{
     collections::VecDeque,
     sync::Arc,
     time::{Duration, Instant},
 };
-use parking_lot::RwLock;
 use tracing::debug;
 
 use crate::CommitIndex;
@@ -53,8 +53,14 @@ impl CommitRateTracker {
             return 0.0;
         }
 
-        let (first_time, first_index) = self.commits.front().unwrap();
-        let (last_time, last_index) = self.commits.back().unwrap();
+        let (first_time, first_index) = self
+            .commits
+            .front()
+            .expect("commits deque checked non-empty above");
+        let (last_time, last_index) = self
+            .commits
+            .back()
+            .expect("commits deque checked non-empty above");
 
         let duration = last_time.duration_since(*first_time).as_secs_f64();
         if duration > 0.0 {
@@ -63,7 +69,6 @@ impl CommitRateTracker {
             0.0
         }
     }
-
 }
 
 /// Shared state for adaptive delay calculation
@@ -115,7 +120,7 @@ impl AdaptiveDelayState {
 
         // Calculate lead (how many commits ahead)
         let lead = local_commit_index.saturating_sub(quorum_commit_index);
-        
+
         // Get commit rates
         let local_rate = self.local_rate_tracker.read().rate();
         let quorum_rate = self.quorum_rate_tracker.read().rate();
@@ -142,14 +147,16 @@ impl AdaptiveDelayState {
         };
 
         // Calculate adaptive delay
-        let adaptive_delay_ms = if lead > SEVERE_LEAD_THRESHOLD 
-            || lead_percentage > SEVERE_LEAD_PERCENTAGE 
-            || (rate_diff_ratio > 0.2 && lead > MODERATE_LEAD_THRESHOLD) {
+        let adaptive_delay_ms = if lead > SEVERE_LEAD_THRESHOLD
+            || lead_percentage > SEVERE_LEAD_PERCENTAGE
+            || (rate_diff_ratio > 0.2 && lead > MODERATE_LEAD_THRESHOLD)
+        {
             // Severe lead or significantly faster: delay 2x base delay
             self.base_delay_ms * 2
-        } else if lead > MODERATE_LEAD_THRESHOLD 
-            || lead_percentage > MODERATE_LEAD_PERCENTAGE 
-            || (rate_diff_ratio > MIN_RATE_DIFF && lead > 20) {
+        } else if lead > MODERATE_LEAD_THRESHOLD
+            || lead_percentage > MODERATE_LEAD_PERCENTAGE
+            || (rate_diff_ratio > MIN_RATE_DIFF && lead > 20)
+        {
             // Moderate lead: delay 1.5x base delay
             self.base_delay_ms + self.base_delay_ms / 2
         } else if lead > 20 && rate_diff_ratio > MIN_RATE_DIFF {
@@ -173,7 +180,6 @@ impl AdaptiveDelayState {
         Duration::from_millis(adaptive_delay_ms)
     }
 
-
     /// Get local commit rate
     pub(crate) fn local_rate(&self) -> f64 {
         self.local_rate_tracker.read().rate()
@@ -184,4 +190,3 @@ impl AdaptiveDelayState {
         self.quorum_rate_tracker.read().rate()
     }
 }
-

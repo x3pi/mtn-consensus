@@ -133,7 +133,9 @@ impl<C: NetworkClient, S: NetworkService> Subscriber<C, S> {
 
             let mut delay = Duration::ZERO;
             if retries > IMMEDIATE_RETRIES {
-                delay = backoff.next().unwrap();
+                delay = backoff
+                    .next()
+                    .expect("ExponentialBackoff::next() should always return Some");
                 debug!(
                     "Delaying retry {} of peer {} subscription, in {} seconds",
                     retries,
