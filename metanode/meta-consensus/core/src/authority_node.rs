@@ -297,7 +297,9 @@ where
         let mut network_manager = N::new(context.clone(), network_keypair);
         let network_client = network_manager.client();
 
-        let store_path = context.parameters.db_path.as_path().to_str().unwrap();
+        let store_path = context.parameters.db_path.as_path().to_str().expect(
+            "consensus db_path must be valid UTF-8 — check Parameters::db_path configuration",
+        );
         let store = Arc::new(RocksDBStore::new(store_path));
         let dag_state = Arc::new(RwLock::new(DagState::new(context.clone(), store.clone())));
 
