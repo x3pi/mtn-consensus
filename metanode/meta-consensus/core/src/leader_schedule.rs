@@ -85,7 +85,8 @@ impl LeaderSchedule {
         );
         self.num_commits_per_schedule
             .checked_sub(subdag_count)
-            .unwrap() as usize
+            .expect("subdag_count <= num_commits_per_schedule, guaranteed by assert above")
+            as usize
     }
 
     /// Checks whether the dag state sub dags list is empty. If yes then that means that
@@ -179,7 +180,7 @@ impl LeaderSchedule {
             .skip(offset as usize)
             .map(|(index, _)| index)
             .next()
-            .unwrap()
+            .expect("committee has at least one authority, weighted choice cannot be empty")
     }
 
     /// Atomically updates the `LeaderSwapTable` with the new provided one. Any

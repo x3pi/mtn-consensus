@@ -451,7 +451,7 @@ impl ChannelPool {
 
             // Use plain TCP without TLS
             let endpoint = tonic::transport::Channel::from_shared(addr.clone())
-                .unwrap()
+                .expect("valid HTTP/HTTPS URI from committee address config")
                 .connect_timeout(timeout)
                 .initial_connection_window_size(Some(buffer_size as u32))
                 .initial_stream_window_size(Some(buffer_size as u32 / 2))
@@ -459,7 +459,7 @@ impl ChannelPool {
                 .keep_alive_timeout(config.keepalive_interval)
                 .http2_keep_alive_interval(config.keepalive_interval)
                 .user_agent("mysticeti")
-                .unwrap();
+                .expect("static user_agent string is always valid");
             let result = endpoint.connect().await;
 
             match result {
@@ -862,7 +862,8 @@ impl<S: NetworkService> NetworkManager<S> for TonicManager {
         } else {
             authority.address.with_zero_ip()
         };
-        let own_address = to_socket_addr(&own_address).unwrap();
+        let own_address = to_socket_addr(&own_address)
+            .expect("own committee address must be a valid socket addr");
         let service = TonicServiceProxy::new(self.context.clone(), service);
         let config = &self.context.parameters.tonic;
 
