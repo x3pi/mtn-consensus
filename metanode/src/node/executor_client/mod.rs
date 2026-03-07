@@ -65,6 +65,9 @@ pub struct ExecutorClient {
     /// This prevents both Consensus and Sync from sending the same block
     pub(crate) sent_indices: Arc<tokio::sync::Mutex<std::collections::HashSet<u64>>>,
     pub(crate) rpc_circuit_breaker: Arc<RpcCircuitBreaker>,
+    /// Circuit breaker state for the block sending socket
+    pub(crate) send_failures: Arc<std::sync::atomic::AtomicU32>,
+    pub(crate) send_cb_open_until: Arc<tokio::sync::RwLock<Option<tokio::time::Instant>>>,
     /// Connection pool for parallel RPC queries to Go Master
     pub(crate) request_pool: Arc<ConnectionPool>,
 }
@@ -145,6 +148,8 @@ impl ExecutorClient {
             last_verified_go_index: Arc::new(tokio::sync::Mutex::new(0)),
             sent_indices: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
             rpc_circuit_breaker: Arc::new(RpcCircuitBreaker::new()),
+            send_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            send_cb_open_until: Arc::new(tokio::sync::RwLock::new(None)),
             request_pool,
         }
     }
@@ -163,6 +168,49 @@ impl ExecutorClient {
     #[allow(dead_code)]
     pub fn circuit_breaker(&self) -> &RpcCircuitBreaker {
         &self.rpc_circuit_breaker
+    }
+
+    /// Check if the TCP send circuit breaker is open
+    pub async fn check_send_circuit_breaker(&self) -> Result<()> {
+        let cb_guard = self.send_cb_open_until.read().await;
+        if let Some(open_until) = *cb_guard {
+            if tokio::time::Instant::now() < open_until {
+                let remaining = (open_until - tokio::time::Instant::now()).as_secs();
+                return Err(anyhow::anyhow!(
+                    "TCP Send Circuit Breaker is OPEN. Cooling down for {}s",
+                    remaining
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a failure on the TCP send socket. Opens the breaker on 3 consecutive failures.
+    pub async fn record_send_failure(&self) {
+        let failures = self
+            .send_failures
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        if failures >= 3 {
+            // Open the circuit for 10 seconds
+            let mut cb_guard = self.send_cb_open_until.write().await;
+            *cb_guard = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(10));
+            warn!("🚨 [CIRCUIT BREAKER] TCP Send Circuit Breaker TRIPPED after {} consecutive failures. Open for 10s.", failures);
+        }
+    }
+
+    /// Record a success on the TCP send socket, clearing the failures and closing the breaker.
+    pub async fn record_send_success(&self) {
+        let prev = self
+            .send_failures
+            .swap(0, std::sync::atomic::Ordering::SeqCst);
+        if prev > 0 {
+            let mut cb_guard = self.send_cb_open_until.write().await;
+            if cb_guard.is_some() {
+                info!("✅ [CIRCUIT BREAKER] TCP Send Circuit Breaker CLOSED (Recovered).");
+                *cb_guard = None;
+            }
+        }
     }
 
     /// Force reset all connections to Go executor
