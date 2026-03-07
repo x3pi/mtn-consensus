@@ -211,7 +211,7 @@ struct RandomTestFixture {
 }
 
 fn random_test_setup() -> RandomTestFixture {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     let mut rng = StdRng::from_entropy();
     let seed = match env::var("DAG_TEST_SEED") {
         Ok(seed_str) => {

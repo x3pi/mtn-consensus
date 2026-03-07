@@ -971,7 +971,7 @@ mod tests {
     #[rstest]
     #[tokio::test]
     async fn unsuspend_blocks_for_latest_gc_round(#[values(5, 10, 14)] gc_depth: u32) {
-        telemetry_subscribers::init_for_testing();
+        // // // // telemetry_subscribers::init_for_testing();
         // GIVEN
         let (mut context, _key_pairs) = Context::new_for_test(4);
         context
@@ -1191,7 +1191,7 @@ mod tests {
     #[rstest]
     #[tokio::test]
     async fn test_verify_block_timestamps_and_accept() {
-        telemetry_subscribers::init_for_testing();
+        // // // // telemetry_subscribers::init_for_testing();
         let (context, _key_pairs) = Context::new_for_test(4);
 
         let context = Arc::new(context);

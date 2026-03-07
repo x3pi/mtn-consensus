@@ -110,7 +110,8 @@ pub async fn query_peer_epochs_network(
                 // Use this peer if it has higher epoch, or same epoch and higher global_exec_index
                 if best_address.is_empty()
                     || info.epoch > best_epoch
-                    || (info.epoch == best_epoch && info.last_global_exec_index > best_global_exec_index)
+                    || (info.epoch == best_epoch
+                        && info.last_global_exec_index > best_global_exec_index)
                 {
                     best_epoch = info.epoch;
                     best_block = info.last_block;
@@ -228,6 +229,77 @@ pub async fn query_peer_epoch_boundary_data(
     );
 
     Ok(response)
+}
+
+/// Forward transaction to all validator peers. Returns number of successful peers.
+pub async fn broadcast_transaction_to_validators(
+    peer_addresses: &[String],
+    tx_batch: &[Vec<u8>],
+) -> Result<usize> {
+    use futures::future::join_all;
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpStream;
+
+    if peer_addresses.is_empty() {
+        return Ok(0);
+    }
+
+    let tx_hexes: Vec<String> = tx_batch.iter().map(|t| hex::encode(t)).collect();
+    let request_body = serde_json::to_string(&SubmitTransactionRequest {
+        transactions_hex: tx_hexes,
+    })?;
+
+    let mut tasks = Vec::new();
+    let body_len = request_body.len();
+
+    for peer_addr in peer_addresses {
+        let addr = peer_addr.clone();
+        let body = request_body.clone();
+
+        let task = tokio::spawn(async move {
+            let stream_result =
+                tokio::time::timeout(std::time::Duration::from_secs(3), TcpStream::connect(&addr))
+                    .await;
+
+            let mut stream = match stream_result {
+                Ok(Ok(s)) => s,
+                _ => return false,
+            };
+
+            let http_request = format!(
+                "POST /submit_transaction HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                addr,
+                body_len,
+                body
+            );
+
+            if stream.write_all(http_request.as_bytes()).await.is_err() {
+                return false;
+            }
+
+            let mut buffer = [0u8; 1024];
+            let read_result =
+                tokio::time::timeout(std::time::Duration::from_secs(3), stream.read(&mut buffer))
+                    .await;
+
+            if let Ok(Ok(n)) = read_result {
+                let response_str = String::from_utf8_lossy(&buffer[..n]);
+                // Simplified fast check: "200 OK"
+                response_str.contains("200 OK")
+            } else {
+                false
+            }
+        });
+        tasks.push(task);
+    }
+
+    let results = join_all(tasks).await;
+    let success_count = results
+        .into_iter()
+        .filter(|r| matches!(r, Ok(true)))
+        .count();
+    Ok(success_count)
 }
 
 /// Forward transaction to validator nodes via HTTP POST

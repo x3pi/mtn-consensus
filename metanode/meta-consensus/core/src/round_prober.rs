@@ -26,8 +26,8 @@ use parking_lot::RwLock;
 use tokio::{task::JoinHandle, time::MissedTickBehavior};
 
 use crate::{
-    BlockAPI as _, context::Context, core_thread::CoreThreadDispatcher, dag_state::DagState,
-    network::NetworkClient, round_tracker::PeerRoundTracker,
+    context::Context, core_thread::CoreThreadDispatcher, dag_state::DagState,
+    network::NetworkClient, round_tracker::PeerRoundTracker, BlockAPI as _,
 };
 
 // Handle to control the RoundProber loop and read latest round gaps.
@@ -224,7 +224,6 @@ mod test {
     use parking_lot::RwLock;
 
     use crate::{
-        TestBlock, VerifiedBlock,
         commit::{CertifiedCommits, CommitRange},
         context::Context,
         core_thread::{CoreError, CoreThreadDispatcher},
@@ -234,6 +233,7 @@ mod test {
         round_prober::RoundProber,
         round_tracker::PeerRoundTracker,
         storage::mem_store::MemStore,
+        TestBlock, VerifiedBlock,
     };
 
     struct FakeThreadDispatcher {
@@ -350,6 +350,34 @@ mod test {
             unimplemented!("Unimplemented")
         }
 
+        async fn fetch_commits_by_global_range(
+            &self,
+            _peer: AuthorityIndex,
+            _start_global_index: u64,
+            _end_global_index: u64,
+            _timeout: Duration,
+        ) -> ConsensusResult<Vec<crate::network::tonic_network::GlobalCommitInfo>> {
+            unimplemented!("Unimplemented")
+        }
+
+        async fn send_epoch_change_proposal(
+            &self,
+            _peer: AuthorityIndex,
+            _proposal: &crate::epoch_change::EpochChangeProposal,
+            _timeout: Duration,
+        ) -> ConsensusResult<()> {
+            unimplemented!("Unimplemented")
+        }
+
+        async fn send_epoch_change_vote(
+            &self,
+            _peer: AuthorityIndex,
+            _vote: &crate::epoch_change::EpochChangeVote,
+            _timeout: Duration,
+        ) -> ConsensusResult<()> {
+            unimplemented!("Unimplemented")
+        }
+
         async fn fetch_latest_blocks(
             &self,
             _peer: AuthorityIndex,
@@ -376,7 +404,7 @@ mod test {
 
     #[tokio::test]
     async fn test_round_prober() {
-        telemetry_subscribers::init_for_testing();
+        // // // // // // telemetry_subscribers::init_for_testing();
         const NUM_AUTHORITIES: usize = 7;
         let context = Arc::new(Context::new_for_test(NUM_AUTHORITIES).0);
         let core_thread_dispatcher = Arc::new(FakeThreadDispatcher::new(vec![

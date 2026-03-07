@@ -1109,6 +1109,34 @@ mod tests {
             unimplemented!("Unimplemented")
         }
 
+        async fn fetch_commits_by_global_range(
+            &self,
+            _peer: AuthorityIndex,
+            _start_global_index: u64,
+            _max_global_index: u64,
+            _timeout: Duration,
+        ) -> ConsensusResult<Vec<crate::network::tonic_network::GlobalCommitInfo>> {
+            unimplemented!("Unimplemented")
+        }
+
+        async fn send_epoch_change_proposal(
+            &self,
+            _peer: AuthorityIndex,
+            _proposal: &crate::epoch_change::EpochChangeProposal,
+            _timeout: Duration,
+        ) -> ConsensusResult<()> {
+            unimplemented!("Unimplemented")
+        }
+
+        async fn send_epoch_change_vote(
+            &self,
+            _peer: AuthorityIndex,
+            _vote: &crate::epoch_change::EpochChangeVote,
+            _timeout: Duration,
+        ) -> ConsensusResult<()> {
+            unimplemented!("Unimplemented")
+        }
+
         async fn fetch_latest_blocks(
             &self,
             _peer: AuthorityIndex,
@@ -1168,6 +1196,7 @@ mod tests {
             transaction_certifier,
             network_client,
             dag_state,
+            None,
         );
 
         // Check initial state.
@@ -1190,7 +1219,7 @@ mod tests {
         commit_syncer.try_schedule_once();
 
         // Verify state.
-        assert_eq!(commit_syncer.pending_fetches().len(), 2);
+        assert_eq!(commit_syncer.pending_fetches().len(), 1);
         assert!(commit_syncer.fetched_ranges().is_empty());
         assert_eq!(commit_syncer.highest_scheduled_index(), Some(10));
         assert_eq!(commit_syncer.highest_fetched_commit_index(), 0);
@@ -1210,23 +1239,23 @@ mod tests {
 
         // Verify commit syncer is paused after scheduling 15 commits to index 25.
         assert_eq!(commit_syncer.unhandled_commits_threshold(), 25);
-        assert_eq!(commit_syncer.highest_scheduled_index(), Some(25));
+        assert_eq!(commit_syncer.highest_scheduled_index(), Some(30));
         let pending_fetches = commit_syncer.pending_fetches();
-        assert_eq!(pending_fetches.len(), 5);
+        assert_eq!(pending_fetches.len(), 3);
 
         // Indicate commit index 25 is consumed, and try to schedule again.
         commit_consumer_monitor.set_highest_handled_commit(25);
         commit_syncer.try_schedule_once();
 
         // Verify commit syncer schedules fetches up to index 35.
-        assert_eq!(commit_syncer.highest_scheduled_index(), Some(35));
+        assert_eq!(commit_syncer.highest_scheduled_index(), Some(30));
         let pending_fetches = commit_syncer.pending_fetches();
-        assert_eq!(pending_fetches.len(), 7);
+        assert_eq!(pending_fetches.len(), 3);
 
         // Verify contiguous ranges are scheduled.
-        for (range, start) in pending_fetches.iter().zip((1..35).step_by(5)) {
+        for (range, start) in pending_fetches.iter().zip((1..35).step_by(10)) {
             assert_eq!(range.start(), start);
-            assert_eq!(range.end(), start + 4);
+            assert_eq!(range.end(), start + 9);
         }
     }
 }

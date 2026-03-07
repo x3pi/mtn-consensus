@@ -5,6 +5,13 @@ edition = "2021"
 authors = ["MetaNode Team"]
 license = "Apache-2.0"
 
+[workspace]
+members = [
+    "meta-consensus/core",
+    "meta-consensus/types",
+    "meta-consensus/config",
+]
+
 [dependencies]
 # Meta Consensus dependencies - using local copies
 consensus-core = { path = "meta-consensus/core" }

@@ -494,7 +494,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_schedule_from_store() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let mut context = Context::new_for_test(4).0;
         context
             .protocol_config
@@ -573,7 +573,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_schedule_from_store_no_commits() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let mut context = Context::new_for_test(4).0;
         context
             .protocol_config
@@ -602,7 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_schedule_from_store_no_commit_info() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let mut context = Context::new_for_test(4).0;
         context
             .protocol_config
@@ -664,7 +664,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_schedule_commits_until_leader_schedule_update() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
         let leader_schedule = LeaderSchedule::new(context.clone(), LeaderSwapTable::default());
 
@@ -688,7 +688,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_schedule_update_leader_schedule() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let mut context = Context::new_for_test(4).0;
         context
             .protocol_config
@@ -807,7 +807,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_swap_table() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let swap_stake_threshold = 33;
@@ -831,7 +831,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_swap_table_swap() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let swap_stake_threshold = 33;
@@ -859,7 +859,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_swap_table_retrieve_first_nodes() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let authorities = [
@@ -900,7 +900,7 @@ mod tests {
         expected = "The swap_stake_threshold (34) should be in range [0 - 33], out of bounds parameter detected"
     )]
     async fn test_leader_swap_table_swap_stake_threshold_out_of_bounds() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let swap_stake_threshold = 34;
@@ -913,7 +913,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_leader_swap_table() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let swap_stake_threshold = 33;
@@ -945,7 +945,7 @@ mod tests {
         expected = "The new LeaderSwapTable has an invalid CommitRange. Old LeaderSwapTable CommitRange(11..=20) vs new LeaderSwapTable CommitRange(21..=25)"
     )]
     async fn test_update_bad_leader_swap_table() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let swap_stake_threshold = 33;

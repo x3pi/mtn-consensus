@@ -75,3 +75,4 @@ harness = false
 [[bench]]
 name = "transaction_throughput_bench"
 harness = false
+

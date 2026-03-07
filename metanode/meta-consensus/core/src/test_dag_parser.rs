@@ -280,7 +280,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dag_parsing() {
-        telemetry_subscribers::init_for_testing();
+        // // // // // // telemetry_subscribers::init_for_testing();
         let dag_str = "DAG { 
             Round 0 : { 4 },
             Round 1 : { * },

@@ -895,7 +895,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_commit_range() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let mut range1 = CommitRange::new(1..=5);
         let range2 = CommitRange::new(2..=6);
         let range3 = CommitRange::new(5..=10);

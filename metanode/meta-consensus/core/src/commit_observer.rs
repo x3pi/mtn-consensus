@@ -371,7 +371,7 @@ mod tests {
     async fn test_handle_commit() {
         use crate::leader_schedule::LeaderSwapTable;
 
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let num_authorities = 4;
         let (context, _keys) = Context::new_for_test(num_authorities);
         let context = Arc::new(context);
@@ -526,7 +526,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recover_and_send_commits() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let num_authorities = 4;
         let context = Arc::new(Context::new_for_test(num_authorities).0);
         let mem_store = Arc::new(MemStore::new());

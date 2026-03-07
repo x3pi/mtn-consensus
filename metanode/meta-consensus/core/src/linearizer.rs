@@ -480,7 +480,7 @@ mod tests {
     #[rstest]
     #[tokio::test]
     async fn test_handle_commit() {
-        telemetry_subscribers::init_for_testing();
+        // // // // telemetry_subscribers::init_for_testing();
         let num_authorities = 4;
         let (context, _keys) = Context::new_for_test(num_authorities);
         let context = Arc::new(context);
@@ -545,7 +545,7 @@ mod tests {
     #[rstest]
     #[tokio::test]
     async fn test_handle_already_committed() {
-        telemetry_subscribers::init_for_testing();
+        // // // // telemetry_subscribers::init_for_testing();
         let num_authorities = 4;
         let (context, _) = Context::new_for_test(num_authorities);
         let context = Arc::new(context);
@@ -672,7 +672,7 @@ mod tests {
     /// sure that for the exact same DAG the linearizer will commit different blocks according to the rules.
     #[tokio::test]
     async fn test_handle_commit_with_gc_simple() {
-        telemetry_subscribers::init_for_testing();
+        // // // // telemetry_subscribers::init_for_testing();
 
         const GC_DEPTH: u32 = 3;
 
@@ -784,7 +784,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_commit_below_highest_committed_round() {
-        telemetry_subscribers::init_for_testing();
+        // // // // telemetry_subscribers::init_for_testing();
 
         const GC_DEPTH: u32 = 3;
 
@@ -904,7 +904,7 @@ mod tests {
         #[case] timestamp_3: u64,
     ) {
         // GIVEN
-        telemetry_subscribers::init_for_testing();
+        // // // // telemetry_subscribers::init_for_testing();
 
         let num_authorities = 4;
         let (context, _keys) = Context::new_for_test(num_authorities);

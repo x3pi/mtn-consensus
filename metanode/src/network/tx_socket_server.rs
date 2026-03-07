@@ -149,7 +149,7 @@ impl TxSocketServer {
         pending_transactions_queue: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
         storage_path: Option<std::path::PathBuf>,
         peer_rpc_addresses: Vec<String>,
-        _peer_discovery_addresses: Option<Arc<RwLock<Vec<String>>>>,
+        peer_discovery_addresses: Option<Arc<RwLock<Vec<String>>>>,
         tx_recycler: Option<Arc<TxRecycler>>,
     ) -> Result<()> {
         // PERSISTENT CONNECTION: Xử lý multiple requests trên cùng một connection
@@ -455,7 +455,13 @@ impl TxSocketServer {
                             // In SyncOnly mode, forward TX to validators instead of rejecting
                             let is_sync_only = reason.contains("Node is still initializing");
 
-                            if is_sync_only && !peer_rpc_addresses.is_empty() {
+                            let target_peers = if let Some(ref addrs) = peer_discovery_addresses {
+                                addrs.read().await.clone()
+                            } else {
+                                peer_rpc_addresses.clone()
+                            };
+
+                            if is_sync_only && !target_peers.is_empty() {
                                 // SyncOnly mode: Forward transactions to validators
                                 for tx_data in &transactions_to_submit {
                                     let tx_hash =
@@ -464,7 +470,7 @@ impl TxSocketServer {
                                         );
                                     info!(
                                         "🔄 [TX FORWARD] SyncOnly node forwarding transaction: hash={}, {} validator addresses available",
-                                        tx_hash, peer_rpc_addresses.len()
+                                        tx_hash, target_peers.len()
                                     );
                                 }
                                 drop(node_guard);
@@ -688,6 +694,33 @@ impl TxSocketServer {
                         // Track submitted TXs for recycling (re-submit if not committed)
                         if let Some(ref recycler) = tx_recycler {
                             recycler.track_submitted(&chunk_vec).await;
+                        }
+
+                        // Broadcast to other validators (Pillar 32: Mempool Broadcast)
+                        let target_peers = if let Some(ref addrs) = peer_discovery_addresses {
+                            addrs.read().await.clone()
+                        } else {
+                            peer_rpc_addresses.clone()
+                        };
+
+                        if !target_peers.is_empty() {
+                            use crate::network::peer_rpc::broadcast_transaction_to_validators;
+                            let peers = target_peers.clone();
+                            let batch = chunk_vec.clone();
+
+                            tokio::spawn(async move {
+                                match broadcast_transaction_to_validators(&peers, &batch).await {
+                                    Ok(success_count) => {
+                                        if success_count > 0 {
+                                            info!("📡 [MEMPOOL] Broadcasted batch of {} TXs to {}/{} peers", 
+                                                batch.len(), success_count, peers.len());
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("⚠️ [MEMPOOL] Failed to broadcast TX batch: {}", e);
+                                    }
+                                }
+                            });
                         }
 
                         // NOTE: epoch_pending_transactions tracking removed (memory leak fix).

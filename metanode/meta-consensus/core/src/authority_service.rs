@@ -1342,6 +1342,34 @@ mod tests {
             unimplemented!("Unimplemented")
         }
 
+        async fn fetch_commits_by_global_range(
+            &self,
+            _peer: AuthorityIndex,
+            _start_global_index: u64,
+            _max_global_index: u64,
+            _timeout: Duration,
+        ) -> ConsensusResult<Vec<crate::network::tonic_network::GlobalCommitInfo>> {
+            unimplemented!("Unimplemented")
+        }
+
+        async fn send_epoch_change_proposal(
+            &self,
+            _peer: AuthorityIndex,
+            _proposal: &crate::epoch_change::EpochChangeProposal,
+            _timeout: Duration,
+        ) -> ConsensusResult<()> {
+            unimplemented!("Unimplemented")
+        }
+
+        async fn send_epoch_change_vote(
+            &self,
+            _peer: AuthorityIndex,
+            _vote: &crate::epoch_change::EpochChangeVote,
+            _timeout: Duration,
+        ) -> ConsensusResult<()> {
+            unimplemented!("Unimplemented")
+        }
+
         async fn fetch_latest_blocks(
             &self,
             _peer: AuthorityIndex,

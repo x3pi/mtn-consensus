@@ -13,7 +13,7 @@ use crate::{
 
 #[tokio::test]
 async fn direct_commit() {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     let context = Arc::new(Context::new_for_test(4).0);
     let dag_state = Arc::new(RwLock::new(DagState::new(
         context.clone(),
@@ -62,7 +62,7 @@ async fn direct_commit() {
 
 #[tokio::test]
 async fn direct_skip() {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     let context = Arc::new(Context::new_for_test(4).0);
     let dag_state = Arc::new(RwLock::new(DagState::new(
         context.clone(),
@@ -106,7 +106,7 @@ async fn direct_skip() {
 
 #[tokio::test]
 async fn direct_undecided() {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     let context = Arc::new(Context::new_for_test(4).0);
     let dag_state = Arc::new(RwLock::new(DagState::new(
         context.clone(),
@@ -150,7 +150,7 @@ async fn direct_undecided() {
 
 #[tokio::test]
 async fn indirect_commit() {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     let context = Arc::new(Context::new_for_test(4).0);
     let dag_state = Arc::new(RwLock::new(DagState::new(
         context.clone(),
@@ -258,7 +258,7 @@ async fn indirect_commit() {
 /// Commit the first leader, indirectly skip the 2nd, and commit the 3rd leader.
 #[tokio::test]
 async fn indirect_skip() {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     let context = Arc::new(Context::new_for_test(4).0);
     let dag_state = Arc::new(RwLock::new(DagState::new(
         context.clone(),
@@ -374,7 +374,7 @@ async fn indirect_skip() {
 /// but later we encounter B' which votes for D to make it committed directly
 #[tokio::test]
 async fn test_equivocating_direct_commit() {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     let context = Arc::new(Context::new_for_test(4).0);
     let dag_state = Arc::new(RwLock::new(DagState::new(
         context.clone(),
@@ -474,7 +474,7 @@ async fn test_equivocating_direct_commit() {
 /// but later we encounter C' which doesn't vote for D to make it skipped directly
 #[tokio::test]
 async fn test_equivocating_direct_skip() {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     let context = Arc::new(Context::new_for_test(4).0);
     let dag_state = Arc::new(RwLock::new(DagState::new(
         context.clone(),

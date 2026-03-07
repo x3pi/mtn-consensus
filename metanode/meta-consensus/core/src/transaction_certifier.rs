@@ -635,7 +635,7 @@ mod test {
 
     #[tokio::test]
     async fn test_vote_info_basic() {
-        telemetry_subscribers::init_for_testing();
+        // // // // // // telemetry_subscribers::init_for_testing();
         let (context, _) = Context::new_for_test(7);
         let committee = &context.committee;
 
@@ -801,7 +801,7 @@ mod test {
 
     #[tokio::test]
     async fn test_certify_basic() {
-        telemetry_subscribers::init_for_testing();
+        // // // // // // telemetry_subscribers::init_for_testing();
         let (context, _) = Context::new_for_test(4);
         let context = Arc::new(context);
 
@@ -913,7 +913,7 @@ mod test {
     // TODO: add reject votes.
     #[tokio::test]
     async fn test_certify_randomized() {
-        telemetry_subscribers::init_for_testing();
+        // // // // // // telemetry_subscribers::init_for_testing();
         let num_authorities: u32 = 7;
         let (context, _) = Context::new_for_test(num_authorities as usize);
         let context = Arc::new(context);
