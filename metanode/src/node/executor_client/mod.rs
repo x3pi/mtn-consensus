@@ -240,12 +240,16 @@ impl ExecutorClient {
                 *next_expected_guard
             };
 
-            // CRITICAL FIX: Sync with Go's state to prevent duplicate commits
-            // - If Go is behind: Keep current value (we have commits Go hasn't seen yet)
+            // CRITICAL FIX: Sync with Go's state to prevent data loss or duplicate commits
+            // - If Go is behind (crash data loss): We MUST wind back our index to allow WAL replay.
             // - If Go is ahead: Update to Go's state (prevent sending duplicate commits)
             if go_next_expected < current_next_expected {
-                // Go is behind - keep current value (we have commits Go hasn't seen yet)
-                info!("📊 [INIT] Go Master is behind (last_global_exec_index={}, go_next_expected={} < current_next_expected={}). Keeping current value to send pending commits.",
+                // Go is behind - we must rewind to Go's expected state so that we replay the lost blocks to Go.
+                {
+                    let mut next_expected_guard = self.next_expected_index.lock().await;
+                    *next_expected_guard = go_next_expected;
+                }
+                warn!("⚠️ [INIT] Go Master is behind (last_global_exec_index={}, go_next_expected={} < current_next_expected={}). Winding back next_expected_index to allow WAL replay of lost blocks.",
                     last_global_exec_index, go_next_expected, current_next_expected);
             } else if go_next_expected > current_next_expected {
                 // Go is ahead - update to Go's state to prevent sending duplicate commits
