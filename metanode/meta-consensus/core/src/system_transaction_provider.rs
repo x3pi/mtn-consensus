@@ -127,7 +127,7 @@ impl DefaultSystemTransactionProvider {
         *self
             .current_epoch
             .write()
-            .expect("current_epoch RwLock poisoned") = new_epoch;
+            .unwrap_or_else(|p| p.into_inner()) = new_epoch;
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -153,11 +153,11 @@ impl DefaultSystemTransactionProvider {
         *self
             .epoch_start_timestamp_ms
             .write()
-            .expect("epoch_start_timestamp_ms RwLock poisoned") = adjusted_timestamp_ms;
+            .unwrap_or_else(|p| p.into_inner()) = adjusted_timestamp_ms;
         *self
             .last_checked_commit_index
             .write()
-            .expect("last_checked_commit_index RwLock poisoned") = 0;
+            .unwrap_or_else(|p| p.into_inner()) = 0;
 
         info!(
             "📅 SystemTransactionProvider::update_epoch: epoch={}, epoch_start_timestamp_ms={}ms (from new_timestamp_ms={}ms, now={}ms)",
@@ -179,7 +179,7 @@ impl DefaultSystemTransactionProvider {
         let last_checked = *self
             .last_checked_commit_index
             .read()
-            .expect("last_checked_commit_index RwLock poisoned");
+            .unwrap_or_else(|p| p.into_inner());
         if current_commit_index <= last_checked {
             tracing::debug!(
                 "⏰ SystemTransactionProvider: Already checked commit_index {} (last_checked={}), skipping",
@@ -198,7 +198,7 @@ impl DefaultSystemTransactionProvider {
         let epoch_start = *self
             .epoch_start_timestamp_ms
             .read()
-            .expect("epoch_start_timestamp_ms RwLock poisoned");
+            .unwrap_or_else(|p| p.into_inner());
         let elapsed_seconds = (now_ms - epoch_start) / 1000;
 
         // Log epoch start timestamp for debugging
@@ -217,7 +217,7 @@ impl DefaultSystemTransactionProvider {
         if should_trigger {
             info!(
                 "⏰ SystemTransactionProvider: Epoch change triggered - epoch={}, elapsed={}s, duration={}s, commit_index={}",
-                *self.current_epoch.read().expect("current_epoch RwLock poisoned"),
+                *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
                 elapsed_seconds,
                 self.epoch_duration_seconds,
                 current_commit_index
@@ -231,7 +231,7 @@ impl DefaultSystemTransactionProvider {
                 if elapsed_seconds >= self.epoch_duration_seconds {
                     tracing::info!(
                         "⏰ SystemTransactionProvider: Epoch change check - epoch={}, elapsed={}s, duration={}s, remaining={}s, commit_index={} (PAST THRESHOLD!)",
-                        *self.current_epoch.read().expect("current_epoch RwLock poisoned"),
+                        *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
                         elapsed_seconds,
                         self.epoch_duration_seconds,
                         self.epoch_duration_seconds.saturating_sub(elapsed_seconds),
@@ -240,7 +240,7 @@ impl DefaultSystemTransactionProvider {
                 } else {
                     tracing::debug!(
                         "⏰ SystemTransactionProvider: Epoch change check - epoch={}, elapsed={}s, duration={}s, remaining={}s, commit_index={}",
-                        *self.current_epoch.read().expect("current_epoch RwLock poisoned"),
+                        *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
                         elapsed_seconds,
                         self.epoch_duration_seconds,
                         self.epoch_duration_seconds.saturating_sub(elapsed_seconds),
@@ -277,7 +277,7 @@ impl SystemTransactionProvider for DefaultSystemTransactionProvider {
             let mut last_checked = self
                 .last_checked_commit_index
                 .write()
-                .expect("last_checked_commit_index RwLock poisoned");
+                .unwrap_or_else(|p| p.into_inner());
             if current_commit_index > *last_checked {
                 *last_checked = current_commit_index;
             }
