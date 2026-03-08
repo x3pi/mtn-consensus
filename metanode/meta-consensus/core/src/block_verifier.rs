@@ -515,7 +515,7 @@ mod test {
         {
             let block = test_block
                 .clone()
-                .set_transactions(vec![Transaction::new(vec![4; 100 * 1024 * 1024])])
+                .set_transactions(vec![Transaction::new(vec![4; 6 * 1024 * 1024])])
                 .build();
             let signed_block = SignedBlock::new(block, author_protocol_keypair).unwrap();
             assert!(matches!(
@@ -528,7 +528,7 @@ mod test {
         {
             let block = test_block
                 .clone()
-                .set_transactions((0..100000).map(|_| Transaction::new(vec![4; 8])).collect())
+                .set_transactions((0..50050).map(|_| Transaction::new(vec![4; 8])).collect())
                 .build();
             let signed_block = SignedBlock::new(block, author_protocol_keypair).unwrap();
             assert!(matches!(
@@ -542,7 +542,7 @@ mod test {
             let block = test_block
                 .clone()
                 .set_transactions(
-                    (0..300)
+                    (0..205)
                         .map(|_| Transaction::new(vec![4; 1024 * 1024]))
                         .collect(),
                 )

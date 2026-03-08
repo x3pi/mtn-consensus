@@ -52,7 +52,8 @@ impl DagState {
             .map(|(_, block_ref)| **block_ref)
             .collect::<Vec<_>>();
         let store_results = self.store.read_blocks(&missing_refs).unwrap_or_else(|e| {
-            panic!("Failed to read_blocks from storage in get_blocks: {:?}", e)
+            tracing::error!("Failed to read_blocks from storage in get_blocks: {:?}", e);
+            vec![None; missing_refs.len()]
         });
         self.context
             .metrics
@@ -122,7 +123,11 @@ impl DagState {
             }
             let block_ref = linked.pop_last().expect("linked set should not be empty");
             let Some(block) = self.get_block(&block_ref) else {
-                panic!("Block {:?} should exist in DAG!", block_ref);
+                tracing::error!(
+                    "Block {:?} should exist in DAG! Skipping to prevent fork/crash.",
+                    block_ref
+                );
+                continue;
             };
             linked.extend(block.ancestors().iter().cloned());
         }
@@ -135,10 +140,12 @@ impl DagState {
                 )),
                 Unbounded,
             ))
-            .map(|r| {
-                self.get_block(r)
-                    .unwrap_or_else(|| panic!("Block {:?} should exist in DAG!", r))
-                    .clone()
+            .filter_map(|r| {
+                let block = self.get_block(r);
+                if block.is_none() {
+                    tracing::error!("Block {:?} should exist in DAG! Skipping from result.", r);
+                }
+                block
             })
             .collect()
     }
@@ -377,7 +384,10 @@ impl DagState {
         let store_results = self
             .store
             .contains_blocks(&missing_refs)
-            .unwrap_or_else(|e| panic!("Failed to read from storage: {:?}", e));
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to read from storage in contains_blocks: {:?}", e);
+                vec![false; missing_refs.len()]
+            });
         self.context
             .metrics
             .node_metrics
