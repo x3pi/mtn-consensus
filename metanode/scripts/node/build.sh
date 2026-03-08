@@ -29,8 +29,28 @@ export PATH="/home/abc/protoc3/bin:$PATH"
 cd "$METANODE_ROOT" && cargo +nightly build --release --bin metanode
 echo -e "${GREEN}  ✅ Rust binary: $METANODE_ROOT/target/release/metanode${NC}"
 
+# ─── C++ EVM ──────────────────────────────────────────────────
+echo -e "${BLUE}📋 Step 2: Build C++ EVM (c_mvm + linker)...${NC}"
+MVM_ROOT="$GO_PROJECT_ROOT/pkg/mvm"
+
+# Build c_mvm
+if [ ! -d "$MVM_ROOT/c_mvm/build" ]; then
+    mkdir -p "$MVM_ROOT/c_mvm/build"
+    cd "$MVM_ROOT/c_mvm/build" && cmake ../
+fi
+cd "$MVM_ROOT/c_mvm/build" && make -j$(nproc) install
+echo -e "${GREEN}  ✅ c_mvm built${NC}"
+
+# Build linker
+if [ ! -d "$MVM_ROOT/linker/build" ]; then
+    mkdir -p "$MVM_ROOT/linker/build"
+    cd "$MVM_ROOT/linker/build" && cmake ..
+fi
+cd "$MVM_ROOT/linker/build" && make -j$(nproc) install
+echo -e "${GREEN}  ✅ linker built${NC}"
+
 # ─── Go ───────────────────────────────────────────────────────
-echo -e "${BLUE}📋 Step 2: Build Go simple_chain...${NC}"
+echo -e "${BLUE}📋 Step 3: Build Go simple_chain...${NC}"
 cd "$GO_SIMPLE_ROOT" && go build -o simple_chain .
 echo -e "${GREEN}  ✅ Go binary: $GO_SIMPLE_ROOT/simple_chain${NC}"
 
