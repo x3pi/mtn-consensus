@@ -81,18 +81,18 @@ metanode/config/storage/
 # Configuration and secrets (SECURITY CRITICAL)
 # =============================================================================
 
-# Node configuration files - TRACKED (needed for deployment)
-# metanode/config/node_*.toml
-# metanode/config/committee.json
+# Node configuration files (may contain sensitive data)
+metanode/config/node_*.toml
+metanode/config/committee.json
 metanode/config/committee_*.json
 metanode/config/epoch_timestamp.txt
 
-# Cryptographic keys - TRACKED (needed for deployment)
-# metanode/config/node_*_protocol_key.json
-# metanode/config/node_*_network_key.json
+# Cryptographic keys (NEVER COMMIT - Contains private keys!)
+metanode/config/node_*_protocol_key.json
+metanode/config/node_*_network_key.json
 **/private_key.pem
 **/secret_key.pem
-# **/*_key.json
+**/*_key.json
 
 # Environment files (may contain secrets)
 **/.env
