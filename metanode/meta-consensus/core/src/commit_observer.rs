@@ -218,7 +218,7 @@ impl CommitObserver {
                 .expect("Scanning commits should not fail");
             assert_eq!(
                 unsent_commits.len() as u32,
-                end_index.checked_sub(start_index).unwrap() + 1,
+                end_index.checked_sub(start_index).expect("end_index must be >= start_index in commit scan range") + 1,
                 "Gap in scanned commits: start index: {start_index}, end index: {end_index}, commits: {:?}",
                 unsent_commits,
             );
@@ -282,9 +282,9 @@ impl CommitObserver {
                         .recover_and_vote_on_blocks(committed_sub_dag.blocks.clone());
                 }
 
-                self.commit_finalizer_handle
-                    .send(committed_sub_dag)
-                    .unwrap();
+                self.commit_finalizer_handle.send(committed_sub_dag).expect(
+                    "Failed to send recovered commit to finalizer — channel closed unexpectedly",
+                );
 
                 self.context
                     .metrics
@@ -371,7 +371,7 @@ mod tests {
     async fn test_handle_commit() {
         use crate::leader_schedule::LeaderSwapTable;
 
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let num_authorities = 4;
         let (context, _keys) = Context::new_for_test(num_authorities);
         let context = Arc::new(context);
@@ -526,7 +526,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recover_and_send_commits() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let num_authorities = 4;
         let context = Arc::new(Context::new_for_test(num_authorities).0);
         let mem_store = Arc::new(MemStore::new());

@@ -1,0 +1,559 @@
+    Checking consensus-core v0.1.0 (/home/abc/chain-n/mtn-consensus/metanode/meta-consensus/core)
+warning: unused imports: `Excluded`, `Included`, `Unbounded`, and `time::Duration`
+  --> meta-consensus/core/src/dag_state/dag_state_impl.rs:7:18
+   |
+ 7 |     ops::Bound::{Excluded, Included, Unbounded},
+   |                  ^^^^^^^^  ^^^^^^^^  ^^^^^^^^^
+...
+10 |     time::Duration,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused imports: `BlockDigest` and `BlockTimestampMs`
+  --> meta-consensus/core/src/dag_state/dag_state_impl.rs:15:30
+   |
+15 | use consensus_types::block::{BlockDigest, BlockRef, BlockTimestampMs, Round, TransactionIndex};
+   |                              ^^^^^^^^^^^            ^^^^^^^^^^^^^^^^
+
+warning: unused import: `tokio::time::Instant`
+  --> meta-consensus/core/src/dag_state/dag_state_impl.rs:17:5
+   |
+17 | use tokio::time::Instant;
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `error` and `trace`
+  --> meta-consensus/core/src/dag_state/dag_state_impl.rs:18:22
+   |
+18 | use tracing::{debug, error, info, trace};
+   |                      ^^^^^        ^^^^^
+
+warning: unused imports: `CommitDigest`, `CommitIndex`, `CommittedSubDag`, `ReputationScores`, `Slot`, and `WriteBatch`
+  --> meta-consensus/core/src/dag_state/dag_state_impl.rs:21:39
+   |
+21 |     block::{genesis_blocks, BlockAPI, Slot, VerifiedBlock, GENESIS_ROUND},
+   |                                       ^^^^
+22 |     commit::{
+23 |         load_committed_subdag_from_store, CommitAPI as _, CommitDigest, CommitIndex, CommitInfo,
+   |                                                           ^^^^^^^^^^^^  ^^^^^^^^^^^
+...
+28 |     leader_scoring::{ReputationScores, ScoringSubdag},
+   |                      ^^^^^^^^^^^^^^^^
+29 |     storage::{Store, WriteBatch},
+   |                      ^^^^^^^^^^
+30 |     threshold_clock::ThresholdClock,
+31 |     CommittedSubDag,
+   |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `types::BlockInfo`
+  --> meta-consensus/core/src/dag_state/read.rs:13:43
+   |
+13 |     dag_state::{dag_state_impl::DagState, types::BlockInfo},
+   |                                           ^^^^^^^^^^^^^^^^
+
+warning: unused import: `consensus_config::AuthorityIndex`
+  --> meta-consensus/core/src/dag_state/write.rs:13:5
+   |
+13 | use consensus_config::AuthorityIndex;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `GENESIS_ROUND`
+  --> meta-consensus/core/src/dag_state/write.rs:17:38
+   |
+17 |     block::{BlockAPI, VerifiedBlock, GENESIS_ROUND},
+   |                                      ^^^^^^^^^^^^^
+
+error[E0599]: no method named `calculate_gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/commit_finalizer.rs:510:26
+    |
+508 | /                     self.dag_state
+509 | |                         .read()
+510 | |                         .calculate_gc_round(c.commit.leader.round),
+    | |                         -^^^^^^^^^^^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+    | |_________________________|
+    |
+
+error[E0599]: no method named `gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+  --> meta-consensus/core/src/commit_observer.rs:98:58
+   |
+98 |                 let gc_round = observer.dag_state.read().gc_round();
+   |                                                          ^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+  --> meta-consensus/core/src/linearizer.rs:20:1
+   |
+20 | pub(crate) trait BlockStoreAPI {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/commit_syncer.rs:191:78
+    |
+191 |                         let local_commit_index = self.inner.dag_state.read().last_commit_index();
+    |                                                                              ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:323:5
+    |
+323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/commit_syncer.rs:471:46
+    |
+471 |             .max(self.inner.dag_state.read().last_commit_index());
+    |                                              ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:323:5
+    |
+323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/authority_service.rs:238:55
+    |
+238 |         let last_commit_index = self.dag_state.read().last_commit_index();
+    |                                                       ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:323:5
+    |
+323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/authority_service.rs:755:55
+    |
+755 |         let last_commit_index = self.dag_state.read().last_commit_index();
+    |                                                       ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:323:5
+    |
+323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/base_committer.rs:237:46
+    |
+237 |         let gc_round = self.dag_state.read().gc_round();
+    |                                              ^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/block_manager.rs:219:46
+    |
+219 |         let gc_round = self.dag_state.read().gc_round();
+    |                                              ^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/block_manager.rs:288:34
+    |
+288 |         let gc_round = dag_state.gc_round();
+    |                                  ^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/block_manager.rs:491:46
+    |
+491 |         let gc_round = self.dag_state.read().gc_round();
+    |                                              ^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `calculate_gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/commit_finalizer.rs:830:14
+    |
+827 |           let gc_round = self
+    |  ________________________-
+828 | |             .dag_state
+829 | |             .read()
+830 | |             .calculate_gc_round(last_finalized_commit_round);
+    | |             -^^^^^^^^^^^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+    | |_____________|
+    |
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/commit_syncer.rs:145:58
+    |
+145 |         let synced_commit_index = inner.dag_state.read().last_commit_index();
+    |                                                          ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:323:5
+    |
+323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/commit_syncer.rs:241:62
+    |
+241 |         let local_commit_index = self.inner.dag_state.read().last_commit_index();
+    |                                                              ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:323:5
+    |
+323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_leader` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/core.rs:138:52
+    |
+138 |         let last_decided_leader = dag_state.read().last_commit_leader();
+    |                                                    ^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `is_committed` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:154:5
+    |
+154 |     pub fn is_committed(&self, block_ref: &BlockRef) -> bool {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/core.rs:435:55
+    |
+435 |         let last_commit_index = self.dag_state.read().last_commit_index();
+    |                                                       ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:323:5
+    |
+323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/core.rs:524:64
+    |
+524 |                 let local_commit_index = self.dag_state.read().last_commit_index();
+    |                                                                ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:323:5
+    |
+323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/core.rs:679:66
+    |
+679 |                 let current_commit_index = self.dag_state.read().last_commit_index();
+    |                                                                  ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:323:5
+    |
+323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/core.rs:902:63
+    |
+902 |                 let last_commit_index = self.dag_state.read().last_commit_index();
+    |                                                               ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:323:5
+    |
+323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+    --> meta-consensus/core/src/core.rs:1002:62
+     |
+1002 |                 let new_commit_index = self.dag_state.read().last_commit_index();
+     |                                                              ^^^^^^^^^^^^^^^^^
+     |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+    --> meta-consensus/core/src/dag_state/write.rs:323:5
+     |
+ 323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+    --> meta-consensus/core/src/core.rs:1034:83
+     |
+1034 |             .notify_own_blocks_status(committed_block_refs, self.dag_state.read().gc_round());
+     |                                                                                   ^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+     |
+     = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+    --> meta-consensus/core/src/linearizer.rs:20:1
+     |
+  20 | pub(crate) trait BlockStoreAPI {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+    --> meta-consensus/core/src/core.rs:1072:56
+     |
+1072 |         let local_commit_index = self.dag_state.read().last_commit_index();
+     |                                                        ^^^^^^^^^^^^^^^^^
+     |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+    --> meta-consensus/core/src/dag_state/write.rs:323:5
+     |
+ 323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `dag_state_impl::DagState` in the current scope
+   --> meta-consensus/core/src/dag_state/dag_state_impl.rs:275:66
+    |
+ 41 | pub struct DagState {
+    | ------------------- method `gc_round` not found for this struct
+...
+275 |                     Self::eviction_round(last_block_round, state.gc_round(), state.cached_rounds);
+    |                                                                  ^^^^^^^^ method not found in `dag_state_impl::DagState`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `dag_state_impl::DagState` in the current scope
+   --> meta-consensus/core/src/dag_state/dag_state_impl.rs:303:34
+    |
+ 41 | pub struct DagState {
+    | ------------------- method `gc_round` not found for this struct
+...
+303 |             let gc_round = state.gc_round();
+    |                                  ^^^^^^^^ method not found in `dag_state_impl::DagState`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `dag_state_impl::DagState` in the current scope
+   --> meta-consensus/core/src/dag_state/dag_state_impl.rs:347:61
+    |
+ 41 | pub struct DagState {
+    | ------------------- method `gc_round` not found for this struct
+...
+347 |             .scan_blocks_by_author(context.own_index, state.gc_round() + 1)
+    |                                                             ^^^^^^^^ method not found in `dag_state_impl::DagState`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for reference `&dag_state_impl::DagState` in the current scope
+   --> meta-consensus/core/src/dag_state/dag_state_impl.rs:368:47
+    |
+368 |         Self::eviction_round(last_round, self.gc_round(), self.cached_rounds)
+    |                                               ^^^^^^^^ method not found in `&dag_state_impl::DagState`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_round` found for reference `&dag_state_impl::DagState` in the current scope
+  --> meta-consensus/core/src/dag_state/read.rs:91:26
+   |
+91 |         if round <= self.last_commit_round() {
+   |                          ^^^^^^^^^^^^^^^^^ method not found in `&dag_state_impl::DagState`
+
+error[E0599]: no method named `last_commit_round` found for reference `&dag_state_impl::DagState` in the current scope
+  --> meta-consensus/core/src/dag_state/read.rs:92:137
+   |
+92 | ...st_commit_round={})", round, self.last_commit_round());
+   |                                      ^^^^^^^^^^^^^^^^^ method not found in `&dag_state_impl::DagState`
+
+error[E0599]: no method named `gc_round` found for mutable reference `&mut dag_state_impl::DagState` in the current scope
+   --> meta-consensus/core/src/dag_state/write.rs:167:29
+    |
+167 |         let gc_round = self.gc_round();
+    |                             ^^^^^^^^ method not found in `&mut dag_state_impl::DagState`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no function or associated item named `gc_round` found for struct `dag_state_impl::DagState` in the current scope
+   --> meta-consensus/core/src/linearizer.rs:44:19
+    |
+ 44 |         DagState::gc_round(self)
+    |                   ^^^^^^^^ function or associated item not found in `dag_state_impl::DagState`
+    |
+   ::: meta-consensus/core/src/dag_state/dag_state_impl.rs:41:1
+    |
+ 41 | pub struct DagState {
+    | ------------------- function or associated item `gc_round` not found for this struct
+    |
+note: if you're trying to build a new `dag_state_impl::DagState`, consider using `dag_state_impl::DagState::new` which returns `dag_state_impl::DagState`
+   --> meta-consensus/core/src/dag_state/dag_state_impl.rs:119:5
+    |
+119 |     pub fn new(context: Arc<Context>, store: Arc<dyn Store>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockWriteGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/linearizer.rs:123:43
+    |
+123 |         let last_commit_index = dag_state.last_commit_index();
+    |                                           ^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:323:5
+    |
+323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_digest` found for struct `parking_lot::lock_api::RwLockWriteGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/linearizer.rs:124:44
+    |
+124 |         let last_commit_digest = dag_state.last_commit_digest();
+    |                                            ^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `is_committed` with a similar name, but with different arguments
+   --> meta-consensus/core/src/linearizer.rs:27:5
+    |
+ 27 |     fn is_committed(&self, block_ref: &BlockRef) -> bool;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_timestamp_ms` found for struct `parking_lot::lock_api::RwLockWriteGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/linearizer.rs:125:50
+    |
+125 |         let last_commit_timestamp_ms = dag_state.last_commit_timestamp_ms();
+    |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `is_committed` with a similar name, but with different arguments
+   --> meta-consensus/core/src/linearizer.rs:27:5
+    |
+ 27 |     fn is_committed(&self, block_ref: &BlockRef) -> bool;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_committed_rounds` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/linearizer.rs:378:24
+    |
+378 |             (dag_state.last_committed_rounds(), dag_state.gc_round())
+    |                        ^^^^^^^^^^^^^^^^^^^^^-- help: remove the arguments
+    |                        |
+    |                        field, not a method
+    |
+help: there is a method `is_committed` with a similar name, but with different arguments
+   --> meta-consensus/core/src/dag_state/write.rs:154:5
+    |
+154 |     pub fn is_committed(&self, block_ref: &BlockRef) -> bool {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/linearizer.rs:378:59
+    |
+378 |             (dag_state.last_committed_rounds(), dag_state.gc_round())
+    |                                                           ^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+  --> meta-consensus/core/src/subscriber.rs:66:27
+   |
+66 |                 dag_state.gc_round(),
+   |                           ^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+  --> meta-consensus/core/src/linearizer.rs:20:1
+   |
+20 | pub(crate) trait BlockStoreAPI {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `last_commit_index` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+    --> meta-consensus/core/src/synchronizer.rs:1004:55
+     |
+1004 |         let last_commit_index = self.dag_state.read().last_commit_index();
+     |                                                       ^^^^^^^^^^^^^^^^^
+     |
+help: there is a method `add_commit_info` with a similar name, but with different arguments
+    --> meta-consensus/core/src/dag_state/write.rs:323:5
+     |
+ 323 |     pub fn add_commit_info(&mut self, reputation_scores: ReputationScores) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/transaction_certifier.rs:123:38
+    |
+123 |             let gc_round = dag_state.gc_round();
+    |                                      ^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `gc_round` found for struct `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>` in the current scope
+   --> meta-consensus/core/src/transaction_certifier.rs:237:56
+    |
+237 |         let dag_state_gc_round = self.dag_state.read().gc_round();
+    |                                                        ^^^^^^^^ method not found in `parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, dag_state_impl::DagState>`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+note: `BlockStoreAPI` defines an item `gc_round`, perhaps you need to implement it
+   --> meta-consensus/core/src/linearizer.rs:20:1
+    |
+ 20 | pub(crate) trait BlockStoreAPI {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `itertools::Itertools`
+  --> meta-consensus/core/src/dag_state/dag_state_impl.rs:16:5
+   |
+16 | use itertools::Itertools as _;
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `storage::Store`
+  --> meta-consensus/core/src/dag_state/read.rs:14:5
+   |
+14 |     storage::Store,
+   |     ^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `consensus-core` (lib) generated 10 warnings
+error: could not compile `consensus-core` (lib) due to 38 previous errors; 10 warnings emitted

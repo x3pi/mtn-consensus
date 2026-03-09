@@ -328,7 +328,7 @@ async fn direct_skip_missing_leader_block() {
 /// Indirect-commit the first leader.
 #[tokio::test]
 async fn indirect_commit() {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     // Dag Notes:
     // - Fully connected up to the leader round of wave 1.
     // - Only 2f+1 validators vote for the leader of wave 1.
@@ -717,7 +717,7 @@ fn basic_test_setup() -> (
     Arc<RwLock<DagState>>,
     super::UniversalCommitter,
 ) {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     // Commitee of 4 with even stake
     let context = Arc::new(Context::new_for_test(4).0);
     let dag_state = Arc::new(RwLock::new(DagState::new(
@@ -747,7 +747,7 @@ struct TestSetup {
 
 // TODO: Make this the basic_test_setup()
 fn basic_dag_builder_test_setup() -> TestSetup {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     let context = Arc::new(Context::new_for_test(4).0);
     let dag_builder = DagBuilder::new(context);
 

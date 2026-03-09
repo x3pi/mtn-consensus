@@ -1,0 +1,31 @@
+[Unit]
+Description=Metanode Go Master (Node %i)
+After=network.target
+Wants=metanode-rust@%i.service
+
+[Service]
+Type=simple
+User=abc
+WorkingDirectory=/home/abc/chain-n/mtn-simple-2025/cmd/simple_chain
+ExecStart=/home/abc/chain-n/mtn-simple-2025/cmd/simple_chain/simple_chain -config=config-master-node%i.json
+
+# Environment
+Environment=GOTOOLCHAIN=go1.23.5
+Environment=GOMEMLIMIT=4GiB
+Environment=XAPIAN_BASE_PATH=sample/node%i/data/data/xapian_node
+
+# File descriptors
+LimitNOFILE=100000
+
+# Auto-restart on crash (covers 17 logger.Fatal points)
+Restart=always
+RestartSec=3
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# Logging
+StandardOutput=append:/home/abc/chain-n/mtn-consensus/metanode/logs/node_%i/go-master-stdout.log
+StandardError=append:/home/abc/chain-n/mtn-consensus/metanode/logs/node_%i/go-master-stdout.log
+
+[Install]
+WantedBy=multi-user.target

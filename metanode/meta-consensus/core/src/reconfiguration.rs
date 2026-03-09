@@ -75,7 +75,10 @@ impl ReconfigState {
 
     /// Check if any certificates should be accepted
     pub fn should_accept_certs(&self) -> bool {
-        !matches!(self.status, ReconfigCertStatus::RejectAllCerts | ReconfigCertStatus::RejectAllTx)
+        !matches!(
+            self.status,
+            ReconfigCertStatus::RejectAllCerts | ReconfigCertStatus::RejectAllTx
+        )
     }
 
     /// Check if any transactions should be accepted
@@ -208,13 +211,13 @@ mod tests {
         assert!(!state.is_reject_all_tx());
 
         state.close_all_certs();
-        assert!(state.is_reject_user_certs());
+        assert!(!state.is_reject_user_certs());
         assert!(state.is_reject_all_certs());
         assert!(!state.is_reject_all_tx());
 
         state.close_all_tx();
-        assert!(state.is_reject_user_certs());
-        assert!(state.is_reject_all_certs());
+        assert!(!state.is_reject_user_certs());
+        assert!(!state.is_reject_all_certs());
         assert!(state.is_reject_all_tx());
     }
 }

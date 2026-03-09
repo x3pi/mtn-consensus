@@ -269,7 +269,10 @@ impl Store for RocksDBStore {
         let mut blocks = Vec::with_capacity(refs.len());
         for (r, block) in refs.into_iter().zip(results.into_iter()) {
             blocks.push(
-                block.unwrap_or_else(|| panic!("Storage inconsistency: block {:?} not found!", r)),
+                block.unwrap_or_else(|| {
+                    tracing::error!("Storage inconsistency: block {:?} found in secondary index but missing from primary store", r);
+                    panic!("Storage inconsistency: block {:?} not found in primary store — secondary index is corrupt", r)
+                }),
             );
         }
         Ok(blocks)
@@ -301,7 +304,10 @@ impl Store for RocksDBStore {
         let mut blocks = vec![];
         for (r, block) in refs.into_iter().zip(results.into_iter()) {
             blocks.push(
-                block.unwrap_or_else(|| panic!("Storage inconsistency: block {:?} not found!", r)),
+                block.unwrap_or_else(|| {
+                    tracing::error!("Storage inconsistency: block {:?} found in secondary index but missing from primary store", r);
+                    panic!("Storage inconsistency: block {:?} not found in primary store — secondary index is corrupt", r)
+                }),
             );
         }
         Ok(blocks)
@@ -341,7 +347,11 @@ impl Store for RocksDBStore {
         Ok(commits)
     }
 
-    fn read_commit_votes(&self, commit_index: CommitIndex, commit_digest: CommitDigest) -> ConsensusResult<Vec<BlockRef>> {
+    fn read_commit_votes(
+        &self,
+        commit_index: CommitIndex,
+        commit_digest: CommitDigest,
+    ) -> ConsensusResult<Vec<BlockRef>> {
         let mut votes = Vec::new();
         for vote in self.commit_votes.safe_range_iter((
             Included((commit_index, commit_digest, BlockRef::MIN)),

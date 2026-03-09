@@ -326,7 +326,7 @@ mod test {
 
     #[tokio::test]
     async fn test_compute_received_quorum_round() {
-        telemetry_subscribers::init_for_testing();
+        // // // // // // telemetry_subscribers::init_for_testing();
         let (context, _) = Context::new_for_test(4);
         let context = Arc::new(context);
         let mut round_tracker = PeerRoundTracker::new(context);

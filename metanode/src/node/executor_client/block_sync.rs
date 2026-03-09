@@ -98,54 +98,68 @@ impl ExecutorClient {
             return Ok((0, 0));
         }
 
-        let block_count = blocks.len();
+        let total_blocks = blocks.len();
         let first_block = blocks.first().map(|b| b.block_number).unwrap_or(0);
         let last_block = blocks.last().map(|b| b.block_number).unwrap_or(0);
 
         info!(
-            "📤 [BLOCK SYNC] Syncing {} blocks ({} to {}) to Go Master",
-            block_count, first_block, last_block
+            "📤 [BLOCK SYNC] Syncing {} blocks ({} to {}) to Go Master in chunks",
+            total_blocks, first_block, last_block
         );
 
-        let request = proto::Request {
-            payload: Some(proto::request::Payload::SyncBlocksRequest(
-                proto::SyncBlocksRequest { blocks },
-            )),
-        };
+        // Chunking to prevent hitting 32MB max message length limits on large block payloads
+        const CHUNK_SIZE: usize = 5;
+        let mut total_synced_count = 0u64;
+        let mut final_synced_block = 0u64;
 
-        let request_bytes = request.encode_to_vec();
+        for chunk_idx in (0..blocks.len()).step_by(CHUNK_SIZE) {
+            let end_idx = std::cmp::min(chunk_idx + CHUNK_SIZE, blocks.len());
+            let chunk = blocks[chunk_idx..end_idx].to_vec();
+            let request = proto::Request {
+                payload: Some(proto::request::Payload::SyncBlocksRequest(
+                    proto::SyncBlocksRequest { blocks: chunk },
+                )),
+            };
 
-        let mut stream = SocketStream::connect(&self.request_socket_address, 5).await?;
+            let request_bytes = request.encode_to_vec();
 
-        let len_bytes = (request_bytes.len() as u32).to_be_bytes();
-        stream.write_all(&len_bytes).await?;
-        stream.write_all(&request_bytes).await?;
-        stream.flush().await?;
+            let mut stream = SocketStream::connect(&self.request_socket_address, 5).await?;
 
-        let mut len_buf = [0u8; 4];
-        stream.read_exact(&mut len_buf).await?;
-        let response_len = u32::from_be_bytes(len_buf) as usize;
+            let len_bytes = (request_bytes.len() as u32).to_be_bytes();
+            stream.write_all(&len_bytes).await?;
+            stream.write_all(&request_bytes).await?;
+            stream.flush().await?;
 
-        let mut response_buf = vec![0u8; response_len];
-        stream.read_exact(&mut response_buf).await?;
+            let mut len_buf = [0u8; 4];
+            stream.read_exact(&mut len_buf).await?;
+            let response_len = u32::from_be_bytes(len_buf) as usize;
 
-        let response: proto::Response = proto::Response::decode(&*response_buf)?;
+            let mut response_buf = vec![0u8; response_len];
+            stream.read_exact(&mut response_buf).await?;
 
-        match response.payload {
-            Some(proto::response::Payload::SyncBlocksResponse(resp)) => {
-                if !resp.error.is_empty() {
-                    return Err(anyhow::anyhow!("Go returned error: {}", resp.error));
+            let response: proto::Response = proto::Response::decode(&*response_buf)?;
+
+            match response.payload {
+                Some(proto::response::Payload::SyncBlocksResponse(resp)) => {
+                    if !resp.error.is_empty() {
+                        return Err(anyhow::anyhow!("Go returned error: {}", resp.error));
+                    }
+                    total_synced_count += resp.synced_count;
+                    if resp.last_synced_block > final_synced_block {
+                        final_synced_block = resp.last_synced_block;
+                    }
                 }
-                info!(
-                    "✅ [BLOCK SYNC] Synced {} blocks (last: {})",
-                    resp.synced_count, resp.last_synced_block
-                );
-                Ok((resp.synced_count, resp.last_synced_block))
+                Some(proto::response::Payload::Error(e)) => {
+                    return Err(anyhow::anyhow!("Go Master error: {}", e));
+                }
+                _ => return Err(anyhow::anyhow!("Unexpected response type from Go Master")),
             }
-            Some(proto::response::Payload::Error(e)) => {
-                Err(anyhow::anyhow!("Go Master error: {}", e))
-            }
-            _ => Err(anyhow::anyhow!("Unexpected response type from Go Master")),
         }
+
+        info!(
+            "✅ [BLOCK SYNC] Successfully synced {} blocks (last: {})",
+            total_synced_count, final_synced_block
+        );
+        Ok((total_synced_count, final_synced_block))
     }
 }

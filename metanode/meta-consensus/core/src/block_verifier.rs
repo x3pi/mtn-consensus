@@ -6,11 +6,11 @@ use consensus_types::block::{BlockRef, TransactionIndex};
 use std::{collections::BTreeSet, sync::Arc};
 
 use crate::{
-    VerifiedBlock,
-    block::{BlockAPI, GENESIS_ROUND, SignedBlock, genesis_blocks},
+    block::{genesis_blocks, BlockAPI, SignedBlock, GENESIS_ROUND},
     context::Context,
     error::{ConsensusError, ConsensusResult},
     transaction::TransactionVerifier,
+    VerifiedBlock,
 };
 
 pub trait BlockVerifier: Send + Sync + 'static {
@@ -135,7 +135,12 @@ impl SignedBlockVerifier {
             }
             seen_ancestors[ancestor.author] = true;
             // Block must have round >= 1 so checked_sub(1) should be safe.
-            if ancestor.round == block.round().checked_sub(1).unwrap() {
+            if ancestor.round
+                == block
+                    .round()
+                    .checked_sub(1)
+                    .expect("block round verified >= 1, checked_sub(1) cannot underflow")
+            {
                 parent_stakes += committee.stake(ancestor.author);
             }
         }
@@ -510,7 +515,7 @@ mod test {
         {
             let block = test_block
                 .clone()
-                .set_transactions(vec![Transaction::new(vec![4; 257 * 1024])])
+                .set_transactions(vec![Transaction::new(vec![4; 6 * 1024 * 1024])])
                 .build();
             let signed_block = SignedBlock::new(block, author_protocol_keypair).unwrap();
             assert!(matches!(
@@ -523,7 +528,7 @@ mod test {
         {
             let block = test_block
                 .clone()
-                .set_transactions((0..1000).map(|_| Transaction::new(vec![4; 8])).collect())
+                .set_transactions((0..50050).map(|_| Transaction::new(vec![4; 8])).collect())
                 .build();
             let signed_block = SignedBlock::new(block, author_protocol_keypair).unwrap();
             assert!(matches!(
@@ -537,16 +542,18 @@ mod test {
             let block = test_block
                 .clone()
                 .set_transactions(
-                    (0..100)
-                        .map(|_| Transaction::new(vec![4; 8 * 1024]))
+                    (0..205)
+                        .map(|_| Transaction::new(vec![4; 1024 * 1024]))
                         .collect(),
                 )
                 .build();
             let signed_block = SignedBlock::new(block, author_protocol_keypair).unwrap();
-            assert!(matches!(
-                verifier.verify_block(&signed_block),
-                Err(ConsensusError::TooManyTransactionBytes { size: _, limit: _ })
-            ));
+            let res = verifier.verify_block(&signed_block);
+            assert!(
+                matches!(res, Err(ConsensusError::TooManyTransactionBytes { .. })),
+                "Unexpected error: {:?}",
+                res
+            );
         }
 
         // Block with an invalid transaction.

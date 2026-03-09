@@ -8,7 +8,7 @@
       "stake": 1000,
       "address": "/ip4/192.168.1.231/tcp/9000",
       "hostname": "node-0",
-      "authority_key": "oVGywzU5kqlrAWHg9HE8xyPvPzeldcKHlQGp5PI4TlfiGBWcOdku5eD+upPbkBO0GDgCSUD847XRKDaDrcU6gvUqJkw/99ftDukeG3EnWsht/iYLocwv8N8zcyqjVEb9",
+      "authority_key": "kUYrYvf/fDUygF8+nIdNATAAlnQU3BZSD3aGuHNoAZQv3OJOIZKW+Uw+UbH/1LWCAlbyWnQra9vUSDJfFVIxlV4XlraaNkLsZSb3HMJJQK3qEc1L20Yqb5YM8uGRXvnB",
       "protocol_key": "fN/BNA8PFyjE3hclyjxnkYgjFlR6M27jpbocq7X847Y=",
       "network_key": "jZ/kDNNPBsZXUD28FcxMLLZ+vCZCbEJoUvdB8zgRvug="
     },
@@ -16,7 +16,7 @@
       "stake": 1000,
       "address": "/ip4/192.168.1.232/tcp/9001",
       "hostname": "node-1",
-      "authority_key": "o/Hivn0pLsOHPpITXpa8erB+tpBdk1rYELr1bcBHz8R4te0SxU3wA9rjn4f/ZrKEERNEurUuMDaGHSNdgqlfwoWoMLo0mFgoburTsUkLpPYm2ch1UXaWv4shtHger7EM",
+      "authority_key": "iRQSDQ6sV7V5jQVsevn8QpS11kG/0tCrN8lSuPqEcb1fDjbtRyzPFgRzY3SM8KAYEycufZ61UBQXMFKEPqAQ41hl4IOed47OQK/NZsQyuccw53CV0F89gaTELIFO/jx9",
       "protocol_key": "ngmCtN3emEfN6PD/oOtB4YoBaHRFn1M3GzhdtdnZzLw=",
       "network_key": "LFHUv5KJyfpRHkJrLGTItE8+LQI1y8su7PVrId8Dqzs="
     },
@@ -24,7 +24,7 @@
       "stake": 1000,
       "address": "/ip4/192.168.1.232/tcp/9002",
       "hostname": "node-2",
-      "authority_key": "q6tzibSFCjBgDb5xZZiIM/j+794bqwq9w540egRSk0f1gKfZFmiPgylFcg//HwzkGAKGlSd/nEYddlnPgzv4oir++a+UaxYjf+U+WrUyQ1i3KEKF29KRjkmE7GxAgSYq",
+      "authority_key": "hK+5uAd/qeLvGo98NE7OCFwYioigpG0uYXn5ocETYSrUMLbCkC+PPH6E4AtRgo5jF7aDhhUmZPX1jAppMs2g9aJzAXQVMNo7Hj5sJq5/r5ogz9HyHsMPvDKvi3HBIuq5",
       "protocol_key": "SJMLmNrKGJHkextl8SN2px1Nq1LBsj6BX6nsnb8gU8Y=",
       "network_key": "ursUG3M+DRgSL1q6oKQY0FM1EEOla67/EzAw+u75iHM="
     },
@@ -32,7 +32,7 @@
       "stake": 1000,
       "address": "/ip4/192.168.1.232/tcp/9003",
       "hostname": "node-3",
-      "authority_key": "tLmqLnJzoiud0W39LJ0w5pSkv7qbQ7J7cSMErw/0Sf5mV9JPa4dirEkx7bRg9yCaD472gQZuZju9uFEzR2T3LUef0Ooo6O6HIeptMAqZvZXxHb5L4Xx3R4DH3Y2vKjAB",
+      "authority_key": "lexRcMNpxBeR/rHNqC3d2+8FOPbDzhXj1mYAdkimbQuCr1WZtSD4Z1sOS0jumEFiFovhoOugnMDIxmOPEZLg7QbzDYGjmpd2+j4ARJTsm70Ophw/q5XmPlzaJL8R0lJO",
       "protocol_key": "2EhvdGj7yPTg2fPLQOy6ytlApvgpUhgc1nxzsPEkGCA=",
       "network_key": "tmkvDNdrvCX0F6Da6n6zr36cQDej3PUirrbUYOceq4w="
     }

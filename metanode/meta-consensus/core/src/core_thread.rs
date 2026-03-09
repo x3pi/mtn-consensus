@@ -476,7 +476,7 @@ mod test {
 
     #[tokio::test]
     async fn test_core_thread() {
-        telemetry_subscribers::init_for_testing();
+        // // // // // // telemetry_subscribers::init_for_testing();
         let (context, mut key_pairs) = Context::new_for_test(4);
         let context = Arc::new(context);
         let store = Arc::new(MemStore::new());
@@ -506,6 +506,7 @@ mod test {
             dag_state.clone(),
             transaction_certifier.clone(),
             leader_schedule.clone(),
+            0,
         )
         .await;
         let leader_schedule = Arc::new(LeaderSchedule::from_store(

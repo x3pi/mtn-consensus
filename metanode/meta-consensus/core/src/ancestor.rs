@@ -316,7 +316,7 @@ mod test {
 
     #[tokio::test]
     async fn test_calculate_network_high_accepted_quorum_round() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
 
         let (context, _key_pairs) = Context::new_for_test(4);
         let context = Arc::new(context);
@@ -349,7 +349,7 @@ mod test {
     // INCLUDE -> EXCLUDE (Pass due to lock expired)
     #[tokio::test]
     async fn test_update_all_ancestor_state_using_accepted_rounds() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let (mut context, _key_pairs) = Context::new_for_test(5);
         context
             .protocol_config

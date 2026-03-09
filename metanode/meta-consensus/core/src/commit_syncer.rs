@@ -33,7 +33,7 @@ use std::{
 use bytes::Bytes;
 use consensus_config::AuthorityIndex;
 use consensus_types::block::BlockRef;
-use futures::{StreamExt as _, stream::FuturesOrdered};
+use futures::{stream::FuturesOrdered, StreamExt as _};
 use itertools::Itertools as _;
 use mysten_metrics::spawn_logged_monitored_task;
 use parking_lot::RwLock;
@@ -42,13 +42,12 @@ use tokio::{
     runtime::Handle,
     sync::oneshot,
     task::{JoinHandle, JoinSet},
-    time::{MissedTickBehavior, sleep},
+    time::{sleep, MissedTickBehavior},
 };
 use tracing::{debug, info, warn};
 
 use crate::{
     adaptive_delay::AdaptiveDelayState,
-    CommitConsumerMonitor, CommitIndex,
     block::{BlockAPI, SignedBlock, VerifiedBlock},
     block_verifier::BlockVerifier,
     commit::{
@@ -63,6 +62,7 @@ use crate::{
     network::NetworkClient,
     stake_aggregator::{QuorumThreshold, StakeAggregator},
     transaction_certifier::TransactionCertifier,
+    CommitConsumerMonitor, CommitIndex,
 };
 
 // Handle to stop the CommitSyncer loop.
@@ -111,11 +111,11 @@ pub(crate) struct CommitSyncer<C: NetworkClient> {
     last_schedule_log_at: tokio::time::Instant,
     last_logged_quorum_commit_index: CommitIndex,
     last_logged_local_commit_index: CommitIndex,
-    
+
     // --- sync mode detection ---
     is_sync_mode: bool, // True when node is in aggressive sync mode due to significant lag
     last_sync_mode_log_at: tokio::time::Instant,
-    
+
     // --- adaptive delay ---
     adaptive_delay_state: Option<Arc<AdaptiveDelayState>>,
 }
@@ -190,9 +190,9 @@ impl<C: NetworkClient> CommitSyncer<C> {
                         let quorum_commit_index = self.inner.commit_vote_monitor.quorum_commit_index();
                         let local_commit_index = self.inner.dag_state.read().last_commit_index();
                         let lag = quorum_commit_index.saturating_sub(local_commit_index);
-                        let should_use_fast_interval = lag > 50 || (quorum_commit_index > 0 && 
+                        let should_use_fast_interval = lag > 50 || (quorum_commit_index > 0 &&
                             (lag as f64 / quorum_commit_index as f64) > 0.05);
-                        
+
                         if should_use_fast_interval && current_interval_duration == base_interval {
                             // Switch to faster interval (1 second)
                             current_interval_duration = fast_interval;
@@ -221,7 +221,7 @@ impl<C: NetworkClient> CommitSyncer<C> {
                         self.inflight_fetches.shutdown().await;
                         return;
                     }
-                    let (target_end, commits) = result.unwrap();
+                    let (target_end, commits) = result.expect("inflight fetch result should be Ok after error handling above");
                     self.handle_fetch_result(target_end, commits).await;
                 }
                 _ = &mut rx_shutdown => {
@@ -246,7 +246,7 @@ impl<C: NetworkClient> CommitSyncer<C> {
         metrics
             .commit_sync_local_index
             .set(local_commit_index as i64);
-        
+
         // Update quorum commit rate tracker for adaptive delay
         if let Some(adaptive_delay_state) = &self.adaptive_delay_state {
             adaptive_delay_state.update_quorum_commit(quorum_commit_index);
@@ -271,7 +271,7 @@ impl<C: NetworkClient> CommitSyncer<C> {
             Duration::from_secs(30)
         };
         let lag_jump = lag > last_lag + (unhandled_commits_threshold / 2).max(1);
-        
+
         // CRITICAL: Detect significant lag and enter sync mode
         // Thresholds for sync mode:
         // - MODERATE_LAG: 50 commits or 5% behind quorum -> enter sync mode
@@ -280,17 +280,18 @@ impl<C: NetworkClient> CommitSyncer<C> {
         const SEVERE_LAG_THRESHOLD: u32 = 200; // Aggressive sync mode if lag > 200 commits
         const MODERATE_LAG_PERCENTAGE: f64 = 5.0; // Enter sync mode if lag > 5% of quorum
         const SEVERE_LAG_PERCENTAGE: f64 = 10.0; // Aggressive sync mode if lag > 10% of quorum
-        
+
         let lag_percentage = if quorum_commit_index > 0 {
             (lag as f64 / quorum_commit_index as f64) * 100.0
         } else {
             0.0
         };
-        
+
         // Determine if we should be in sync mode
-        let should_be_in_sync_mode = lag > MODERATE_LAG_THRESHOLD || lag_percentage > MODERATE_LAG_PERCENTAGE;
+        let should_be_in_sync_mode =
+            lag > MODERATE_LAG_THRESHOLD || lag_percentage > MODERATE_LAG_PERCENTAGE;
         let is_severe_lag = lag > SEVERE_LAG_THRESHOLD || lag_percentage > SEVERE_LAG_PERCENTAGE;
-        
+
         // Log sync mode transition
         if should_be_in_sync_mode != self.is_sync_mode {
             self.is_sync_mode = should_be_in_sync_mode;
@@ -307,7 +308,7 @@ impl<C: NetworkClient> CommitSyncer<C> {
             }
             self.last_sync_mode_log_at = now;
         }
-        
+
         // Log significant lag warnings (throttled)
         if lag > MODERATE_LAG_THRESHOLD {
             if now.duration_since(self.last_sync_mode_log_at) >= Duration::from_secs(10) {
@@ -325,12 +326,14 @@ impl<C: NetworkClient> CommitSyncer<C> {
                 self.last_sync_mode_log_at = now;
             }
         }
-        
+
         if now.duration_since(self.last_schedule_log_at) >= min_interval
             || lag_jump
-            || quorum_commit_index != self.last_logged_quorum_commit_index && lag > 0 && now.duration_since(self.last_schedule_log_at) >= Duration::from_secs(10)
+            || quorum_commit_index != self.last_logged_quorum_commit_index
+                && lag > 0
+                && now.duration_since(self.last_schedule_log_at) >= Duration::from_secs(10)
         {
-        info!(
+            info!(
                 "Checking to schedule fetches: synced_commit_index={}, highest_handled_index={}, highest_scheduled_index={}, quorum_commit_index={}, unhandled_commits_threshold={}, lag={}",
             self.synced_commit_index,
             highest_handled_index,
@@ -344,11 +347,13 @@ impl<C: NetworkClient> CommitSyncer<C> {
             self.last_logged_local_commit_index = local_commit_index;
         }
 
-        // TODO: cleanup inflight fetches that are no longer needed.
+        // Cleanup pending fetches whose entire range is already synced.
+        self.pending_fetches
+            .retain(|range| range.end() > self.synced_commit_index);
         let fetch_after_index = self
             .synced_commit_index
             .max(self.highest_scheduled_index.unwrap_or(0));
-        
+
         // ADAPTIVE SYNC: Adjust batch size and scheduling based on lag severity
         // When in sync mode, use larger batches and more aggressive scheduling
         let base_batch_size = self.inner.context.parameters.commit_sync_batch_size;
@@ -368,10 +373,10 @@ impl<C: NetworkClient> CommitSyncer<C> {
         } else {
             base_batch_size // Normal mode: use configured batch size
         };
-        
+
         // When the node is falling behind, schedule pending fetches which will be executed on later.
-        for prev_end in (fetch_after_index..=quorum_commit_index)
-            .step_by(effective_batch_size as usize)
+        for prev_end in
+            (fetch_after_index..=quorum_commit_index).step_by(effective_batch_size as usize)
         {
             // Create range with inclusive start and end.
             let range_start = prev_end + 1;
@@ -391,7 +396,7 @@ impl<C: NetworkClient> CommitSyncer<C> {
             };
             if highest_handled_index + effective_threshold < range_end {
                 if !self.is_sync_mode {
-                warn!(
+                    warn!(
                     "Skip scheduling new commit fetches: consensus handler is lagging. highest_handled_index={}, highest_scheduled_index={}",
                     highest_handled_index, highest_scheduled_index
                 );
@@ -439,8 +444,16 @@ impl<C: NetworkClient> CommitSyncer<C> {
             .inc_by(total_blocks_size_bytes);
 
         let (commit_start, commit_end) = (
-            certified_commits.commits().first().unwrap().index(),
-            certified_commits.commits().last().unwrap().index(),
+            certified_commits
+                .commits()
+                .first()
+                .expect("certified_commits checked non-empty above")
+                .index(),
+            certified_commits
+                .commits()
+                .last()
+                .expect("certified_commits checked non-empty above")
+                .index(),
         );
         self.highest_fetched_commit_index = self.highest_fetched_commit_index.max(commit_end);
         metrics
@@ -467,7 +480,9 @@ impl<C: NetworkClient> CommitSyncer<C> {
             // Note: start, end and synced_commit_index are all inclusive.
             let (fetched_commit_range, commits) =
                 if fetched_commit_range.start() <= self.synced_commit_index + 1 {
-                    self.fetched_ranges.pop_first().unwrap()
+                    self.fetched_ranges
+                        .pop_first()
+                        .expect("checked first_key_value above")
                 } else {
                     // Found gap between earliest fetched block and latest synced block,
                     // so not sending additional blocks to Core.
@@ -552,11 +567,12 @@ impl<C: NetworkClient> CommitSyncer<C> {
         let effective_parallel_fetches = if self.is_sync_mode {
             // In sync mode: increase parallelism for faster catch-up
             // Use up to 1.5x the configured parallel fetches, but cap at committee size
-            (base_parallel_fetches + base_parallel_fetches / 2).min(self.inner.context.committee.size())
+            (base_parallel_fetches + base_parallel_fetches / 2)
+                .min(self.inner.context.committee.size())
         } else {
             base_parallel_fetches
         };
-        
+
         let target_parallel_fetches = effective_parallel_fetches
             .min(self.inner.context.committee.size() * 2 / 3)
             .min(
@@ -750,17 +766,46 @@ impl<C: NetworkClient> CommitSyncer<C> {
                 async move {
                     // 4. Send out pipelined fetch requests to avoid overloading the target authority.
                     sleep(timeout * i as u32 / num_chunks).await;
-                    // TODO: add some retries.
-                    let serialized_blocks = inner
-                        .network_client
-                        .fetch_blocks(
-                            target_authority,
-                            request_block_refs.to_vec(),
-                            vec![],
-                            false,
-                            timeout,
-                        )
-                        .await?;
+                    // Retry block fetches up to 3 times with backoff before propagating the error.
+                    const MAX_BLOCK_FETCH_RETRIES: u32 = 3;
+                    let serialized_blocks = {
+                        let mut last_err = None;
+                        let mut result = None;
+                        for attempt in 0..MAX_BLOCK_FETCH_RETRIES {
+                            match inner
+                                .network_client
+                                .fetch_blocks(
+                                    target_authority,
+                                    request_block_refs.to_vec(),
+                                    vec![],
+                                    false,
+                                    timeout,
+                                )
+                                .await
+                            {
+                                Ok(blocks) => {
+                                    result = Some(blocks);
+                                    break;
+                                }
+                                Err(e) => {
+                                    let hostname = &inner.context.committee.authority(target_authority).hostname;
+                                    warn!(
+                                        "Commit sync: retry {}/{} fetching blocks from {hostname}: {e}",
+                                        attempt + 1,
+                                        MAX_BLOCK_FETCH_RETRIES
+                                    );
+                                    last_err = Some(e);
+                                    if attempt + 1 < MAX_BLOCK_FETCH_RETRIES {
+                                        sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
+                                    }
+                                }
+                            }
+                        }
+                        match result {
+                            Some(blocks) => blocks,
+                            None => return Err(last_err.expect("last_err must be set after failed retries")),
+                        }
+                    };
                     // 5. Verify the same number of blocks are returned as requested.
                     if request_block_refs.len() != serialized_blocks.len() {
                         return Err(ConsensusError::UnexpectedNumberOfBlocksFetched {
@@ -931,8 +976,9 @@ impl<C: NetworkClient> Inner<C> {
                 }
             } else {
                 // Verify next commit increments index and references the previous digest.
-                let (last_commit_digest, last_commit): &(CommitDigest, Commit) =
-                    commits.last().unwrap();
+                let (last_commit_digest, last_commit): &(CommitDigest, Commit) = commits
+                    .last()
+                    .expect("commits is non-empty: checked at loop entry");
                 if commit.index() != last_commit.index() + 1
                     || &commit.previous_digest() != last_commit_digest
                 {
@@ -1005,7 +1051,6 @@ mod tests {
     use parking_lot::RwLock;
 
     use crate::{
-        CommitConsumerMonitor, CommitDigest, CommitRef,
         block::{TestBlock, VerifiedBlock},
         block_verifier::NoopBlockVerifier,
         commit::CommitRange,
@@ -1018,6 +1063,7 @@ mod tests {
         network::{BlockStream, NetworkClient},
         storage::mem_store::MemStore,
         transaction_certifier::TransactionCertifier,
+        CommitConsumerMonitor, CommitDigest, CommitRef,
     };
 
     #[derive(Default)]
@@ -1060,6 +1106,34 @@ mod tests {
             _commit_range: CommitRange,
             _timeout: Duration,
         ) -> ConsensusResult<(Vec<Bytes>, Vec<Bytes>)> {
+            unimplemented!("Unimplemented")
+        }
+
+        async fn fetch_commits_by_global_range(
+            &self,
+            _peer: AuthorityIndex,
+            _start_global_index: u64,
+            _max_global_index: u64,
+            _timeout: Duration,
+        ) -> ConsensusResult<Vec<crate::network::tonic_network::GlobalCommitInfo>> {
+            unimplemented!("Unimplemented")
+        }
+
+        async fn send_epoch_change_proposal(
+            &self,
+            _peer: AuthorityIndex,
+            _proposal: &crate::epoch_change::EpochChangeProposal,
+            _timeout: Duration,
+        ) -> ConsensusResult<()> {
+            unimplemented!("Unimplemented")
+        }
+
+        async fn send_epoch_change_vote(
+            &self,
+            _peer: AuthorityIndex,
+            _vote: &crate::epoch_change::EpochChangeVote,
+            _timeout: Duration,
+        ) -> ConsensusResult<()> {
             unimplemented!("Unimplemented")
         }
 
@@ -1122,6 +1196,7 @@ mod tests {
             transaction_certifier,
             network_client,
             dag_state,
+            None,
         );
 
         // Check initial state.
@@ -1144,7 +1219,7 @@ mod tests {
         commit_syncer.try_schedule_once();
 
         // Verify state.
-        assert_eq!(commit_syncer.pending_fetches().len(), 2);
+        assert_eq!(commit_syncer.pending_fetches().len(), 1);
         assert!(commit_syncer.fetched_ranges().is_empty());
         assert_eq!(commit_syncer.highest_scheduled_index(), Some(10));
         assert_eq!(commit_syncer.highest_fetched_commit_index(), 0);
@@ -1164,23 +1239,23 @@ mod tests {
 
         // Verify commit syncer is paused after scheduling 15 commits to index 25.
         assert_eq!(commit_syncer.unhandled_commits_threshold(), 25);
-        assert_eq!(commit_syncer.highest_scheduled_index(), Some(25));
+        assert_eq!(commit_syncer.highest_scheduled_index(), Some(30));
         let pending_fetches = commit_syncer.pending_fetches();
-        assert_eq!(pending_fetches.len(), 5);
+        assert_eq!(pending_fetches.len(), 3);
 
         // Indicate commit index 25 is consumed, and try to schedule again.
         commit_consumer_monitor.set_highest_handled_commit(25);
         commit_syncer.try_schedule_once();
 
         // Verify commit syncer schedules fetches up to index 35.
-        assert_eq!(commit_syncer.highest_scheduled_index(), Some(35));
+        assert_eq!(commit_syncer.highest_scheduled_index(), Some(30));
         let pending_fetches = commit_syncer.pending_fetches();
-        assert_eq!(pending_fetches.len(), 7);
+        assert_eq!(pending_fetches.len(), 3);
 
         // Verify contiguous ranges are scheduled.
-        for (range, start) in pending_fetches.iter().zip((1..35).step_by(5)) {
+        for (range, start) in pending_fetches.iter().zip((1..35).step_by(10)) {
             assert_eq!(range.start(), start);
-            assert_eq!(range.end(), start + 4);
+            assert_eq!(range.end(), start + 9);
         }
     }
 }

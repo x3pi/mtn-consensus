@@ -375,7 +375,7 @@ impl NodeMetrics {
             proposed_block_ancestors: register_or_replace_histogram(
                 "proposed_block_ancestors",
                 "Number of ancestors in proposed blocks",
-                exponential_buckets(1.0, 1.4, 20).unwrap(),
+                exponential_buckets(1.0, 1.4, 20).expect("valid exponential bucket params"),
                 registry,
             ),
             proposed_block_ancestors_timestamp_drift_ms: register_or_replace_int_counter_vec(
@@ -388,7 +388,7 @@ impl NodeMetrics {
                 "proposed_block_ancestors_depth",
                 "The depth in rounds of ancestors included in newly proposed blocks",
                 &["authority"],
-                exponential_buckets(1.0, 2.0, 14).unwrap(),
+                exponential_buckets(1.0, 2.0, 14).expect("valid exponential bucket params"),
                 registry,
             ),
             highest_verified_authority_round: register_or_replace_int_gauge_vec(
@@ -500,7 +500,7 @@ impl NodeMetrics {
                 "Number of accepted blocks by source (own, others)",
                 &["source"],
                 registry,
-            ).unwrap(),
+            ).expect("accepted_blocks metric registration"),
             dag_state_recent_blocks: register_or_replace_int_gauge(
                 "dag_state_recent_blocks",
                 "Number of recent blocks cached in the DagState",
@@ -609,7 +609,7 @@ impl NodeMetrics {
                 &["authority"],
                 FINE_GRAINED_LATENCY_SEC_BUCKETS.to_vec(),
                 registry,
-            ).unwrap(),
+            ).expect("certifier_block_latency metric registration"),
             certifier_rejected_transactions: register_or_replace_int_counter_vec(
                 "certifier_rejected_transactions",
                 "Number of transactions rejected by authority in transaction certifier",
@@ -651,7 +651,7 @@ impl NodeMetrics {
                 "Total number of (direct or indirect) committed leaders per authority",
                 &["authority", "commit_type"],
                 registry,
-            ).unwrap(),
+            ).expect("committed_leaders_total metric registration"),
             last_committed_authority_round: register_or_replace_int_gauge_vec(
                 "last_committed_authority_round",
                 "The last round committed by authority.",
@@ -673,13 +673,13 @@ impl NodeMetrics {
                 "The time diff between the last commit and previous one.",
                 LATENCY_SEC_BUCKETS.to_vec(),
                 registry,
-            ).unwrap(),
+            ).expect("last_commit_time_diff metric registration"),
             commit_round_advancement_interval: register_histogram_with_registry!(
                 "commit_round_advancement_interval",
                 "Intervals (in secs) between commit round advancements.",
                 FINE_GRAINED_LATENCY_SEC_BUCKETS.to_vec(),
                 registry,
-            ).unwrap(),
+            ).expect("commit_round_advancement_interval metric registration"),
             last_decided_leader_round: register_or_replace_int_gauge(
                 "last_decided_leader_round",
                 "The last round where a commit decision was made.",
@@ -753,7 +753,7 @@ impl NodeMetrics {
                 &["scope"],
                 FINE_GRAINED_LATENCY_SEC_BUCKETS.to_vec(),
                 registry
-            ).unwrap(),
+            ).expect("scope_processing_time metric registration"),
             sub_dags_per_commit_count: register_or_replace_histogram(
                 "sub_dags_per_commit_count",
                 "The number of subdags per commit.",
@@ -922,13 +922,13 @@ impl NodeMetrics {
                 "The time taken to finish fetching commits and blocks from a given range",
                 LATENCY_SEC_BUCKETS.to_vec(),
                 registry,
-            ).unwrap(),
+            ).expect("commit_sync_fetch_loop_latency metric registration"),
             commit_sync_fetch_once_latency: register_histogram_with_registry!(
                 "commit_sync_fetch_once_latency",
                 "The time taken to fetch commits and blocks once",
                 LATENCY_SEC_BUCKETS.to_vec(),
                 registry,
-            ).unwrap(),
+            ).expect("commit_sync_fetch_once_latency metric registration"),
             commit_sync_fetch_once_errors: register_or_replace_int_counter_vec(
                 "commit_sync_fetch_once_errors",
                 "Number of errors when attempting to fetch commits and blocks from single authority during commit sync.",
@@ -987,7 +987,7 @@ impl NodeMetrics {
                 "Round gaps between the last proposed block round and the lower bound of own quorum round",
                 NUM_BUCKETS.to_vec(),
                 registry
-            ).unwrap(),
+            ).expect("round_tracker_propagation_delays metric registration"),
             round_tracker_last_propagation_delay: register_or_replace_int_gauge(
                 "round_tracker_last_propagation_delay",
                 "Most recent propagation delay observed by RoundTracker",
@@ -1026,7 +1026,7 @@ impl NodeMetrics {
                 "The delay between the round of the last committed block and the round of the finalized commit.",
                 ROUND_DELAY_BUCKETS.to_vec(),
                 registry,
-            ).unwrap(),
+            ).expect("finalizer_round_delay metric registration"),
             finalizer_transaction_status: register_or_replace_int_counter_vec(
                 "finalizer_transaction_status",
                 "Number of transactions finalized by the finalizer, grouped by status.",
@@ -1056,7 +1056,7 @@ impl NodeMetrics {
                 "Total node uptime",
                 LATENCY_SEC_BUCKETS.to_vec(),
                 registry,
-            ).unwrap(),
+            ).expect("uptime metric registration"),
         }
     }
 }

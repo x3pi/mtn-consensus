@@ -72,7 +72,7 @@ impl DefaultSystemTransactionProvider {
     ) -> Self {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("SystemTime before UNIX_EPOCH — clock is misconfigured")
             .as_millis() as u64;
         let elapsed_seconds = (now_ms.saturating_sub(epoch_start_timestamp_ms)) / 1000;
 
@@ -124,11 +124,14 @@ impl DefaultSystemTransactionProvider {
     /// Only override if timestamp is significantly in the past (consensus delay scenario)
     pub async fn update_epoch(&self, new_epoch: Epoch, new_timestamp_ms: u64) {
         // Use blocking write from async context (safe - we're not blocking the runtime thread)
-        *self.current_epoch.write().unwrap() = new_epoch;
+        *self
+            .current_epoch
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = new_epoch;
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("SystemTime before UNIX_EPOCH — clock is misconfigured")
             .as_millis() as u64;
 
         // FORK-SAFETY: More lenient check for Go-synced timestamps
@@ -147,8 +150,14 @@ impl DefaultSystemTransactionProvider {
             new_timestamp_ms
         };
 
-        *self.epoch_start_timestamp_ms.write().unwrap() = adjusted_timestamp_ms;
-        *self.last_checked_commit_index.write().unwrap() = 0;
+        *self
+            .epoch_start_timestamp_ms
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = adjusted_timestamp_ms;
+        *self
+            .last_checked_commit_index
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = 0;
 
         info!(
             "📅 SystemTransactionProvider::update_epoch: epoch={}, epoch_start_timestamp_ms={}ms (from new_timestamp_ms={}ms, now={}ms)",
@@ -167,7 +176,10 @@ impl DefaultSystemTransactionProvider {
         }
 
         // Only check once per commit index to avoid spam
-        let last_checked = *self.last_checked_commit_index.read().unwrap();
+        let last_checked = *self
+            .last_checked_commit_index
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
         if current_commit_index <= last_checked {
             tracing::debug!(
                 "⏰ SystemTransactionProvider: Already checked commit_index {} (last_checked={}), skipping",
@@ -180,10 +192,13 @@ impl DefaultSystemTransactionProvider {
         // Check if enough time has elapsed
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("SystemTime before UNIX_EPOCH — clock is misconfigured")
             .as_millis() as u64;
 
-        let epoch_start = *self.epoch_start_timestamp_ms.read().unwrap();
+        let epoch_start = *self
+            .epoch_start_timestamp_ms
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
         let elapsed_seconds = (now_ms - epoch_start) / 1000;
 
         // Log epoch start timestamp for debugging
@@ -202,7 +217,7 @@ impl DefaultSystemTransactionProvider {
         if should_trigger {
             info!(
                 "⏰ SystemTransactionProvider: Epoch change triggered - epoch={}, elapsed={}s, duration={}s, commit_index={}",
-                *self.current_epoch.read().unwrap(),
+                *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
                 elapsed_seconds,
                 self.epoch_duration_seconds,
                 current_commit_index
@@ -216,7 +231,7 @@ impl DefaultSystemTransactionProvider {
                 if elapsed_seconds >= self.epoch_duration_seconds {
                     tracing::info!(
                         "⏰ SystemTransactionProvider: Epoch change check - epoch={}, elapsed={}s, duration={}s, remaining={}s, commit_index={} (PAST THRESHOLD!)",
-                        *self.current_epoch.read().unwrap(),
+                        *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
                         elapsed_seconds,
                         self.epoch_duration_seconds,
                         self.epoch_duration_seconds.saturating_sub(elapsed_seconds),
@@ -225,7 +240,7 @@ impl DefaultSystemTransactionProvider {
                 } else {
                     tracing::debug!(
                         "⏰ SystemTransactionProvider: Epoch change check - epoch={}, elapsed={}s, duration={}s, remaining={}s, commit_index={}",
-                        *self.current_epoch.read().unwrap(),
+                        *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
                         elapsed_seconds,
                         self.epoch_duration_seconds,
                         self.epoch_duration_seconds.saturating_sub(elapsed_seconds),
@@ -259,7 +274,10 @@ impl SystemTransactionProvider for DefaultSystemTransactionProvider {
         // Only update last_checked if we actually checked (not skipped due to already checked)
         // This allows re-checking if commit_index increases
         {
-            let mut last_checked = self.last_checked_commit_index.write().unwrap();
+            let mut last_checked = self
+                .last_checked_commit_index
+                .write()
+                .unwrap_or_else(|p| p.into_inner());
             if current_commit_index > *last_checked {
                 *last_checked = current_commit_index;
             }

@@ -303,7 +303,7 @@ impl NodeConfig {
 
         // Generate individual node configs
         // NOTE: Không tạo file committee_node_*.json nữa. Tất cả nodes sẽ fetch committee từ Go state.
-        for (idx, (protocol_keypair, network_keypair, _authority_keypair)) in
+        for (idx, (protocol_keypair, network_keypair, authority_keypair)) in
             keypairs.iter().enumerate()
         {
             let config = NodeConfig {
@@ -376,6 +376,14 @@ impl NodeConfig {
                 use base64::{engine::general_purpose, Engine as _};
                 let key_str = general_purpose::STANDARD.encode(&combined);
                 fs::write(key_path, key_str)?;
+            }
+
+            // Save authority key (BLS12-381 min-sig) — private key bytes as hex for Go compatibility
+            {
+                let private_bytes = authority_keypair.private_key_bytes();
+                let hex_str = hex::encode(&private_bytes);
+                let key_path = output_dir.join(format!("node_{}_authority_key.json", idx));
+                fs::write(&key_path, &hex_str)?;
             }
 
             // Save config

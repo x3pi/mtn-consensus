@@ -44,6 +44,15 @@ impl TestService {
 
 #[async_trait]
 impl NetworkService for Mutex<TestService> {
+    async fn handle_fetch_commits_by_global_range(
+        &self,
+        _peer: AuthorityIndex,
+        _start_global_index: u64,
+        _end_global_index: u64,
+    ) -> ConsensusResult<Vec<crate::network::tonic_network::GlobalCommitInfo>> {
+        unimplemented!("Unimplemented")
+    }
+
     async fn handle_send_block(
         &self,
         peer: AuthorityIndex,
@@ -96,6 +105,22 @@ impl NetworkService for Mutex<TestService> {
         _peer: AuthorityIndex,
         _authorities: Vec<AuthorityIndex>,
     ) -> ConsensusResult<Vec<Bytes>> {
+        unimplemented!("Unimplemented")
+    }
+
+    async fn handle_send_epoch_change_proposal(
+        &self,
+        _peer: AuthorityIndex,
+        _proposal: crate::epoch_change::EpochChangeProposal,
+    ) -> ConsensusResult<()> {
+        unimplemented!("Unimplemented")
+    }
+
+    async fn handle_send_epoch_change_vote(
+        &self,
+        _peer: AuthorityIndex,
+        _vote: crate::epoch_change::EpochChangeVote,
+    ) -> ConsensusResult<()> {
         unimplemented!("Unimplemented")
     }
 

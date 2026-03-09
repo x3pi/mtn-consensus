@@ -18,11 +18,11 @@ use crate::{
 };
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct ReputationScores {
+pub struct ReputationScores {
     /// Score per authority. Vec index is the `AuthorityIndex`.
-    pub(crate) scores_per_authority: Vec<u64>,
+    pub scores_per_authority: Vec<u64>,
     // The range of commits these scores were calculated from.
-    pub(crate) commit_range: CommitRange,
+    pub commit_range: CommitRange,
 }
 
 impl ReputationScores {
@@ -117,7 +117,10 @@ impl ScoringSubdag {
                     subdag.commit_ref.index..=subdag.commit_ref.index,
                 ));
             } else {
-                let commit_range = self.commit_range.as_mut().unwrap();
+                let commit_range = self
+                    .commit_range
+                    .as_mut()
+                    .expect("commit_range checked Some above");
                 commit_range.extend_to(subdag.commit_ref.index);
             }
 
@@ -287,7 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scoring_subdag() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         // Populate fully connected test blocks for round 0 ~ 3, authorities 0 ~ 3.

@@ -772,7 +772,7 @@ fn basic_test_setup() -> (
     Arc<RwLock<DagState>>,
     super::UniversalCommitter,
 ) {
-    telemetry_subscribers::init_for_testing();
+    // // // // // // telemetry_subscribers::init_for_testing();
     // Commitee of 4 with even stake
     let context = Arc::new(Context::new_for_test(4).0);
     let dag_state = Arc::new(RwLock::new(DagState::new(

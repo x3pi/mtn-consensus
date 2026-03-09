@@ -139,7 +139,7 @@ impl Broadcaster {
                         }
                     };
                     requests.push(send_block(network_client.clone(), peer, rtt_estimate, block.clone()));
-                    if last_block.is_none() || last_block.as_ref().unwrap().round() < block.round() {
+                    if last_block.is_none() || last_block.as_ref().expect("checked is_none above").round() < block.round() {
                         last_block = Some(block);
                     }
                 }

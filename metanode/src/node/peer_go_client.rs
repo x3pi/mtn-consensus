@@ -60,68 +60,81 @@ impl PeerGoClient {
             from_block, to_block, self.peer_addr
         );
 
-        // Connect to peer
-        let connect_timeout = Duration::from_secs(self.timeout_secs);
-        let mut stream = timeout(connect_timeout, TcpStream::connect(self.peer_addr))
-            .await
-            .map_err(|_| anyhow::anyhow!("Connection timeout to peer {}", self.peer_addr))?
-            .map_err(|e| anyhow::anyhow!("Failed to connect to peer {}: {}", self.peer_addr, e))?;
+        let mut all_blocks = Vec::new();
+        let chunk_size = 5; // Chunk size matches the UDS limit to respect 32MB P2P constraints
 
-        // Build request
-        let request = Request {
-            payload: Some(proto::request::Payload::GetBlocksRangeRequest(
-                GetBlocksRangeRequest {
-                    from_block,
-                    to_block,
-                },
-            )),
-        };
+        for current_from in (from_block..=to_block).step_by(chunk_size as usize) {
+            let current_to = std::cmp::min(current_from + chunk_size - 1, to_block);
 
-        // Encode and send
-        let request_bytes = request.encode_to_vec();
-        let len_bytes = (request_bytes.len() as u32).to_be_bytes();
+            // Connect to peer (new connection per chunk)
+            let connect_timeout = Duration::from_secs(self.timeout_secs);
+            let mut stream = timeout(connect_timeout, TcpStream::connect(self.peer_addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("Connection timeout to peer {}", self.peer_addr))?
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to connect to peer {}: {}", self.peer_addr, e)
+                })?;
 
-        stream.write_all(&len_bytes).await?;
-        stream.write_all(&request_bytes).await?;
-        stream.flush().await?;
+            // Build request
+            let request = Request {
+                payload: Some(proto::request::Payload::GetBlocksRangeRequest(
+                    GetBlocksRangeRequest {
+                        from_block: current_from,
+                        to_block: current_to,
+                    },
+                )),
+            };
 
-        // Read response length
-        let read_timeout = Duration::from_secs(self.timeout_secs);
-        let mut len_buf = [0u8; 4];
-        timeout(read_timeout, stream.read_exact(&mut len_buf))
-            .await
-            .map_err(|_| anyhow::anyhow!("Timeout reading response length from peer"))??;
+            // Encode and send
+            let request_bytes = request.encode_to_vec();
+            let len_bytes = (request_bytes.len() as u32).to_be_bytes();
 
-        let response_len = u32::from_be_bytes(len_buf) as usize;
-        if response_len == 0 || response_len > 100_000_000 {
-            return Err(anyhow::anyhow!("Invalid response length: {}", response_len));
-        }
+            stream.write_all(&len_bytes).await?;
+            stream.write_all(&request_bytes).await?;
+            stream.flush().await?;
 
-        // Read response data
-        let mut response_buf = vec![0u8; response_len];
-        timeout(read_timeout, stream.read_exact(&mut response_buf))
-            .await
-            .map_err(|_| anyhow::anyhow!("Timeout reading response data from peer"))??;
+            // Read response length
+            let read_timeout = Duration::from_secs(self.timeout_secs);
+            let mut len_buf = [0u8; 4];
+            timeout(read_timeout, stream.read_exact(&mut len_buf))
+                .await
+                .map_err(|_| anyhow::anyhow!("Timeout reading response length from peer"))??;
 
-        // Decode response
-        let response = Response::decode(&response_buf[..])
-            .map_err(|e| anyhow::anyhow!("Failed to decode response: {}", e))?;
-
-        match response.payload {
-            Some(proto::response::Payload::GetBlocksRangeResponse(resp)) => {
-                if !resp.error.is_empty() {
-                    return Err(anyhow::anyhow!("Peer returned error: {}", resp.error));
-                }
-                info!(
-                    "✅ [PEER-GO] Received {} blocks from peer {}",
-                    resp.blocks.len(),
-                    self.peer_addr
-                );
-                Ok(resp.blocks)
+            let response_len = u32::from_be_bytes(len_buf) as usize;
+            if response_len == 0 || response_len > 100_000_000 {
+                return Err(anyhow::anyhow!("Invalid response length: {}", response_len));
             }
-            Some(proto::response::Payload::Error(e)) => Err(anyhow::anyhow!("Peer error: {}", e)),
-            _ => Err(anyhow::anyhow!("Unexpected response type from peer")),
+
+            // Read response data
+            let mut response_buf = vec![0u8; response_len];
+            timeout(read_timeout, stream.read_exact(&mut response_buf))
+                .await
+                .map_err(|_| anyhow::anyhow!("Timeout reading response data from peer"))??;
+
+            // Decode response
+            let response = Response::decode(&response_buf[..])
+                .map_err(|e| anyhow::anyhow!("Failed to decode response: {}", e))?;
+
+            match response.payload {
+                Some(proto::response::Payload::GetBlocksRangeResponse(resp)) => {
+                    if !resp.error.is_empty() {
+                        return Err(anyhow::anyhow!("Peer returned error: {}", resp.error));
+                    }
+                    all_blocks.extend(resp.blocks);
+                }
+                Some(proto::response::Payload::Error(e)) => {
+                    return Err(anyhow::anyhow!("Peer error: {}", e))
+                }
+                _ => return Err(anyhow::anyhow!("Unexpected response type from peer")),
+            }
         }
+
+        info!(
+            "✅ [PEER-GO] Received {} total blocks across chunks from peer {}",
+            all_blocks.len(),
+            self.peer_addr
+        );
+        Ok(all_blocks)
     }
 
     /// Get peer's current epoch

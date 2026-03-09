@@ -10,12 +10,12 @@ use parking_lot::RwLock;
 use tracing::{debug, info};
 
 use crate::{
-    BlockAPI as _, CertifiedBlock, CertifiedBlocksOutput, VerifiedBlock,
     block::{BlockTransactionVotes, GENESIS_ROUND},
     block_verifier::BlockVerifier,
     context::Context,
     dag_state::DagState,
     stake_aggregator::{QuorumThreshold, StakeAggregator},
+    BlockAPI as _, CertifiedBlock, CertifiedBlocksOutput, VerifiedBlock,
 };
 
 /// TransactionCertifier has the following purposes:
@@ -98,7 +98,7 @@ impl TransactionCertifier {
         for authority_index in authorities {
             let blocks = store
                 .scan_blocks_by_author(authority_index, recovery_start_round)
-                .unwrap();
+                .expect("Failed to scan blocks by author during certifier recovery");
             info!(
                 "Recovered and voting on {} blocks from authority {} {}",
                 blocks.len(),
@@ -627,15 +627,15 @@ mod test {
     use rand::seq::SliceRandom as _;
 
     use crate::{
-        TestBlock, Transaction, block::BlockTransactionVotes, context::Context,
-        test_dag_builder::DagBuilder,
+        block::BlockTransactionVotes, context::Context, test_dag_builder::DagBuilder, TestBlock,
+        Transaction,
     };
 
     use super::*;
 
     #[tokio::test]
     async fn test_vote_info_basic() {
-        telemetry_subscribers::init_for_testing();
+        // // // // // // telemetry_subscribers::init_for_testing();
         let (context, _) = Context::new_for_test(7);
         let committee = &context.committee;
 
@@ -801,7 +801,7 @@ mod test {
 
     #[tokio::test]
     async fn test_certify_basic() {
-        telemetry_subscribers::init_for_testing();
+        // // // // // // telemetry_subscribers::init_for_testing();
         let (context, _) = Context::new_for_test(4);
         let context = Arc::new(context);
 
@@ -913,7 +913,7 @@ mod test {
     // TODO: add reject votes.
     #[tokio::test]
     async fn test_certify_randomized() {
-        telemetry_subscribers::init_for_testing();
+        // // // // // // telemetry_subscribers::init_for_testing();
         let num_authorities: u32 = 7;
         let (context, _) = Context::new_for_test(num_authorities as usize);
         let context = Arc::new(context);

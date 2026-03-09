@@ -602,7 +602,7 @@ pub fn load_committed_subdag_from_store(
 
     let reject_votes = store
         .read_rejected_transactions(commit.reference())
-        .unwrap();
+        .expect("Failed to read rejected transactions from store");
     if let Some(reject_votes) = reject_votes {
         subdag.decided_with_local_blocks = true;
         subdag.recovered_rejected_transactions = true;
@@ -895,7 +895,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_commit_range() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let mut range1 = CommitRange::new(1..=5);
         let range2 = CommitRange::new(2..=6);
         let range3 = CommitRange::new(5..=10);

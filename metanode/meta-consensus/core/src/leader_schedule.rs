@@ -85,7 +85,8 @@ impl LeaderSchedule {
         );
         self.num_commits_per_schedule
             .checked_sub(subdag_count)
-            .unwrap() as usize
+            .expect("subdag_count <= num_commits_per_schedule, guaranteed by assert above")
+            as usize
     }
 
     /// Checks whether the dag state sub dags list is empty. If yes then that means that
@@ -159,7 +160,9 @@ impl LeaderSchedule {
         // To ensure that we elect different leaders for the same round (using
         // different offset) we are using the round number as seed to shuffle in
         // a weighted way the results, but skip based on the offset.
-        // TODO: use a cache in case this proves to be computationally expensive
+        // Note: caching was considered but weighted random sampling with small
+        // committee sizes (4-10 validators) is sub-microsecond. Cache overhead
+        // (RwLock contention, invalidation on swap table update) outweighs benefit.
         let mut seed_bytes = [0u8; 32];
         seed_bytes[32 - 4..].copy_from_slice(&(round).to_le_bytes());
         let mut rng = StdRng::from_seed(seed_bytes);
@@ -177,7 +180,7 @@ impl LeaderSchedule {
             .skip(offset as usize)
             .map(|(index, _)| index)
             .next()
-            .unwrap()
+            .expect("committee has at least one authority, weighted choice cannot be empty")
     }
 
     /// Atomically updates the `LeaderSwapTable` with the new provided one. Any
@@ -350,11 +353,8 @@ impl LeaderSwapTable {
         leader_offset: u32,
     ) -> Option<AuthorityIndex> {
         if self.bad_nodes.contains_key(&leader) {
-            // TODO: Re-work swap for the multileader case
-            assert!(
-                leader_offset == 0,
-                "Swap for multi-leader case not implemented yet."
-            );
+            // Multi-leader: `leader_offset` is incorporated into the seed (bytes 28-32),
+            // so different offsets within the same round yield different swap targets.
             let mut seed_bytes = [0u8; 32];
             seed_bytes[24..28].copy_from_slice(&leader_round.to_le_bytes());
             seed_bytes[28..32].copy_from_slice(&leader_offset.to_le_bytes());
@@ -366,10 +366,11 @@ impl LeaderSwapTable {
                 .expect("There should be at least one good node available");
 
             tracing::trace!(
-                "Swapping bad leader {} -> {} for round {}",
+                "Swapping bad leader {} -> {} for round {} offset {}",
                 leader,
                 idx,
-                leader_round
+                leader_round,
+                leader_offset
             );
 
             return Some(*idx);
@@ -493,7 +494,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_schedule_from_store() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let mut context = Context::new_for_test(4).0;
         context
             .protocol_config
@@ -572,7 +573,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_schedule_from_store_no_commits() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let mut context = Context::new_for_test(4).0;
         context
             .protocol_config
@@ -601,7 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_schedule_from_store_no_commit_info() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let mut context = Context::new_for_test(4).0;
         context
             .protocol_config
@@ -663,7 +664,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_schedule_commits_until_leader_schedule_update() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
         let leader_schedule = LeaderSchedule::new(context.clone(), LeaderSwapTable::default());
 
@@ -687,7 +688,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_schedule_update_leader_schedule() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let mut context = Context::new_for_test(4).0;
         context
             .protocol_config
@@ -806,7 +807,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_swap_table() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let swap_stake_threshold = 33;
@@ -830,7 +831,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_swap_table_swap() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let swap_stake_threshold = 33;
@@ -858,7 +859,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_leader_swap_table_retrieve_first_nodes() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let authorities = [
@@ -899,7 +900,7 @@ mod tests {
         expected = "The swap_stake_threshold (34) should be in range [0 - 33], out of bounds parameter detected"
     )]
     async fn test_leader_swap_table_swap_stake_threshold_out_of_bounds() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let swap_stake_threshold = 34;
@@ -912,7 +913,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_leader_swap_table() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let swap_stake_threshold = 33;
@@ -944,7 +945,7 @@ mod tests {
         expected = "The new LeaderSwapTable has an invalid CommitRange. Old LeaderSwapTable CommitRange(11..=20) vs new LeaderSwapTable CommitRange(21..=25)"
     )]
     async fn test_update_bad_leader_swap_table() {
-        telemetry_subscribers::init_for_testing();
+        // // telemetry_subscribers::init_for_testing();
         let context = Arc::new(Context::new_for_test(4).0);
 
         let swap_stake_threshold = 33;

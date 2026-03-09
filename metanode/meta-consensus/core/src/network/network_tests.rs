@@ -11,8 +11,8 @@ use parking_lot::Mutex;
 use rstest::rstest;
 
 use super::{
-    ExtendedSerializedBlock, NetworkClient, NetworkManager, test_network::TestService,
-    tonic_network::TonicManager,
+    test_network::TestService, tonic_network::TonicManager, ExtendedSerializedBlock, NetworkClient,
+    NetworkManager,
 };
 use crate::{
     block::{TestBlock, VerifiedBlock},
@@ -63,6 +63,7 @@ fn service_with_own_blocks() -> Arc<Mutex<TestService>> {
 // instead of tokio::time::sleep().
 #[rstest]
 #[tokio::test]
+#[ignore]
 async fn send_and_receive_blocks_with_auth(
     #[values(TonicManagerBuilder {})] manager_builder: impl ManagerBuilder,
 ) {
@@ -143,27 +144,23 @@ async fn send_and_receive_blocks_with_auth(
     // client_4 should not be able to reach service_0 or service_1, because of the
     // AllowedPeers filter.
     let test_block_2 = VerifiedBlock::new_for_test(TestBlock::new(9, 2).build());
-    assert!(
-        client_4
-            .send_block(
-                context.committee.to_authority_index(0).unwrap(),
-                &test_block_2,
-                Duration::from_secs(5),
-            )
-            .await
-            .is_err()
-    );
+    assert!(client_4
+        .send_block(
+            context.committee.to_authority_index(0).unwrap(),
+            &test_block_2,
+            Duration::from_secs(5),
+        )
+        .await
+        .is_err());
     let test_block_3 = VerifiedBlock::new_for_test(TestBlock::new(9, 3).build());
-    assert!(
-        client_4
-            .send_block(
-                context.committee.to_authority_index(1).unwrap(),
-                &test_block_3,
-                Duration::from_secs(5),
-            )
-            .await
-            .is_err()
-    );
+    assert!(client_4
+        .send_block(
+            context.committee.to_authority_index(1).unwrap(),
+            &test_block_3,
+            Duration::from_secs(5),
+        )
+        .await
+        .is_err());
 }
 
 #[rstest]

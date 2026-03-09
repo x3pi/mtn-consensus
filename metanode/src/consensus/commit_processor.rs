@@ -231,7 +231,7 @@ impl CommitProcessor {
             match receiver.recv().await {
                 Some(subdag) => {
                     let commit_index: u32 = subdag.commit_ref.index;
-                    info!("📥 [COMMIT PROCESSOR] Received committed subdag: commit_index={}, leader={:?}, blocks={}",
+                    trace!("📥 [COMMIT PROCESSOR] Received committed subdag: commit_index={}, leader={:?}, blocks={}",
                         commit_index, subdag.leader, subdag.blocks.len());
 
                     // Heartbeat logic
@@ -252,9 +252,10 @@ impl CommitProcessor {
                             time_since_last_heartbeat, commit_index);
                     }
 
-                    info!(
+                    trace!(
                         "📊 [COMMIT CONDITION] Checking commit_index={}, next_expected_index={}",
-                        commit_index, next_expected_index
+                        commit_index,
+                        next_expected_index
                     );
 
                     // --- [AUTO-JUMP ON STARTUP] ---
@@ -278,7 +279,7 @@ impl CommitProcessor {
                             epoch_base_index,
                         );
 
-                        info!("📊 [GLOBAL_EXEC_INDEX] Calculated: global_exec_index={}, epoch={}, commit_index={}, epoch_base_index={}",
+                        trace!("📊 [GLOBAL_EXEC_INDEX] Calculated: global_exec_index={}, epoch={}, commit_index={}, epoch_base_index={}",
                             global_exec_index, current_epoch, commit_index, epoch_base_index);
 
                         let total_txs_in_commit = subdag
@@ -688,7 +689,7 @@ impl CommitProcessor {
         };
 
         if total_transactions > 0 || has_system_tx {
-            info!(
+            trace!(
                 "🔷 [Global Index: {}] Executing commit #{} (epoch={}): {} blocks, {} txs, has_system_tx={}",
                 global_exec_index, commit_index, epoch, subdag.blocks.len(), total_transactions, has_system_tx
             );
@@ -710,7 +711,7 @@ impl CommitProcessor {
                     .await
                 {
                     Ok(_) => {
-                        info!("✅ [TX FLOW] Successfully sent committed subdag: global_exec_index={}, commit_index={}",
+                        trace!("✅ [TX FLOW] Successfully sent committed subdag: global_exec_index={}, commit_index={}",
                                 global_exec_index, commit_index);
 
                         if let Some(shared_index) = shared_last_global_exec_index.clone() {
@@ -760,19 +761,25 @@ impl CommitProcessor {
                                 }
                             }
 
-                            // Also save to persistent storage for epoch transition recovery (in ONE batch!)
+                            // TPS OPT: Defer disk persist to background — TX hashes are only used for
+                            // epoch transition recovery, not state computation. Async persist is fork-safe.
                             if !batch_hashes.is_empty() {
-                                if let Err(e) = crate::node::transition::save_committed_transaction_hashes_batch(
-                                        &node_guard.storage_path, epoch, &batch_hashes
-                                    ).await {
+                                let storage_path = node_guard.storage_path.clone();
+                                let hashes_count = batch_hashes.len();
+                                let persist_epoch = epoch;
+                                tokio::spawn(async move {
+                                    if let Err(e) = crate::node::transition::save_committed_transaction_hashes_batch(
+                                            &storage_path, persist_epoch, &batch_hashes
+                                        ).await {
                                         warn!("⚠️ [TX TRACKING] Failed to persist committed hashes after commit: {}", e);
                                     } else {
-                                        trace!("💾 [TX TRACKING] Persisted {} committed hashes for epoch {}", batch_hashes.len(), epoch);
+                                        trace!("💾 [TX TRACKING] Persisted {} committed hashes for epoch {}", hashes_count, persist_epoch);
                                     }
+                                });
                             }
 
                             if tracked_count > 0 {
-                                info!("💾 [TX TRACKING] Tracked {} committed transaction hashes after processing commit #{} (global_exec_index={})",
+                                trace!("💾 [TX TRACKING] Tracked {} committed transaction hashes after processing commit #{} (global_exec_index={})",
                                           tracked_count, commit_index, global_exec_index);
                             }
                         }
