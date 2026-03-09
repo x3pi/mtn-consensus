@@ -494,34 +494,17 @@ impl PeerRpcServer {
     }
 
     /// Handle /submit_transaction POST request
-    /// This endpoint receives transactions from SyncOnly nodes and submits them to consensus
+    /// BROADCAST-ONLY MODE: This endpoint receives transactions broadcast from other validators.
+    /// It acknowledges receipt but does NOT submit them to local consensus.
+    /// Each TX should only enter consensus through the validator that received it directly
+    /// from the client. This prevents TX duplication in DAG proposals.
+    /// SyncOnly nodes still use forward_transaction_to_validators() which goes through
+    /// the UDS path on the target validator, so SyncOnly forwarding is unaffected.
     async fn handle_submit_transaction(
         stream: &mut tokio::net::TcpStream,
-        submitter: Option<&Arc<dyn TransactionSubmitter>>,
+        _submitter: Option<&Arc<dyn TransactionSubmitter>>,
         request: &str,
     ) {
-        // Check if submitter is available (only validators have it)
-        let submitter = match submitter {
-            Some(s) => s,
-            None => {
-                let response = SubmitTransactionResponse {
-                    success: false,
-                    count: 0,
-                    error: Some(
-                        "This node cannot accept forwarded transactions (not a validator)"
-                            .to_string(),
-                    ),
-                };
-                let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
-                let http_response = format!(
-                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n\r\n{}",
-                    json
-                );
-                let _ = stream.write_all(http_response.as_bytes()).await;
-                return;
-            }
-        };
-
         // Parse POST body - find content after double newline
         let body_start = request
             .find("\r\n\r\n")
@@ -531,7 +514,7 @@ impl PeerRpcServer {
 
         let body = &request[body_start..];
 
-        // Parse JSON request
+        // Parse JSON request (validate format)
         let submit_req: SubmitTransactionRequest = match serde_json::from_str(body.trim()) {
             Ok(req) => req,
             Err(e) => {
@@ -550,68 +533,27 @@ impl PeerRpcServer {
             }
         };
 
-        // Decode hex to bytes for all transactions
-        let mut tx_bytes_batch = Vec::new();
-        for tx_hex in &submit_req.transactions_hex {
-            match hex::decode(tx_hex) {
-                Ok(bytes) => tx_bytes_batch.push(bytes),
-                Err(e) => {
-                    let response = SubmitTransactionResponse {
-                        success: false,
-                        count: 0,
-                        error: Some(format!("Invalid hex: {}", e)),
-                    };
-                    let json =
-                        serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
-                    let http_response = format!(
-                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{}",
-                        json
-                    );
-                    let _ = stream.write_all(http_response.as_bytes()).await;
-                    return;
-                }
-            }
-        }
+        let tx_count = submit_req.transactions_hex.len();
 
+        // BROADCAST-ONLY: Acknowledge receipt without submitting to local consensus.
+        // This prevents TX duplication where the same TX appears in multiple validators'
+        // DAG proposals (e.g., 100K sent → 275K in blocks with 4 validators).
+        // The broadcasting validator already submitted these TXs to its own consensus.
         info!(
-            "📥 [TX FORWARD] Received batch of {} transactions from SyncOnly node, submitting to consensus",
-            tx_bytes_batch.len()
+            "📡 [TX BROADCAST-RECV] Acknowledged {} TXs from peer broadcast (NOT submitting to local consensus)",
+            tx_count
         );
 
-        // Submit entire batch to consensus
-        match submitter.submit(tx_bytes_batch).await {
-            Ok((block_ref, indices, _status_rx)) => {
-                info!(
-                    "✅ [TX FORWARD] Successfully submitted {} tx(s) to block {:?}",
-                    indices.len(),
-                    block_ref
-                );
-                let response = SubmitTransactionResponse {
-                    success: true,
-                    count: indices.len(),
-                    error: None,
-                };
-                let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
-                let http_response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
-                    json
-                );
-                let _ = stream.write_all(http_response.as_bytes()).await;
-            }
-            Err(e) => {
-                error!("❌ [TX FORWARD] Failed to submit transaction: {}", e);
-                let response = SubmitTransactionResponse {
-                    success: false,
-                    count: 0,
-                    error: Some(format!("Failed to submit: {}", e)),
-                };
-                let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
-                let http_response = format!(
-                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{}",
-                    json
-                );
-                let _ = stream.write_all(http_response.as_bytes()).await;
-            }
-        }
+        let response = SubmitTransactionResponse {
+            success: true,
+            count: tx_count,
+            error: None,
+        };
+        let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+        let http_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
+            json
+        );
+        let _ = stream.write_all(http_response.as_bytes()).await;
     }
 }
