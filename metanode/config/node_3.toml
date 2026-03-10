@@ -8,7 +8,6 @@ enable_metrics = true
 metrics_port = 9103
 speed_multiplier = 1.0
 time_based_epoch_change = true
-epoch_duration_seconds = 900
 max_clock_drift_seconds = 5
 enable_ntp_sync = false
 ntp_servers = [

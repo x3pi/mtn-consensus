@@ -66,7 +66,8 @@ pub struct NodeConfig {
     /// Time-based epoch change configuration
     #[serde(default)]
     pub time_based_epoch_change: bool,
-    /// Epoch duration in seconds (None = disabled, Some(86400) = 24h)
+    /// DEPRECATED: epoch_duration_seconds is now loaded from Go via protobuf (from genesis.json)
+    /// Kept for backward compatibility with existing TOML files that still have this field
     #[serde(default)]
     pub epoch_duration_seconds: Option<u64>,
     /// Max allowed clock drift in seconds (default: 5)
@@ -319,7 +320,7 @@ impl NodeConfig {
                 leader_timeout_ms: None,
                 min_round_delay_ms: None,
                 time_based_epoch_change: true,     // Enabled by default
-                epoch_duration_seconds: Some(900), // Default: 15 minutes (15 * 60 seconds)
+                epoch_duration_seconds: None, // DEPRECATED: loaded from Go via protobuf now
                 max_clock_drift_seconds: 5,
                 enable_ntp_sync: false, // Disabled by default (enable for production)
                 ntp_servers: default_ntp_servers(),
