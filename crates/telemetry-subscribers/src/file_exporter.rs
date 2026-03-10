@@ -47,7 +47,7 @@ impl CachedOpenFile {
     }
 
     pub fn update_path<P: AsRef<Path>>(&self, file_path: P) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let file_path = file_path.as_ref().to_owned();
 
         if let Some((old_file_path, _)) = &*inner
@@ -62,14 +62,14 @@ impl CachedOpenFile {
     }
 
     pub fn clear_path(&self) {
-        self.inner.lock().unwrap().take();
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
     fn with_file(
         &self,
         f: impl FnOnce(Option<&mut std::fs::File>) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
-        f(self.inner.lock().unwrap().as_mut().map(|(_, file)| file))
+        f(self.inner.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|(_, file)| file))
     }
 }
 

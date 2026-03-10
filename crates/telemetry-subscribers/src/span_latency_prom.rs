@@ -80,25 +80,24 @@ where
         id: &span::Id,
         ctx: tracing_subscriber::layer::Context<S>,
     ) {
-        let span = ctx.span(id).unwrap();
-        // NOTE: there are other extensions that insert timings.  For example,
-        // tracing_subscriber's with_span_events() inserts events at open and close that contain timings.
-        // However, we cannot be guaranteed that those events would be turned on.
-        span.extensions_mut()
-            .insert(PromSpanTimestamp(Instant::now()));
+        if let Some(span) = ctx.span(id) {
+            // NOTE: there are other extensions that insert timings.  For example,
+            // tracing_subscriber's with_span_events() inserts events at open and close that contain timings.
+            // However, we cannot be guaranteed that those events would be turned on.
+            span.extensions_mut()
+                .insert(PromSpanTimestamp(Instant::now()));
+        }
     }
 
     fn on_close(&self, id: span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
-        let span = ctx.span(&id).unwrap();
-        let start_time = span
-            .extensions()
-            .get::<PromSpanTimestamp>()
-            .expect("Could not find saved timestamp on span")
-            .0;
-        let elapsed_ns = start_time.elapsed().as_nanos() as u64;
-        self.span_latencies
-            .with_label_values(&[span.name()])
-            .observe(elapsed_ns as f64);
+        if let Some(span) = ctx.span(&id) {
+            if let Some(timestamp) = span.extensions().get::<PromSpanTimestamp>() {
+                let elapsed_ns = timestamp.0.elapsed().as_nanos() as u64;
+                self.span_latencies
+                    .with_label_values(&[span.name()])
+                    .observe(elapsed_ns as f64);
+            }
+        }
     }
 }
 
