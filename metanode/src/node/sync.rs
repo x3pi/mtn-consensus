@@ -111,6 +111,7 @@ pub async fn start_sync_task(node: &mut ConsensusNode, _config: &NodeConfig) -> 
                                 response.timestamp_ms,
                                 response.boundary_block,
                                 validators,
+                                900u64, // default epoch_duration_seconds for peer fallback
                             ));
                             break;
                         } else {
