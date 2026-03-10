@@ -51,6 +51,8 @@ struct StorageSetup {
     storage_path: std::path::PathBuf,
     protocol_keypair: consensus_config::ProtocolKeyPair,
     network_keypair: consensus_config::NetworkKeyPair,
+    /// Epoch duration in seconds, loaded from Go via protobuf (from genesis.json)
+    epoch_duration_from_go: u64,
 }
 
 /// Results from consensus setup phase.
@@ -441,6 +443,7 @@ impl ConsensusNode {
             storage_path,
             protocol_keypair,
             network_keypair,
+            epoch_duration_from_go,
         })
     }
 
@@ -688,7 +691,7 @@ impl ConsensusNode {
         parameters.db_path = db_path;
 
         // epoch_duration_seconds is now loaded from Go via protobuf (from genesis config)
-        let epoch_duration_seconds = epoch_duration_from_go;
+        let epoch_duration_seconds = storage.epoch_duration_from_go;
         let system_transaction_provider = Arc::new(DefaultSystemTransactionProvider::new(
             storage.current_epoch,
             epoch_duration_seconds,
