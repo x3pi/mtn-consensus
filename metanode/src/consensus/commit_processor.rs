@@ -528,9 +528,8 @@ impl CommitProcessor {
                         error!("🚨 [FATAL] epoch_eth_addresses STILL EMPTY after {} retries! Committee not loaded.", max_retries);
                         error!("🚨 [FATAL] Cannot process commit #{} (global_exec_index={}) without valid committee data!", 
                             commit_index, global_exec_index);
-                        panic!(
-                            "FORK-SAFETY: Committee data not loaded - refusing to process commits"
-                        );
+                        error!("🚨 [HALTING] Cannot continue without committee data. Node will exit.");
+                        std::process::exit(1);
                     }
                     warn!(
                         "⏳ [LEADER] epoch_eth_addresses empty, waiting for committee... retry {}/{}",
@@ -557,7 +556,8 @@ impl CommitProcessor {
                             addrs
                         } else {
                             error!("🚨 [FATAL] No committees available in cache!");
-                            panic!("FORK-SAFETY: No committee data in cache");
+                            error!("🚨 [HALTING] No committee data available. Node will exit.");
+                            std::process::exit(1);
                         }
                     }
                 } else {
@@ -570,7 +570,8 @@ impl CommitProcessor {
                         addrs
                     } else {
                         error!("🚨 [FATAL] No committees available in cache!");
-                        panic!("FORK-SAFETY: No committee data in cache");
+                        error!("🚨 [HALTING] No committee data available (epoch 0). Node will exit.");
+                        std::process::exit(1);
                     }
                 };
 
@@ -588,7 +589,8 @@ impl CommitProcessor {
                         );
                         error!("🚨 [FATAL] Committee size mismatch - expected at least {} validators but have {}!",
                             leader_author_index + 1, committee_size);
-                        panic!("FORK-SAFETY: Leader index out of range - committee data inconsistent after all retries");
+                        error!("🚨 [HALTING] Committee data inconsistent — leader index out of range. Node will exit.");
+                        std::process::exit(1);
                     }
 
                     warn!(
@@ -659,7 +661,8 @@ impl CommitProcessor {
                             "🚨 [FATAL] eth_address at index {} has invalid length {} (expected 20) after {} retries!",
                             leader_author_index, addr.len(), max_retries
                         );
-                        panic!("FORK-SAFETY: Invalid ETH address in committee - cannot determine leader safely");
+                        error!("🚨 [HALTING] Invalid ETH address in committee — cannot determine leader safely. Node will exit.");
+                        std::process::exit(1);
                     }
 
                     warn!(
