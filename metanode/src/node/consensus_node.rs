@@ -288,17 +288,17 @@ impl ConsensusNode {
         };
 
         // Fetch epoch boundary data with fallback chain
-        let (current_epoch, epoch_timestamp_ms, boundary_block, validators) =
+        let (current_epoch, epoch_timestamp_ms, boundary_block, validators, epoch_duration_from_go) =
             match peer_executor_client
                 .get_epoch_boundary_data(current_epoch)
                 .await
             {
-                Ok((epoch, timestamp, boundary, vals)) => {
+                Ok((epoch, timestamp, boundary, vals, epoch_dur)) => {
                     info!(
-                        "✅ [STARTUP] Got epoch boundary data for epoch {} from Go",
-                        epoch
+                        "✅ [STARTUP] Got epoch boundary data for epoch {} from Go (epoch_duration={}s)",
+                        epoch, epoch_dur
                     );
-                    (epoch, timestamp, boundary, vals)
+                    (epoch, timestamp, boundary, vals, epoch_dur)
                 }
                 Err(e) => {
                     warn!(
@@ -312,12 +312,12 @@ impl ConsensusNode {
                     );
 
                     match executor_client.get_epoch_boundary_data(local_epoch).await {
-                        Ok((epoch, timestamp, boundary, vals)) => {
+                        Ok((epoch, timestamp, boundary, vals, epoch_dur)) => {
                             info!(
-                                "✅ [STARTUP] Got epoch boundary data for local epoch {}",
-                                epoch
+                                "✅ [STARTUP] Got epoch boundary data for local epoch {} (epoch_duration={}s)",
+                                epoch, epoch_dur
                             );
-                            (epoch, timestamp, boundary, vals)
+                            (epoch, timestamp, boundary, vals, epoch_dur)
                         }
                         Err(e2) => {
                             warn!(
@@ -330,7 +330,7 @@ impl ConsensusNode {
                                 .map_err(|e| {
                                     anyhow::anyhow!("Failed to fetch genesis validators: {}", e)
                                 })?;
-                            (0u64, 0u64, 0u64, genesis_validators)
+                            (0u64, 0u64, 0u64, genesis_validators, 900u64)
                         }
                     }
                 }
@@ -687,7 +687,8 @@ impl ConsensusNode {
         std::fs::create_dir_all(&db_path)?;
         parameters.db_path = db_path;
 
-        let epoch_duration_seconds = config.epoch_duration_seconds.unwrap_or(900);
+        // epoch_duration_seconds is now loaded from Go via protobuf (from genesis config)
+        let epoch_duration_seconds = epoch_duration_from_go;
         let system_transaction_provider = Arc::new(DefaultSystemTransactionProvider::new(
             storage.current_epoch,
             epoch_duration_seconds,

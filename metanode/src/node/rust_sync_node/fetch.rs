@@ -770,7 +770,7 @@ impl RustSyncNode {
                             );
 
                             // Trigger epoch transition
-                            if let Ok((_e, timestamp, boundary, _)) =
+                            if let Ok((_e, timestamp, boundary, _, _)) =
                                 self.executor_client.get_epoch_boundary_data(epoch).await
                             {
                                 let _ = self

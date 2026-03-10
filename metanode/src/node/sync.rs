@@ -37,7 +37,7 @@ pub async fn start_sync_task(node: &mut ConsensusNode, _config: &NodeConfig) -> 
     // Load committee from Go - with PEER FALLBACK for slow/late starting nodes
     // If Go layer doesn't have epoch data yet (e.g., node started late or syncing slowly),
     // we fetch from peers to ensure the sync task can start
-    let (epoch, epoch_timestamp, _boundary_block, validators) = match executor_client
+    let (epoch, epoch_timestamp, _boundary_block, validators, _) = match executor_client
         .get_epoch_boundary_data(node.current_epoch)
         .await
     {

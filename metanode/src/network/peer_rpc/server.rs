@@ -293,7 +293,7 @@ impl PeerRpcServer {
 
         // Fetch from local Go Master
         match executor.get_epoch_boundary_data(target_epoch).await {
-            Ok((epoch, timestamp_ms, boundary_block, validators)) => {
+            Ok((epoch, timestamp_ms, boundary_block, validators, _)) => {
                 // Convert ValidatorInfo to ValidatorInfoSimple for JSON transport
                 let validators_simple: Vec<ValidatorInfoSimple> = validators
                     .iter()

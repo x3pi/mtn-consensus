@@ -314,7 +314,7 @@ impl RustSyncNode {
 
         // Fetch new epoch boundary data from Go
         match self.executor_client.get_epoch_boundary_data(go_epoch).await {
-            Ok((_epoch, _ts, new_epoch_base, validators)) => {
+            Ok((_epoch, _ts, new_epoch_base, validators, _)) => {
                 let old_epoch_base = self.epoch_base_index.load(Ordering::SeqCst);
 
                 // CRITICAL: Always rebuild committee on epoch change!
@@ -391,7 +391,7 @@ impl RustSyncNode {
 
         // Check if we need to refresh committee (e.g., new validator joined)
         match self.executor_client.get_epoch_boundary_data(go_epoch).await {
-            Ok((_epoch, _ts, _boundary, validators)) => {
+            Ok((_epoch, _ts, _boundary, validators, _)) => {
                 if !validators.is_empty() && validators.len() != current_committee_size {
                     info!(
                         "🔄 [COMMITTEE-REFRESH] Committee size mismatch! Current={}, Go has={}. Rebuilding for epoch {}...",
@@ -456,7 +456,7 @@ impl RustSyncNode {
         );
 
         // Try to refetch epoch boundary from Go Master
-        if let Ok((_epoch, _timestamp, new_boundary, _validators)) = self
+        if let Ok((_epoch, _timestamp, new_boundary, _validators, _)) = self
             .executor_client
             .get_epoch_boundary_data(rust_epoch)
             .await

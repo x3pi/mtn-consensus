@@ -72,6 +72,7 @@ message EpochBoundaryData {
     uint64 epoch_start_timestamp_ms = 2;   // Fixed timestamp for genesis hash consistency
     uint64 boundary_block = 3;             // Last block of previous epoch (validator snapshot point)
     repeated ValidatorInfo validators = 4; // Validators at boundary_block
+    uint64 epoch_duration_seconds = 5;     // Epoch duration in seconds (from genesis, default 900 = 15 min)
 }
 
 // ============================================================================

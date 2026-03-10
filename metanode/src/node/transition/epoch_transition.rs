@@ -425,7 +425,7 @@ pub async fn transition_to_epoch_from_system_tx(
                                                              // Store epoch boundary block for later use in Validator Priority check
     let mut epoch_boundary_block: u64 = synced_index; // Default to synced_index if get_epoch_boundary_data fails
     match executor_client.get_epoch_boundary_data(new_epoch).await {
-        Ok((stored_epoch, stored_timestamp, stored_boundary, _validators)) => {
+        Ok((stored_epoch, stored_timestamp, stored_boundary, _validators, _)) => {
             // Save the authoritative epoch boundary block
             epoch_boundary_block = stored_boundary;
             // Validate boundary block matches what we sent
@@ -1054,7 +1054,7 @@ async fn get_epoch_boundary_from_peers(config: &NodeConfig, epoch: u64) -> Resul
         };
         let client = crate::node::peer_go_client::PeerGoClient::new(peer_addr);
         match client.get_epoch_boundary_data(epoch).await {
-            Ok((_epoch, timestamp, boundary_block, _validators)) => {
+            Ok((_epoch, timestamp, boundary_block, _validators, _)) => {
                 info!(
                     "✅ [PEER BOUNDARY] epoch={}, boundary={}, timestamp={} (from {})",
                     epoch, boundary_block, timestamp, peer
@@ -1214,7 +1214,7 @@ async fn catch_up_to_network_epoch(
                 .get_epoch_boundary_data(intermediate_epoch)
                 .await
             {
-                Ok((_epoch, timestamp, boundary_block, _validators)) => {
+                Ok((_epoch, timestamp, boundary_block, _validators, _)) => {
                     info!(
                         "✅ [CATCHUP] Local Go boundary: epoch={}, boundary={}, timestamp={}",
                         intermediate_epoch, boundary_block, timestamp

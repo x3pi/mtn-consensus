@@ -199,7 +199,7 @@ impl CommitteeSource {
 
         for attempt in 1..=MAX_ATTEMPTS {
             match client.get_epoch_boundary_data(target_epoch).await {
-                Ok((epoch, timestamp_ms, boundary_block, validators)) => {
+                Ok((epoch, timestamp_ms, boundary_block, validators, _)) => {
                     if epoch == target_epoch && !validators.is_empty() {
                         info!(
                             "✅ [COMMITTEE SOURCE] Got epoch {} (ts={}, boundary={}, validators={})",
@@ -268,7 +268,7 @@ impl CommitteeSource {
 
         // Get epoch boundary data which contains validators
         match client.get_epoch_boundary_data(target_epoch).await {
-            Ok((epoch, _timestamp_ms, _boundary_block, validators)) => {
+            Ok((epoch, _timestamp_ms, _boundary_block, validators, _)) => {
                 if epoch == target_epoch {
                     // Build eth_addresses from validators (same sorting as committee builder)
                     let mut sorted_validators: Vec<_> = validators.into_iter().collect();
@@ -384,7 +384,7 @@ impl CommitteeSource {
             let should_log = attempt == 1 || attempt % LOG_INTERVAL == 0;
 
             match client.get_epoch_boundary_data(target_epoch).await {
-                Ok((epoch, timestamp_ms, boundary_block, validators)) => {
+                Ok((epoch, timestamp_ms, boundary_block, validators, _)) => {
                     if epoch == target_epoch {
                         info!(
                             "✅ [UNIFIED TIMESTAMP] Got from Go: epoch={}, timestamp_ms={}, boundary_block={} (attempt {})",

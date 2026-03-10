@@ -261,12 +261,12 @@ impl ExecutorClient {
     }
 
     /// Get unified epoch boundary data from Go Master (NEW: single authoritative source for epoch transitions)
-    /// Returns: epoch, epoch_start_timestamp_ms, boundary_block, and validators snapshot
+    /// Returns: epoch, epoch_start_timestamp_ms, boundary_block, validators snapshot, and epoch_duration_seconds
     /// This ensures consistency by getting all epoch transition data in a single atomic request
     pub async fn get_epoch_boundary_data(
         &self,
         epoch: u64,
-    ) -> Result<(u64, u64, u64, Vec<ValidatorInfo>)> {
+    ) -> Result<(u64, u64, u64, Vec<ValidatorInfo>, u64)> {
         if !self.is_enabled() {
             return Err(anyhow::anyhow!("Executor client is not enabled"));
         }
@@ -372,11 +372,14 @@ impl ExecutorClient {
                             idx, validator.address, validator.stake, validator.name, auth_key_preview);
                     }
 
+                    // epoch_duration_seconds: 0 means not set by Go, default to 900 (15 min)
+                    let epoch_duration = if data.epoch_duration_seconds > 0 { data.epoch_duration_seconds } else { 900 };
                     return Ok((
                         data.epoch,
                         data.epoch_start_timestamp_ms,
                         data.boundary_block,
                         data.validators,
+                        epoch_duration,
                     ));
                 }
                 Some(proto::response::Payload::Error(error_msg)) => {

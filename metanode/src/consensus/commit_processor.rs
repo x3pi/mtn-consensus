@@ -601,7 +601,7 @@ impl CommitProcessor {
                     // Try to refresh epoch_eth_addresses from Go
                     if let Some(ref client) = executor_client {
                         match client.get_epoch_boundary_data(epoch).await {
-                            Ok((returned_epoch, _ts, _boundary, validators))
+                            Ok((returned_epoch, _ts, _boundary, validators, _))
                                 if returned_epoch == epoch =>
                             {
                                 // Sort validators same way as committee builder
@@ -633,7 +633,7 @@ impl CommitProcessor {
                                     epoch, sorted_validators.len(), cache.len()
                                 );
                             }
-                            Ok((returned_epoch, _, _, _)) => {
+                            Ok((returned_epoch, _, _, _, _)) => {
                                 warn!(
                                     "⚠️ [LEADER] Go returned epoch {} but requested epoch {}. Retrying...",
                                     returned_epoch, epoch

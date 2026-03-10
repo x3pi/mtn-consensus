@@ -118,7 +118,7 @@ impl RustSyncNode {
                         // 2. Fallback to local Go only if peers failed
                         if !loaded {
                             match self.executor_client.get_epoch_boundary_data(epoch).await {
-                                Ok((_e, _ts, _boundary, validators)) => {
+                                Ok((_e, _ts, _boundary, validators, _)) => {
                                     let mut sorted_validators = validators.clone();
                                     sorted_validators
                                         .sort_by(|a, b| a.authority_key.cmp(&b.authority_key));

@@ -57,7 +57,7 @@ pub async fn start_rust_sync_task_with_network(
     // CRITICAL FIX: Get epoch boundary data to calculate epoch_base_index
     // This is needed to convert global_exec_index to epoch-local commit_index when fetching
     let epoch_base_index = match executor_client.get_epoch_boundary_data(initial_epoch).await {
-        Ok((_epoch, _timestamp_ms, boundary_block, _validators)) => {
+        Ok((_epoch, _timestamp_ms, boundary_block, _validators, _)) => {
             // boundary_block is the global_exec_index of the last block in the previous epoch
             // For epoch 0, boundary_block is 0
             // For epoch 1, boundary_block is the last block of epoch 0 (e.g., 3633)

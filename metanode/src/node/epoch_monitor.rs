@@ -168,7 +168,7 @@ pub fn start_unified_epoch_monitor(
                         .get_epoch_boundary_data(network_epoch)
                         .await
                     {
-                        Ok((epoch, timestamp_ms, boundary_block, _validators)) => {
+                        Ok((epoch, timestamp_ms, boundary_block, _validators, _)) => {
                             (epoch, timestamp_ms, boundary_block)
                         }
                         Err(e) => {
@@ -183,7 +183,7 @@ pub fn start_unified_epoch_monitor(
                     .get_epoch_boundary_data(network_epoch)
                     .await
                 {
-                    Ok((epoch, timestamp_ms, boundary_block, _validators)) => {
+                    Ok((epoch, timestamp_ms, boundary_block, _validators, _)) => {
                         info!(
                             "📊 [EPOCH MONITOR] Got boundary data from LOCAL Go: epoch={}, timestamp={}ms, boundary_block={}",
                             epoch, timestamp_ms, boundary_block
