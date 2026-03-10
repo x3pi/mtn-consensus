@@ -747,14 +747,6 @@ impl CommitProcessor {
                                     let tx_hash = crate::types::tx_hash::calculate_transaction_hash(
                                         tx.data(),
                                     );
-                                    let hash_hex = hex::encode(&tx_hash);
-
-                                    // Special debug logging for the problematic transaction
-                                    if hash_hex.starts_with("44a535f2") {
-                                        warn!("🔍 [DEBUG] Committing problematic transaction {} in commit #{} (global_exec_index={})",
-                                                  hash_hex, commit_index, global_exec_index);
-                                    }
-
                                     hashes_guard.insert(tx_hash.clone());
                                     batch_hashes.push(tx_hash);
                                     tracked_count += 1;
