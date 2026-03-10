@@ -687,7 +687,7 @@ impl ConsensusNode {
         std::fs::create_dir_all(&db_path)?;
         parameters.db_path = db_path;
 
-        let epoch_duration_seconds = config.epoch_duration_seconds.unwrap_or(180);
+        let epoch_duration_seconds = config.epoch_duration_seconds.unwrap_or(900);
         let system_transaction_provider = Arc::new(DefaultSystemTransactionProvider::new(
             storage.current_epoch,
             epoch_duration_seconds,
