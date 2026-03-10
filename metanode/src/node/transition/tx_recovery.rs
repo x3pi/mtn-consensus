@@ -7,7 +7,7 @@ use crate::node::tx_submitter::TransactionSubmitter;
 use crate::node::ConsensusNode;
 use anyhow::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{error, info, trace, warn};
+use tracing::{info, trace, warn};
 
 /// Recover transactions that were submitted in the previous epoch but not committed
 pub(super) async fn recover_epoch_pending_transactions(node: &mut ConsensusNode) -> Result<usize> {
