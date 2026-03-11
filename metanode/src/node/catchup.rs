@@ -109,7 +109,10 @@ impl CatchupManager {
         };
 
         // 2. Get Network State from Peers (TCP-based only)
-        let (network_epoch, network_block, _best_peer, network_commit) = if !self.peer_rpc_addresses.is_empty() {
+        let (network_epoch, network_block, _best_peer, network_commit) = if !self
+            .peer_rpc_addresses
+            .is_empty()
+        {
             info!(
                 "🌐 [CATCHUP] Using WAN peer discovery ({} peers configured)",
                 self.peer_rpc_addresses.len()
@@ -127,12 +130,22 @@ impl CatchupManager {
                         "⚠️ [CATCHUP] WAN peer query failed ({}), using local state",
                         e
                     );
-                    (local_go_epoch, local_go_last_block, "local".to_string(), local_last_commit)
+                    (
+                        local_go_epoch,
+                        local_go_last_block,
+                        "local".to_string(),
+                        local_last_commit,
+                    )
                 }
             }
         } else {
             // No peers configured (single node?), assume we are the network
-            (local_go_epoch, local_go_last_block, "local".to_string(), local_last_commit)
+            (
+                local_go_epoch,
+                local_go_last_block,
+                "local".to_string(),
+                local_last_commit,
+            )
         };
 
         // 3. Compare States

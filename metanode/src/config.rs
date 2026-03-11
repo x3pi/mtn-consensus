@@ -319,8 +319,8 @@ impl NodeConfig {
                 speed_multiplier: 1.0, // Default: normal speed
                 leader_timeout_ms: None,
                 min_round_delay_ms: None,
-                time_based_epoch_change: true,     // Enabled by default
-                epoch_duration_seconds: None, // DEPRECATED: loaded from Go via protobuf now
+                time_based_epoch_change: true, // Enabled by default
+                epoch_duration_seconds: None,  // DEPRECATED: loaded from Go via protobuf now
                 max_clock_drift_seconds: 5,
                 enable_ntp_sync: false, // Disabled by default (enable for production)
                 ntp_servers: default_ntp_servers(),

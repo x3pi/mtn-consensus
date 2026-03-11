@@ -275,7 +275,7 @@ impl CommitProcessor {
                         // Result: Deterministic across all nodes, even late joiners!
                         let global_exec_index = calculate_global_exec_index(
                             current_epoch,
-                            commit_index,
+                            commit_index as u64,
                             epoch_base_index,
                         );
 
@@ -367,7 +367,7 @@ impl CommitProcessor {
                             // Use epoch_base_index for pending commits as well (same formula)
                             let global_exec_index = calculate_global_exec_index(
                                 current_epoch,
-                                pending_commit_index,
+                                pending_commit_index as u64,
                                 epoch_base_index,
                             );
 
@@ -528,7 +528,9 @@ impl CommitProcessor {
                         error!("🚨 [FATAL] epoch_eth_addresses STILL EMPTY after {} retries! Committee not loaded.", max_retries);
                         error!("🚨 [FATAL] Cannot process commit #{} (global_exec_index={}) without valid committee data!", 
                             commit_index, global_exec_index);
-                        error!("🚨 [HALTING] Cannot continue without committee data. Node will exit.");
+                        error!(
+                            "🚨 [HALTING] Cannot continue without committee data. Node will exit."
+                        );
                         std::process::exit(1);
                     }
                     warn!(
@@ -570,7 +572,9 @@ impl CommitProcessor {
                         addrs
                     } else {
                         error!("🚨 [FATAL] No committees available in cache!");
-                        error!("🚨 [HALTING] No committee data available (epoch 0). Node will exit.");
+                        error!(
+                            "🚨 [HALTING] No committee data available (epoch 0). Node will exit."
+                        );
                         std::process::exit(1);
                     }
                 };

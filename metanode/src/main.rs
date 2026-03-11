@@ -6,14 +6,14 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::info;
 
+mod config;
 mod consensus;
 mod network;
-mod types;
-mod config;
 mod node;
+mod types;
 
 use config::NodeConfig;
-use node::startup::{StartupConfig, InitializedNode};
+use node::startup::{InitializedNode, StartupConfig};
 
 #[derive(Parser)]
 #[command(name = "metanode")]

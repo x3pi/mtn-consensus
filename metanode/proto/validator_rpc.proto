@@ -215,6 +215,7 @@ message ValidatorInfoList {
 // Response cho GetLastBlockNumberRequest
 message LastBlockNumberResponse {
     uint64 last_block_number = 1;  // Last block number from Go Master DB
+    uint64 last_global_exec_index = 2;  // Last processed GlobalExecIndex (includes empty commits)
 }
 
 // Request message

@@ -198,7 +198,7 @@ impl InitializedNode {
                     let node_guard = node.lock().await;
                     (
                         node_guard.executor_client.clone(),
-                        Some(node_guard.shared_last_global_exec_index.clone())
+                        Some(node_guard.shared_last_global_exec_index.clone()),
                     )
                 };
                 if let Some(exc) = executor_client_for_peer {
@@ -207,7 +207,8 @@ impl InitializedNode {
                         peer_port,
                         node_config.network_address.clone(),
                         exc,
-                        shared_index_for_peer.unwrap_or_else(|| std::sync::Arc::new(tokio::sync::Mutex::new(0))),
+                        shared_index_for_peer
+                            .unwrap_or_else(|| std::sync::Arc::new(tokio::sync::Mutex::new(0))),
                     );
                     // Inject transaction submitter so validators can accept forwarded TXs from SyncOnly nodes
                     if let Some(ref submitter) = tx_client {

@@ -12,7 +12,6 @@ pub mod proposer;
 
 pub mod block_importer;
 
-
 use mysten_metrics::monitored_scope;
 use parking_lot::RwLock;
 use tracing::info;
@@ -35,7 +34,6 @@ use crate::{
         universal_committer_builder::UniversalCommitterBuilder, UniversalCommitter,
     },
 };
-
 
 // Maximum number of commit votes to include in a block.
 // TODO: Move to protocol config, and verify in BlockVerifier.

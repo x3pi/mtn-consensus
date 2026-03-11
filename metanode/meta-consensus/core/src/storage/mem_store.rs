@@ -195,7 +195,11 @@ impl Store for MemStore {
         Ok(commits)
     }
 
-    fn read_commit_votes(&self, commit_index: CommitIndex, commit_digest: CommitDigest) -> ConsensusResult<Vec<BlockRef>> {
+    fn read_commit_votes(
+        &self,
+        commit_index: CommitIndex,
+        commit_digest: CommitDigest,
+    ) -> ConsensusResult<Vec<BlockRef>> {
         let inner = self.inner.read();
         let votes = inner
             .commit_votes
@@ -240,7 +244,11 @@ impl Store for MemStore {
         Ok(inner.genesis_blocks.get(&epoch).cloned())
     }
 
-    fn write_genesis_blocks(&self, epoch: u64, genesis_blocks: Vec<BlockRef>) -> ConsensusResult<()> {
+    fn write_genesis_blocks(
+        &self,
+        epoch: u64,
+        genesis_blocks: Vec<BlockRef>,
+    ) -> ConsensusResult<()> {
         let mut inner = self.inner.write();
         inner.genesis_blocks.insert(epoch, genesis_blocks);
         Ok(())

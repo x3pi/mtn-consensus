@@ -149,7 +149,6 @@ impl CoreTextFixture {
     }
 }
 
-
 use std::time::Duration;
 use tokio::sync::watch;
 
@@ -174,8 +173,6 @@ use crate::{
 };
 use consensus_config::ProtocolKeyPair;
 use consensus_types::block::{BlockRef, Round};
-
-
 
 /// Recover Core and continue proposing from the last round which forms a quorum.
 #[tokio::test]
@@ -233,8 +230,7 @@ async fn test_core_recover_from_store_for_full_round() {
         blocks_sender,
     );
 
-    let (commit_consumer, _commit_receiver, _transaction_receiver) =
-        CommitConsumerArgs::new(0, 0);
+    let (commit_consumer, _commit_receiver, _transaction_receiver) = CommitConsumerArgs::new(0, 0);
     let commit_observer = CommitObserver::new(
         context.clone(),
         commit_consumer,
@@ -377,8 +373,7 @@ async fn test_core_recover_from_store_for_partial_round() {
         blocks_sender,
     );
 
-    let (commit_consumer, _commit_receiver, _transaction_receiver) =
-        CommitConsumerArgs::new(0, 0);
+    let (commit_consumer, _commit_receiver, _transaction_receiver) = CommitConsumerArgs::new(0, 0);
     let commit_observer = CommitObserver::new(
         context.clone(),
         commit_consumer,
@@ -498,8 +493,7 @@ async fn test_core_propose_after_genesis() {
         dag_state.clone(),
     ));
 
-    let (commit_consumer, _commit_receiver, _transaction_receiver) =
-        CommitConsumerArgs::new(0, 0);
+    let (commit_consumer, _commit_receiver, _transaction_receiver) = CommitConsumerArgs::new(0, 0);
     let commit_observer = CommitObserver::new(
         context.clone(),
         commit_consumer,
@@ -531,8 +525,7 @@ async fn test_core_propose_after_genesis() {
     let mut total = 0;
     let mut index = 0;
     loop {
-        let transaction =
-            bcs::to_bytes(&format!("Transaction {index}")).expect("Shouldn't fail");
+        let transaction = bcs::to_bytes(&format!("Transaction {index}")).expect("Shouldn't fail");
         total += transaction.len();
         index += 1;
         let _w = transaction_client
@@ -730,8 +723,7 @@ async fn test_commit_and_notify_for_block_status() {
         blocks_sender,
     );
 
-    let (commit_consumer, _commit_receiver, _transaction_receiver) =
-        CommitConsumerArgs::new(0, 0);
+    let (commit_consumer, _commit_receiver, _transaction_receiver) = CommitConsumerArgs::new(0, 0);
     let commit_observer = CommitObserver::new(
         context.clone(),
         commit_consumer,
@@ -901,8 +893,7 @@ async fn test_multiple_commits_advance_threshold_clock() {
         blocks_sender,
     );
 
-    let (commit_consumer, _commit_receiver, _transaction_receiver) =
-        CommitConsumerArgs::new(0, 0);
+    let (commit_consumer, _commit_receiver, _transaction_receiver) = CommitConsumerArgs::new(0, 0);
     let commit_observer = CommitObserver::new(
         context.clone(),
         commit_consumer,
@@ -1004,8 +995,7 @@ async fn test_core_set_min_propose_round() {
     // Need at least one subscriber to the block broadcast channel.
     let _block_receiver = signal_receivers.block_broadcast_receiver();
 
-    let (commit_consumer, _commit_receiver, _transaction_receiver) =
-        CommitConsumerArgs::new(0, 0);
+    let (commit_consumer, _commit_receiver, _transaction_receiver) = CommitConsumerArgs::new(0, 0);
     let commit_observer = CommitObserver::new(
         context.clone(),
         commit_consumer,
@@ -1050,8 +1040,7 @@ async fn test_core_set_min_propose_round() {
     let blocks = builder.blocks.values().cloned().collect::<Vec<_>>();
 
     // Process all the blocks
-    transaction_certifier
-        .add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
+    transaction_certifier.add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
     assert!(core.add_blocks(blocks).unwrap().is_empty());
 
     core.round_tracker.write().update_from_probe(
@@ -1365,8 +1354,7 @@ async fn test_smart_ancestor_selection() {
     // Need at least one subscriber to the block broadcast channel.
     let mut block_receiver = signal_receivers.block_broadcast_receiver();
 
-    let (commit_consumer, _commit_receiver, _transaction_receiver) =
-        CommitConsumerArgs::new(0, 0);
+    let (commit_consumer, _commit_receiver, _transaction_receiver) = CommitConsumerArgs::new(0, 0);
     let commit_observer = CommitObserver::new(
         context.clone(),
         commit_consumer,
@@ -1413,8 +1401,7 @@ async fn test_smart_ancestor_selection() {
         .build();
     let blocks = builder.blocks(1..=12);
     // Process all the blocks
-    transaction_certifier
-        .add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
+    transaction_certifier.add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
     assert!(core.add_blocks(blocks).unwrap().is_empty());
     core.set_last_known_proposed_round(12);
 
@@ -1450,8 +1437,7 @@ async fn test_smart_ancestor_selection() {
         .skip_block()
         .build();
     let blocks = builder.blocks(13..=14);
-    transaction_certifier
-        .add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
+    transaction_certifier.add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
     assert!(core.add_blocks(blocks).unwrap().is_empty());
 
     // We now have triggered a leader schedule change so we should have
@@ -1481,8 +1467,7 @@ async fn test_smart_ancestor_selection() {
     // Wait for min round delay to allow blocks to be proposed.
     sleep(context.parameters.min_round_delay).await;
     // Smart select should be triggered and no block should be proposed.
-    transaction_certifier
-        .add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
+    transaction_certifier.add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
     assert!(core.add_blocks(blocks).unwrap().is_empty());
     assert_eq!(core.last_proposed_block().round(), 15);
 
@@ -1511,18 +1496,16 @@ async fn test_smart_ancestor_selection() {
         .collect::<Vec<_>>();
 
     // Have enough ancestor blocks to propose now.
-    transaction_certifier
-        .add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
+    transaction_certifier.add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
     assert!(core.add_blocks(blocks).unwrap().is_empty());
     assert_eq!(core.last_proposed_block().round(), 16);
 
     // Check that a new block has been proposed & signaled.
     let extended_block = loop {
-        let extended_block =
-            tokio::time::timeout(Duration::from_secs(1), block_receiver.recv())
-                .await
-                .unwrap()
-                .unwrap();
+        let extended_block = tokio::time::timeout(Duration::from_secs(1), block_receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
         if extended_block.block.round() == 16 {
             break extended_block;
         }
@@ -1555,8 +1538,7 @@ async fn test_smart_ancestor_selection() {
     // Wait for leader timeout to force blocks to be proposed.
     sleep(context.parameters.min_round_delay).await;
     // Smart select should be triggered and no block should be proposed.
-    transaction_certifier
-        .add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
+    transaction_certifier.add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
     assert!(core.add_blocks(blocks).unwrap().is_empty());
     assert_eq!(core.last_proposed_block().round(), 16);
 
@@ -1619,8 +1601,7 @@ async fn test_smart_ancestor_selection() {
 
     // Have enough ancestor blocks to propose now.
     sleep(context.parameters.min_round_delay).await;
-    transaction_certifier
-        .add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
+    transaction_certifier.add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
     assert!(core.add_blocks(blocks).unwrap().is_empty());
     assert_eq!(core.last_proposed_block().round(), 23);
 
@@ -1668,8 +1649,7 @@ async fn test_excluded_ancestor_limit() {
     // Need at least one subscriber to the block broadcast channel.
     let mut block_receiver = signal_receivers.block_broadcast_receiver();
 
-    let (commit_consumer, _commit_receiver, _transaction_receiver) =
-        CommitConsumerArgs::new(0, 0);
+    let (commit_consumer, _commit_receiver, _transaction_receiver) = CommitConsumerArgs::new(0, 0);
     let commit_observer = CommitObserver::new(
         context.clone(),
         commit_consumer,
@@ -1719,8 +1699,7 @@ async fn test_excluded_ancestor_limit() {
     let blocks = builder.blocks(1..=4);
 
     // Process all the blocks
-    transaction_certifier
-        .add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
+    transaction_certifier.add_voted_blocks(blocks.iter().map(|b| (b.clone(), vec![])).collect());
     assert!(core.add_blocks(blocks).unwrap().is_empty());
     core.set_last_known_proposed_round(3);
 
@@ -1768,8 +1747,7 @@ async fn test_core_set_propagation_delay_per_authority() {
     // Need at least one subscriber to the block broadcast channel.
     let _block_receiver = signal_receivers.block_broadcast_receiver();
 
-    let (commit_consumer, _commit_receiver, _transaction_receiver) =
-        CommitConsumerArgs::new(0, 0);
+    let (commit_consumer, _commit_receiver, _transaction_receiver) = CommitConsumerArgs::new(0, 0);
     let commit_observer = CommitObserver::new(
         context.clone(),
         commit_consumer,
@@ -1901,13 +1879,11 @@ async fn test_leader_schedule_change() {
             assert_eq!(new_round, round);
 
             // Check that a new block has been proposed.
-            let extended_block = tokio::time::timeout(
-                Duration::from_secs(1),
-                core_fixture.block_receiver.recv(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let extended_block =
+                tokio::time::timeout(Duration::from_secs(1), core_fixture.block_receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
             assert_eq!(extended_block.block.round(), round);
             assert_eq!(
                 extended_block.block.author(),
@@ -2222,8 +2198,7 @@ async fn try_commit_with_certified_commits_gced_blocks() {
     // Need at least one subscriber to the block broadcast channel.
     let _block_receiver = signal_receivers.block_broadcast_receiver();
 
-    let (commit_consumer, _commit_receiver, _transaction_receiver) =
-        CommitConsumerArgs::new(0, 0);
+    let (commit_consumer, _commit_receiver, _transaction_receiver) = CommitConsumerArgs::new(0, 0);
     let commit_observer = CommitObserver::new(
         context.clone(),
         commit_consumer,
@@ -2381,13 +2356,11 @@ async fn parameterized_test_commit_on_leader_schedule_change_boundary(
             assert_eq!(new_round, round);
 
             // Check that a new block has been proposed.
-            let extended_block = tokio::time::timeout(
-                Duration::from_secs(1),
-                core_fixture.block_receiver.recv(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let extended_block =
+                tokio::time::timeout(Duration::from_secs(1), core_fixture.block_receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
             assert_eq!(extended_block.block.round(), round);
             assert_eq!(
                 extended_block.block.author(),
@@ -2532,13 +2505,11 @@ async fn test_core_signals() {
             assert_eq!(new_round, round);
 
             // Check that a new block has been proposed.
-            let extended_block = tokio::time::timeout(
-                Duration::from_secs(1),
-                core_fixture.block_receiver.recv(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let extended_block =
+                tokio::time::timeout(Duration::from_secs(1), core_fixture.block_receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
             assert_eq!(extended_block.block.round(), round);
             assert_eq!(
                 extended_block.block.author(),
@@ -2694,8 +2665,7 @@ async fn try_select_certified_leaders() {
     let (context, _) = Context::new_for_test(4);
 
     let authority_index = AuthorityIndex::new_for_test(0);
-    let core =
-        CoreTextFixture::new(context.clone(), vec![1, 1, 1, 1], authority_index, true).await;
+    let core = CoreTextFixture::new(context.clone(), vec![1, 1, 1, 1], authority_index, true).await;
     let mut core = core.core;
 
     let mut dag_builder = DagBuilder::new(Arc::new(context.clone()));
@@ -2730,4 +2700,3 @@ pub(crate) async fn receive<T: Copy>(timeout: Duration, mut receiver: watch::Rec
         .expect("Signal receive channel shouldn't be closed");
     *receiver.borrow_and_update()
 }
-

@@ -373,7 +373,11 @@ impl ExecutorClient {
                     }
 
                     // epoch_duration_seconds: 0 means not set by Go, default to 900 (15 min)
-                    let epoch_duration = if data.epoch_duration_seconds > 0 { data.epoch_duration_seconds } else { 900 };
+                    let epoch_duration = if data.epoch_duration_seconds > 0 {
+                        data.epoch_duration_seconds
+                    } else {
+                        900
+                    };
                     return Ok((
                         data.epoch,
                         data.epoch_start_timestamp_ms,

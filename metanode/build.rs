@@ -4,7 +4,7 @@
 fn main() {
     // Build protobuf files
     let mut protos = Vec::new();
-    
+
     // Build transaction.proto
     let tx_proto = std::path::Path::new("proto/transaction.proto");
     if tx_proto.exists() {
@@ -13,7 +13,7 @@ fn main() {
     } else {
         eprintln!("Warning: proto/transaction.proto not found, skipping");
     }
-    
+
     // Build executor.proto
     let executor_proto = std::path::Path::new("proto/executor.proto");
     if executor_proto.exists() {
@@ -22,7 +22,7 @@ fn main() {
     } else {
         eprintln!("Warning: proto/executor.proto not found, skipping");
     }
-    
+
     // Build validator_rpc.proto (for Request/Response to Go executor)
     let validator_rpc_proto = std::path::Path::new("proto/validator_rpc.proto");
     if validator_rpc_proto.exists() {
@@ -31,7 +31,7 @@ fn main() {
     } else {
         eprintln!("Warning: proto/validator_rpc.proto not found, skipping");
     }
-    
+
     if !protos.is_empty() {
         let out_dir = std::env::var("OUT_DIR").unwrap();
         // Keep build output clean: avoid emitting `cargo:warning=` for normal progress logs.

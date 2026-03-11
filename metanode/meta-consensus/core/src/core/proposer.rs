@@ -1,9 +1,4 @@
-use std::{
-    collections::BTreeSet,
-    iter,
-    time::Duration,
-    vec,
-};
+use std::{collections::BTreeSet, iter, time::Duration, vec};
 
 use itertools::Itertools as _;
 use tokio::time::Instant;

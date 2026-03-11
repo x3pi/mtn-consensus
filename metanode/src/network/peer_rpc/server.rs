@@ -162,7 +162,14 @@ impl PeerRpcServer {
 
                 // Route request
                 if request.starts_with("GET /peer_info") {
-                    Self::handle_peer_info(&mut stream, &executor, node_id, &net_addr, &shared_exec_index).await;
+                    Self::handle_peer_info(
+                        &mut stream,
+                        &executor,
+                        node_id,
+                        &net_addr,
+                        &shared_exec_index,
+                    )
+                    .await;
                 } else if request.starts_with("GET /get_epoch_boundary_data") {
                     Self::handle_get_epoch_boundary_data(&mut stream, &executor, &request).await;
                 } else if request.starts_with("GET /get_blocks") {

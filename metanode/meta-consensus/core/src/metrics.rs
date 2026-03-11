@@ -29,7 +29,11 @@ fn register_or_replace_int_gauge_vec(
             std::process::exit(1);
         }
         Err(e) => {
-            tracing::error!("🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.", name, e);
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
             std::process::exit(1);
         }
     }
@@ -43,7 +47,11 @@ fn register_or_replace_int_gauge(name: &str, help: &str, registry: &Registry) ->
             std::process::exit(1);
         }
         Err(e) => {
-            tracing::error!("🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.", name, e);
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
             std::process::exit(1);
         }
     }
@@ -57,7 +65,11 @@ fn register_or_replace_gauge(name: &str, help: &str, registry: &Registry) -> Gau
             std::process::exit(1);
         }
         Err(e) => {
-            tracing::error!("🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.", name, e);
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
             std::process::exit(1);
         }
     }
@@ -76,7 +88,11 @@ fn register_or_replace_histogram(
             std::process::exit(1);
         }
         Err(e) => {
-            tracing::error!("🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.", name, e);
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
             std::process::exit(1);
         }
     }
@@ -96,7 +112,11 @@ fn register_or_replace_histogram_vec(
             std::process::exit(1);
         }
         Err(e) => {
-            tracing::error!("🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.", name, e);
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
             std::process::exit(1);
         }
     }
@@ -115,7 +135,11 @@ fn register_or_replace_int_counter_vec(
             std::process::exit(1);
         }
         Err(e) => {
-            tracing::error!("🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.", name, e);
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
             std::process::exit(1);
         }
     }
@@ -129,7 +153,11 @@ fn register_or_replace_int_counter(name: &str, help: &str, registry: &Registry) 
             std::process::exit(1);
         }
         Err(e) => {
-            tracing::error!("🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.", name, e);
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
             std::process::exit(1);
         }
     }

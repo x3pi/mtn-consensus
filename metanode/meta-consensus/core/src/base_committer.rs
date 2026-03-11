@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::{
     block::{BlockAPI, Slot, VerifiedBlock},
-    commit::{DEFAULT_WAVE_LENGTH, LeaderStatus, WaveNumber},
+    commit::{LeaderStatus, WaveNumber, DEFAULT_WAVE_LENGTH},
     context::Context,
     dag_state::DagState,
     leader_schedule::LeaderSchedule,

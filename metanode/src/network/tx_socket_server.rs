@@ -409,12 +409,14 @@ impl TxSocketServer {
                 transactions_to_submit.len()
             );
             if let Some(ref node) = node {
-                // Lock-free check passed, now try to acquire lock
-                // Use short timeout as safety net (should rarely trigger since we checked flag)
-                // 🛠 FIX: Epoch transitions (wait_for_commit_processor wait) can block for 10s.
-                // 30s prevents early rejection.
+                // FIX: Use SHORT timeout (200ms) instead of 30s.
+                // During normal block production, the ConsensusNode Mutex is held
+                // by the consensus engine continuously. The old 30s timeout meant
+                // ALL TX submissions were rejected during high block production.
+                // With 200ms timeout: if lock fails and we're NOT transitioning,
+                // skip the check and submit directly (TransactionSubmitter is thread-safe).
                 let lock_result =
-                    tokio::time::timeout(std::time::Duration::from_secs(30), node.lock()).await;
+                    tokio::time::timeout(std::time::Duration::from_millis(200), node.lock()).await;
 
                 match lock_result {
                     Ok(node_guard) => {
@@ -559,20 +561,64 @@ impl TxSocketServer {
                         drop(node_guard);
                     }
                     Err(_) => {
-                        // Lock acquisition timeout - node is busy processing other transactions
-                        warn!("⏳ [TX FLOW] Lock timeout (30s) - node busy. Asking client to retry {} transactions.", 
-                        transactions_to_submit.len());
+                        // FIX: Lock timeout (200ms) - node is busy with consensus.
+                        // During NORMAL operation (not transitioning), this is expected
+                        // and safe to proceed with direct submission.
+                        // TransactionSubmitter.submit() is thread-safe and doesn't need the node lock.
+                        let is_epoch_transition = is_transitioning
+                            .as_ref()
+                            .map_or(false, |flag| flag.load(Ordering::SeqCst));
 
-                        // Return a retry-able error that does NOT contain "epoch transition"
-                        // to avoid Go channel workers treating this as permanent rejection
-                        let error_response = r#"{"success":false,"error":"Node busy processing requests, please retry"}"#;
-                        if let Err(e) =
-                            Self::send_response_string(&mut stream, error_response).await
-                        {
-                            error!("❌ [TX FLOW] Failed to send timeout response: {}", e);
-                            return Err(e.into());
+                        if is_epoch_transition {
+                            // During epoch transition, we must NOT submit directly
+                            warn!("⏳ [TX FLOW] Lock timeout (200ms) during epoch transition. Queueing {} transactions.",
+                                transactions_to_submit.len());
+
+                            // Try to queue via pending_transactions_queue (lock-free path)
+                            if let (Some(ref queue), Some(ref path)) =
+                                (&pending_transactions_queue, &storage_path)
+                            {
+                                for tx_data in &transactions_to_submit {
+                                    if let Err(e) = crate::node::queue::queue_transaction(
+                                        queue,
+                                        path,
+                                        tx_data.clone(),
+                                    )
+                                    .await
+                                    {
+                                        error!(
+                                            "❌ [TX FLOW] Failed to queue TX during transition: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                                let success_response = format!(
+                                    r#"{{"success":true,"queued":true,"message":"Queued {} TXs during epoch transition (lock-free)"}}"#,
+                                    transactions_to_submit.len()
+                                );
+                                if let Err(e) =
+                                    Self::send_response_string(&mut stream, &success_response).await
+                                {
+                                    error!("❌ [TX FLOW] Failed to send queue response: {}", e);
+                                    return Err(e.into());
+                                }
+                            } else {
+                                let error_response = r#"{"success":false,"error":"Node busy (epoch transition), please retry"}"#;
+                                if let Err(e) =
+                                    Self::send_response_string(&mut stream, error_response).await
+                                {
+                                    error!("❌ [TX FLOW] Failed to send timeout response: {}", e);
+                                    return Err(e.into());
+                                }
+                            }
+                            continue;
                         }
-                        continue; // Tiếp tục xử lý request tiếp theo
+
+                        // NORMAL OPERATION: Lock timeout is fine — consensus is just busy
+                        // producing blocks. Proceed directly to submission.
+                        info!("⚡ [TX FLOW] Lock timeout (200ms) - consensus busy, proceeding with direct submission of {} TXs.",
+                            transactions_to_submit.len());
+                        // Fall through to submission code below
                     }
                 }
             }
@@ -583,81 +629,49 @@ impl TxSocketServer {
                 transactions_to_submit.len()
             );
 
-            // CRITICAL: Double-check transaction acceptance RIGHT BEFORE submitting to consensus
-            // This prevents race condition where epoch transition starts between initial check and submission
-            // Also use timeout to prevent blocking during epoch transition
-            let should_queue_final = if let Some(ref node) = node {
-                let lock_result =
-                    tokio::time::timeout(std::time::Duration::from_secs(1), node.lock()).await;
-
-                match lock_result {
-                    Ok(node_guard) => {
-                        let (should_accept_final, should_queue_final, reason_final) =
-                            node_guard.check_transaction_acceptance().await;
-                        if should_queue_final {
-                            // Epoch transition started between initial check and submission - queue transaction instead
-                            warn!("⚠️ [RACE CONDITION] Epoch transition started between initial check and submission - queueing transaction instead: {}", reason_final);
-                            // Queue all transactions (node_guard is still held)
-                            if let Err(e) = node_guard
-                                .queue_transactions_for_next_epoch(transactions_to_submit.clone())
-                                .await
-                            {
-                                error!("❌ [TX FLOW] Failed to queue transactions after race condition detection: {}", e);
-                            }
-                            drop(node_guard);
-                            // Send success response (transaction is queued)
-                            let success_response = format!(
-                                r#"{{"success":true,"queued":true,"message":"Transaction queued due to epoch transition: {}"}}"#,
-                                reason_final.replace('"', "\\\"")
-                            );
+            // FIX: Removed redundant double-check lock acquisition.
+            // The old code tried to acquire the ConsensusNode Mutex AGAIN (with 1s timeout)
+            // right before submission, causing ANOTHER timeout during normal operation.
+            // The is_transitioning atomic flag + initial check are sufficient.
+            // During epoch transition, TXs are already queued in the initial check above.
+            // Race condition is handled by the lock-free is_transitioning flag.
+            if let Some(ref transitioning) = is_transitioning {
+                if transitioning.load(Ordering::SeqCst) {
+                    // Epoch transition started between initial check and now
+                    warn!("⚠️ [RACE CONDITION] Epoch transition detected via atomic flag before submission. Queueing {} TXs.",
+                        transactions_to_submit.len());
+                    if let (Some(ref queue), Some(ref path)) =
+                        (&pending_transactions_queue, &storage_path)
+                    {
+                        for tx_data in &transactions_to_submit {
                             if let Err(e) =
-                                Self::send_response_string(&mut stream, &success_response).await
+                                crate::node::queue::queue_transaction(queue, path, tx_data.clone())
+                                    .await
                             {
-                                error!("❌ [TX FLOW] Failed to send queue response: {}", e);
-                                return Err(e.into());
+                                error!("❌ [TX FLOW] Failed to queue TX: {}", e);
                             }
-                            continue; // Don't submit to consensus
                         }
-
-                        if !should_accept_final {
-                            // Node is not ready - reject transaction
-                            warn!("🚫 [RACE CONDITION] Node became not ready between initial check and submission - rejecting: {}", reason_final);
-                            drop(node_guard);
-                            let error_response = format!(
-                                r#"{{"success":false,"error":"Node not ready: {}"}}"#,
-                                reason_final.replace('"', "\\\"")
-                            );
-                            if let Err(e) =
-                                Self::send_response_string(&mut stream, &error_response).await
-                            {
-                                error!("❌ [TX FLOW] Failed to send error response: {}", e);
-                                return Err(e.into());
-                            }
-                            continue; // Don't submit to consensus
+                        let success_response = format!(
+                            r#"{{"success":true,"queued":true,"message":"Queued {} TXs (transition detected before submission)"}}"#,
+                            transactions_to_submit.len()
+                        );
+                        if let Err(e) =
+                            Self::send_response_string(&mut stream, &success_response).await
+                        {
+                            error!("❌ [TX FLOW] Failed to send queue response: {}", e);
+                            return Err(e.into());
                         }
-
-                        drop(node_guard);
-                        false // Continue with submission
-                    }
-                    Err(_) => {
-                        // Lock acquisition timeout on final check
-                        warn!("⏳ [TX FLOW] Final lock timeout (1s) - epoch transition likely in progress");
-                        let error_response = r#"{"success":false,"error":"Node busy (epoch transition in progress), please retry"}"#;
+                    } else {
+                        let error_response = r#"{"success":false,"error":"Epoch transition in progress, please retry"}"#;
                         if let Err(e) =
                             Self::send_response_string(&mut stream, error_response).await
                         {
-                            error!("❌ [TX FLOW] Failed to send timeout response: {}", e);
+                            error!("❌ [TX FLOW] Failed to send error response: {}", e);
                             return Err(e.into());
                         }
-                        continue; // Don't submit to consensus
                     }
+                    continue;
                 }
-            } else {
-                false // No node reference, continue with submission
-            };
-
-            if should_queue_final {
-                return Ok(()); // Already handled above
             }
 
             // Submit transactions to consensus in sub-batches

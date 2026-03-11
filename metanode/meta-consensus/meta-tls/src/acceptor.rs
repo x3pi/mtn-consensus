@@ -4,7 +4,7 @@
 // Modified to remove axum-server dependency
 // This is a simplified version that works without axum-server
 
-use axum::{Extension, middleware::AddExtension};
+use axum::{middleware::AddExtension, Extension};
 use fastcrypto::ed25519::Ed25519PublicKey;
 use rustls::pki_types::CertificateDer;
 use std::{io, sync::Arc};
@@ -34,7 +34,7 @@ impl TlsConnectionInfo {
 }
 
 /// An `Acceptor` that will provide `TlsConnectionInfo` as an axum `Extension` for use in handlers.
-/// 
+///
 /// NOTE: This is a simplified version that doesn't use axum-server.
 /// For production use, you may need to implement a full TLS acceptor.
 #[derive(Debug, Clone)]
@@ -75,14 +75,14 @@ where
 
     fn accept(&self, stream: I, service: S) -> Self::Future {
         let config = self.config.clone();
-        
+
         Box::pin(async move {
             // Simplified TLS handshake
             // In production, you'd use tokio-rustls properly here
             use tokio_rustls::TlsAcceptor as TokioTlsAcceptor;
             let acceptor = TokioTlsAcceptor::from(config);
             let stream = acceptor.accept(stream).await?;
-            
+
             let server_conn = stream.get_ref().1;
 
             let public_key = if let Some([peer_certificate, ..]) = server_conn.peer_certificates() {

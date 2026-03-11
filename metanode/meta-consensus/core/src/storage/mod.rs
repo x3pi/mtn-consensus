@@ -13,10 +13,10 @@ use consensus_config::AuthorityIndex;
 use consensus_types::block::{BlockRef, Round, TransactionIndex};
 
 use crate::{
-    CommitIndex, CommitDigest,
     block::VerifiedBlock,
     commit::{CommitInfo, CommitRange, CommitRef, TrustedCommit},
     error::ConsensusResult,
+    CommitDigest, CommitIndex,
 };
 
 /// A common interface for consensus storage.
@@ -54,7 +54,11 @@ pub trait Store: Send + Sync {
     fn scan_commits(&self, range: CommitRange) -> ConsensusResult<Vec<TrustedCommit>>;
 
     /// Reads all blocks voting on a particular commit.
-    fn read_commit_votes(&self, commit_index: CommitIndex, commit_digest: CommitDigest) -> ConsensusResult<Vec<BlockRef>>;
+    fn read_commit_votes(
+        &self,
+        commit_index: CommitIndex,
+        commit_digest: CommitDigest,
+    ) -> ConsensusResult<Vec<BlockRef>>;
 
     /// Reads the last commit info, written atomically with the last commit.
     fn read_last_commit_info(&self) -> ConsensusResult<Option<(CommitRef, CommitInfo)>>;
@@ -72,8 +76,11 @@ pub trait Store: Send + Sync {
     fn read_genesis_blocks(&self, epoch: u64) -> ConsensusResult<Option<Vec<BlockRef>>>;
 
     /// Writes genesis block refs for a specific epoch.
-    fn write_genesis_blocks(&self, epoch: u64, genesis_blocks: Vec<BlockRef>) -> ConsensusResult<()>;
-
+    fn write_genesis_blocks(
+        &self,
+        epoch: u64,
+        genesis_blocks: Vec<BlockRef>,
+    ) -> ConsensusResult<()>;
 }
 
 /// Represents data to be written to the store together atomically.

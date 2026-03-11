@@ -465,7 +465,10 @@ impl RustSyncNode {
             if let Some(store) = &self.store {
                 if !write_batch.commits.is_empty() || !write_batch.blocks.is_empty() {
                     if let Err(e) = store.write(write_batch) {
-                        warn!("⚠️ [RUST-SYNC] Failed to persist fetched blocks/commits to Store: {}", e);
+                        warn!(
+                            "⚠️ [RUST-SYNC] Failed to persist fetched blocks/commits to Store: {}",
+                            e
+                        );
                     } else {
                         debug!("💾 [RUST-SYNC] Persisted synced commits and blocks to Store");
                     }
@@ -624,7 +627,8 @@ impl RustSyncNode {
                             let epoch_from_peer = global_info.epoch;
                             let global_idx = global_info.global_exec_index;
 
-                            let will_add = global_idx >= queue.next_expected() && !queue.pending.contains_key(&global_idx);
+                            let will_add = global_idx >= queue.next_expected()
+                                && !queue.pending.contains_key(&global_idx);
 
                             if will_add {
                                 chunk_write_batch.blocks.extend(commit_blocks.clone());
@@ -652,7 +656,9 @@ impl RustSyncNode {
                     // Persist to store if configured
                     if pushed > 0 {
                         if let Some(store) = &self.store {
-                            if !chunk_write_batch.commits.is_empty() || !chunk_write_batch.blocks.is_empty() {
+                            if !chunk_write_batch.commits.is_empty()
+                                || !chunk_write_batch.blocks.is_empty()
+                            {
                                 if let Err(e) = store.write(chunk_write_batch) {
                                     warn!("⚠️ [GLOBAL-SYNC] Failed to persist blocks/commits to Store: {}", e);
                                 } else {

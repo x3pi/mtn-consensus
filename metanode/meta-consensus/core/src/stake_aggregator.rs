@@ -93,7 +93,7 @@ impl<T: CommitteeThreshold> StakeAggregator<T> {
 
 #[cfg(test)]
 mod tests {
-    use consensus_config::{AuthorityIndex, local_committee_and_keys};
+    use consensus_config::{local_committee_and_keys, AuthorityIndex};
 
     use super::*;
 
