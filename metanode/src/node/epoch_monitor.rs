@@ -109,6 +109,21 @@ pub fn start_unified_epoch_monitor(
                 continue;
             }
 
+            // ═══════════════════════════════════════════════════════════════
+            // CRITICAL FIX: SyncOnly nodes must NOT trigger epoch transitions
+            // from epoch_monitor! SyncOnly nodes sync blocks sequentially via
+            // sync_loop → blocks reach boundary → check_and_process_pending_epoch_transitions
+            // handles it naturally. If epoch_monitor triggers transition early,
+            // it causes DEADLOCK: Go GEI=0 but deferred transition waits for GEI>=boundary.
+            // ═══════════════════════════════════════════════════════════════
+            if matches!(_current_mode, crate::node::NodeMode::SyncOnly) {
+                debug!(
+                    "📋 [EPOCH MONITOR] SyncOnly mode: skipping epoch transition {} → {} (sync_loop handles transitions via block sync)",
+                    rust_epoch, network_epoch
+                );
+                continue;
+            }
+
             let epoch_gap = network_epoch - rust_epoch;
             info!(
                 "🔄 [EPOCH MONITOR] Epoch gap detected: Rust={} Network={} (gap={})",

@@ -135,8 +135,11 @@ impl RustSyncNode {
     /// 3. Drain ready commits from queue → send to Go sequentially
     async fn sync_once(&mut self) -> Result<()> {
         // Get current state from Go - this is the AUTHORITATIVE source of truth
+        // CRITICAL: Use GEI (global_exec_index) instead of block_number for queue sync!
+        // block_number only counts TX-containing blocks (stays 0 for empty consensus blocks)
+        // GEI counts ALL commits including empty ones — matches what the queue tracks
         let go_query_start = Instant::now();
-        let go_last_block = self.executor_client.get_last_block_number().await?;
+        let go_last_gei = self.executor_client.get_last_global_exec_index().await?;
         let go_epoch = self.executor_client.get_current_epoch().await?;
         self.metrics
             .go_state_query_seconds
@@ -147,7 +150,7 @@ impl RustSyncNode {
 
         // Update metrics gauges
         self.metrics.current_epoch.set(rust_epoch as f64);
-        self.metrics.current_block.set(go_last_block as f64);
+        self.metrics.current_block.set(go_last_gei as f64);
         {
             let queue = self.block_queue.lock().await;
             self.metrics.queue_depth.set(queue.pending_count() as f64);
@@ -183,23 +186,23 @@ impl RustSyncNode {
         // =====================================================================
         // EPOCH DATA INTEGRITY CHECK
         // =====================================================================
-        if rust_epoch > 0 && epoch_base > 0 && (go_last_block as u64) < epoch_base {
-            self.epoch_data_integrity_check(go_last_block, epoch_base, rust_epoch)
+        if rust_epoch > 0 && epoch_base > 0 && go_last_gei < epoch_base {
+            self.epoch_data_integrity_check(go_last_gei, epoch_base, rust_epoch)
                 .await;
         }
 
-        // PHASE 1: Sync queue with Go's progress
+        // PHASE 1: Sync queue with Go's progress (using GEI = ALL commits)
         {
             let mut queue = self.block_queue.lock().await;
-            queue.sync_with_go(go_last_block as u64);
+            queue.sync_with_go(go_last_gei);
 
             let pending = queue.pending_count();
             let next_expected = queue.next_expected();
 
             // CRITICAL DEBUG: Log at INFO level to understand queue state
             debug!(
-                "[RUST-SYNC] State after sync_with_go: go_block={}, go_epoch={}, queue_next_expected={}, pending_count={}, epoch_base={}",
-                go_last_block,
+                "[RUST-SYNC] State after sync_with_go: go_gei={}, go_epoch={}, queue_next_expected={}, pending_count={}, epoch_base={}",
+                go_last_gei,
                 go_epoch,
                 next_expected,
                 pending,
@@ -216,24 +219,93 @@ impl RustSyncNode {
             }; // guard dropped here
 
             if let Some(ref committee) = committee_opt {
-                let fetch_from_index = {
+                let fetch_from_gei = {
                     let queue = self.block_queue.lock().await;
-                    queue.next_expected() - 1 // Fetch from the block before what we need
+                    queue.next_expected()
                 };
 
+                let batch_size = self.config.fetch_batch_size as u64;
+
+                // ═══════════════════════════════════════════════════════════════
+                // OPTIMIZED: Always use global range fetch for SyncOnly nodes.
+                // Epoch-local fetch consistently hits a gap (epoch-local commit
+                // indices ≠ GEI), wasting a full round-trip before falling back.
+                // Global range fetch uses the actual GEI directly — no conversion.
+                // ═══════════════════════════════════════════════════════════════
                 debug!(
-                    "[RUST-SYNC] PHASE 2: Fetching from index {} (committee has {} authorities)",
-                    fetch_from_index,
-                    committee.size()
+                    "[RUST-SYNC] PHASE 2: Direct global-range fetch from GEI={} batch={}",
+                    fetch_from_gei, batch_size
                 );
 
                 match self
-                    .fetch_and_queue(network_client, committee, fetch_from_index as u32)
+                    .fetch_and_queue_by_global_range(
+                        network_client,
+                        committee,
+                        fetch_from_gei,
+                        fetch_from_gei + batch_size,
+                    )
                     .await
                 {
                     Ok(pushed) => {
                         if pushed == 0 {
                             debug!("[RUST-SYNC] PHASE 2: No commits fetched this iteration");
+
+                            // EPOCH EXHAUSTION DETECTION:
+                            let rust_epoch = self.current_epoch.load(Ordering::SeqCst);
+                            let peer_addrs = &self.config.peer_rpc_addresses;
+                            if !peer_addrs.is_empty() {
+                                match query_peer_epochs_network(peer_addrs).await {
+                                    Ok((peer_max_epoch, _peer_block, _peer_addr, _peer_gei)) => {
+                                        if peer_max_epoch > rust_epoch {
+                                            info!(
+                                                "🔄 [EPOCH-EXHAUSTION] Current epoch {} exhausted! Peers at epoch {}. Advancing...",
+                                                rust_epoch, peer_max_epoch
+                                            );
+                                            self.auto_epoch_sync(peer_max_epoch, rust_epoch).await;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        debug!("[EPOCH-EXHAUSTION] Failed to query peers: {}", e);
+                                    }
+                                }
+                            }
+
+                            // GO BLOCK-FETCH FALLBACK: When GLOBAL-SYNC fails (validators
+                            // pruned old epoch commits from Mysticeti), fetch blocks from
+                            // peers' Go databases which store ALL historical blocks.
+                            let peer_rpc_addresses = self.config.peer_rpc_addresses.clone();
+                            if !peer_rpc_addresses.is_empty() {
+                                match self.executor_client.get_last_block_number().await {
+                                    Ok(last_block) => {
+                                        let from_block = last_block + 1;
+                                        let go_batch = self.config.turbo_batch_size as u64;
+                                        info!(
+                                            "🔄 [GO-BLOCK-FALLBACK] GLOBAL-SYNC empty, trying Go block fetch from block {} (batch={})",
+                                            from_block, go_batch
+                                        );
+                                        match self
+                                            .fetch_blocks_from_peer_go(&peer_rpc_addresses, from_block, go_batch)
+                                            .await
+                                        {
+                                            Ok(synced) if synced > 0 => {
+                                                info!(
+                                                    "✅ [GO-BLOCK-FALLBACK] Synced {} blocks via Go block fetch",
+                                                    synced
+                                                );
+                                            }
+                                            Ok(_) => {
+                                                debug!("[GO-BLOCK-FALLBACK] No blocks available from Go peers");
+                                            }
+                                            Err(e) => {
+                                                debug!("[GO-BLOCK-FALLBACK] Go block fetch failed: {}", e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        debug!("[GO-BLOCK-FALLBACK] Failed to get last block number: {}", e);
+                                    }
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -247,7 +319,7 @@ impl RustSyncNode {
             // PHASE 2.5: Use Peer Go Sync when network_client is None (SyncOnly mode)
             debug!("[RUST-SYNC] PHASE 2.5: No Mysticeti network, using Peer Go Sync");
 
-            let peer_addresses = self.get_peer_go_addresses();
+            let peer_addresses = self.config.peer_rpc_addresses.clone();
             if !peer_addresses.is_empty() {
                 let fetch_from = {
                     let queue = self.block_queue.lock().await;
@@ -294,7 +366,7 @@ impl RustSyncNode {
         // PHASE 4: Check pending epoch transitions (from deferred AdvanceEpoch)
         // If sync has caught up to a pending transition's boundary, process it now
         // =============================================================================
-        self.check_and_process_pending_epoch_transitions(go_last_block)
+        self.check_and_process_pending_epoch_transitions(go_last_gei)
             .await;
 
         // NOTE: Epoch transitions are now handled CENTRALLY by epoch_monitor.rs
@@ -314,8 +386,30 @@ impl RustSyncNode {
 
         // Fetch new epoch boundary data from Go
         match self.executor_client.get_epoch_boundary_data(go_epoch).await {
-            Ok((_epoch, _ts, new_epoch_base, validators, _)) => {
+            Ok((_epoch, _ts, go_boundary_block, validators, _)) => {
                 let old_epoch_base = self.epoch_base_index.load(Ordering::SeqCst);
+
+                // CRITICAL FIX: Go returns boundary_block as a Go DB block number,
+                // NOT a global_exec_index (GEI). For SyncOnly nodes, boundary_block
+                // might be 3 (only 4 DB blocks) while the actual GEI is ~812.
+                // Rust needs the GEI as epoch_base for commit coordinate conversion.
+                // Query the actual GEI from Go and use that instead.
+                let new_epoch_base = match self.executor_client.get_last_global_exec_index().await {
+                    Ok(gei) => {
+                        info!(
+                            "📊 [EPOCH-AUTO-SYNC] Using go_last_gei={} as epoch_base (go_boundary_block={} is DB block num, NOT GEI!)",
+                            gei, go_boundary_block
+                        );
+                        gei
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [EPOCH-AUTO-SYNC] Failed to get GEI from Go, falling back to boundary_block={}: {}",
+                            go_boundary_block, e
+                        );
+                        go_boundary_block
+                    }
+                };
 
                 // CRITICAL: Always rebuild committee on epoch change!
                 // Validators may change (added, removed, or replaced) between epochs.
@@ -375,9 +469,61 @@ impl RustSyncNode {
             }
             Err(e) => {
                 warn!(
-                    "⚠️ [EPOCH-AUTO-SYNC] Failed to get epoch {} boundary from Go: {}. Will retry next sync cycle.",
+                    "⚠️ [EPOCH-AUTO-SYNC] Local Go failed for epoch {} boundary: {}. Trying PEERS...",
                     go_epoch, e
                 );
+
+                // PEER FALLBACK: Query remote peers for epoch boundary confirmation
+                // We only need to confirm the epoch exists and get basic info.
+                // Committee stays the same (same validators across epochs in this setup).
+                let peer_addrs = &self.config.peer_rpc_addresses;
+                let mut peer_success = false;
+
+                for peer_addr in peer_addrs {
+                    match query_peer_epoch_boundary_data(peer_addr, go_epoch).await {
+                        Ok(boundary_data) => {
+                            info!(
+                                "✅ [EPOCH-AUTO-SYNC] PEER-FALLBACK: Got epoch {} boundary from peer {}: timestamp={}, validators={}",
+                                go_epoch, peer_addr, boundary_data.timestamp_ms, boundary_data.validators.len()
+                            );
+
+                            let old_epoch_base = self.epoch_base_index.load(Ordering::SeqCst);
+
+                            // Use current Go GEI as epoch_base (best effort)
+                            let new_epoch_base = match self.executor_client.get_last_global_exec_index().await {
+                                Ok(gei) => {
+                                    info!(
+                                        "📊 [EPOCH-AUTO-SYNC] PEER-FALLBACK: Using go_last_gei={} as epoch_base",
+                                        gei
+                                    );
+                                    gei
+                                }
+                                Err(_) => old_epoch_base
+                            };
+
+                            // Keep existing committee — validators don't change between epochs.
+                            // Only update epoch number and epoch_base to unblock GLOBAL-SYNC.
+                            info!(
+                                "📊 [EPOCH-AUTO-SYNC] PEER-FALLBACK Updated: epoch {} → {}, epoch_base {} → {}",
+                                rust_epoch, go_epoch, old_epoch_base, new_epoch_base
+                            );
+                            self.current_epoch.store(go_epoch, Ordering::SeqCst);
+                            self.epoch_base_index.store(new_epoch_base, Ordering::SeqCst);
+                            peer_success = true;
+                            break;
+                        }
+                        Err(e) => {
+                            debug!("[EPOCH-AUTO-SYNC] Peer {} failed for epoch {} boundary: {}", peer_addr, go_epoch, e);
+                        }
+                    }
+                }
+
+                if !peer_success {
+                    warn!(
+                        "⚠️ [EPOCH-AUTO-SYNC] All sources failed for epoch {} boundary. Will retry next cycle.",
+                        go_epoch
+                    );
+                }
             }
         }
     }

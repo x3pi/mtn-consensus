@@ -258,7 +258,23 @@ impl InitializedNode {
             }
         };
 
-        if let Some(cm) = catchup_manager {
+        // ═══════════════════════════════════════════════════════════════════════
+        // CRITICAL FIX: Skip startup catchup for SyncOnly nodes!
+        // SyncOnly has its own sync mechanism: RustSyncNode P2P sync_loop
+        // The startup catchup loop was designed for Validators to catch up before
+        // joining consensus. For SyncOnly, it causes an infinite loop because:
+        //   - epoch_match is always false (local epoch=0, network epoch=N)
+        //   - The loop can't sync blocks without matching epoch
+        //   - Deadlock: can't match epoch without blocks, can't get blocks without matching epoch
+        // ═══════════════════════════════════════════════════════════════════════
+        let is_sync_only_mode = {
+            let node_guard = self.node.lock().await;
+            matches!(node_guard.node_mode, crate::node::NodeMode::SyncOnly)
+        };
+
+        if is_sync_only_mode {
+            info!("📋 [STARTUP] SyncOnly mode: skipping startup catchup (sync_loop handles block sync)");
+        } else if let Some(cm) = catchup_manager {
             info!("⏳ [STARTUP] Verifying sync status before joining consensus...");
             let _check_interval = std::time::Duration::from_secs(2); // kept for reference
             let timeout = std::time::Duration::from_secs(600); // 10 minutes timeout

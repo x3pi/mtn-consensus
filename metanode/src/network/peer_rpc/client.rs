@@ -469,6 +469,13 @@ pub async fn fetch_blocks_from_peer(
         for peer_addr in peer_addresses {
             match fetch_block_batch(peer_addr, current_from, current_to).await {
                 Ok(blocks) => {
+                    if blocks.is_empty() {
+                        info!(
+                            "✅ [BLOCK-FETCH] Got 0 blocks ({}-{}) from peer {}",
+                            current_from, current_to, peer_addr
+                        );
+                        continue; // Try next peer
+                    }
                     info!(
                         "✅ [BLOCK-FETCH] Got {} blocks ({}-{}) from peer {}",
                         blocks.len(),
@@ -498,6 +505,9 @@ pub async fn fetch_blocks_from_peer(
             break;
         }
 
+        // Yield execution to allow other async tasks (like socket listeners) to run
+        tokio::task::yield_now().await;
+        
         current_from = current_to + 1;
     }
 

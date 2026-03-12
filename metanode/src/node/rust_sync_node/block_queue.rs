@@ -133,6 +133,36 @@ impl BlockQueue {
         }
         // CASE 3: Queue slightly ahead of Go (normal - blocks in flight)
         // Keep as-is, this is expected during normal sync
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // CASE 4 (SyncOnly EPOCH BOUNDARY GAP SKIP):
+        // When Go has confirmed processing up to a GEI, but the queue has
+        // pending commits starting ahead of next_expected with a small gap,
+        // the gap represents permanently unavailable empty consensus blocks
+        // from epoch transitions that peers no longer store.
+        //
+        // Examples:
+        //   - Fresh start: Go GEI=0, queue expects 1, first pending at GEI=9
+        //     (epoch 0 had 8 empty blocks that peers discarded)
+        //   - After epoch boundary: Go GEI=208, queue expects 209, first pending
+        //     at GEI=217 (epoch boundary had 8 empty blocks)
+        //
+        // Safety: Go has CONFIRMED processing all blocks up to go_last_block.
+        //         The missing blocks between go_last_block+1 and first_pending
+        //         were empty consensus blocks (no TX) that don't affect state.
+        //         Max gap of 16 prevents accidentally skipping real missing data.
+        // ═══════════════════════════════════════════════════════════════════════
+        if let Some((&first_pending, _)) = self.pending.first_key_value() {
+            let gap = first_pending.saturating_sub(self.next_expected);
+            if gap > 0 && gap <= 16 {
+                // Small gap - likely epoch boundary empty blocks
+                info!(
+                    "📋 [QUEUE-SYNC] Epoch boundary gap skip: next_expected={} → {} (Go GEI={}, gap={}, first pending at {})",
+                    self.next_expected, first_pending, go_last_block, gap, first_pending
+                );
+                self.next_expected = first_pending;
+            }
+        }
     }
 
     /// Number of pending commits in queue

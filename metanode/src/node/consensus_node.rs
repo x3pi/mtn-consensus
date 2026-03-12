@@ -144,7 +144,32 @@ impl ConsensusNode {
         };
 
         // PEER EPOCH DISCOVERY: Query TCP peers to get correct epoch (with retry)
-        let (go_epoch, peer_last_block, best_socket) = if !config.peer_rpc_addresses.is_empty() {
+        // ═══════════════════════════════════════════════════════════════════════
+        // CRITICAL FIX: SyncOnly nodes MUST use local Go epoch, NOT peer epoch!
+        // Using peer epoch causes DEADLOCK:
+        //   1. Peer says epoch=1 → Rust advances internal state to epoch 1
+        //   2. Deferred epoch transition waits for Go GEI >= boundary
+        //   3. But Go GEI=0 (no blocks synced yet) → 120s timeout → DEADLOCK
+        // SyncOnly must sync blocks sequentially: epoch transitions happen naturally
+        // when Go processes blocks up to the epoch boundary.
+        // ═══════════════════════════════════════════════════════════════════════
+        let is_sync_only = matches!(config.initial_node_mode, NodeMode::SyncOnly);
+        let (go_epoch, peer_last_block, best_socket) = if is_sync_only {
+            // SyncOnly: ALWAYS use local Go epoch to prevent deadlock
+            let epoch = executor_client
+                .get_current_epoch()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to fetch current epoch from Go: {}", e))?;
+            info!(
+                "📋 [SYNC-ONLY STARTUP] Using LOCAL Go epoch {} (skipping peer discovery to prevent deadlock)",
+                epoch
+            );
+            (
+                epoch,
+                latest_block_number,
+                config.executor_receive_socket_path.clone(),
+            )
+        } else if !config.peer_rpc_addresses.is_empty() {
             use crate::network::peer_rpc::query_peer_epochs_network;
             let max_attempts = 3;
             let mut peer_result = None;
