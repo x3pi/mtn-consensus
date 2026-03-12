@@ -292,3 +292,6 @@ temp_script.sh
 # Uncomment for specific OS files:
 # **/.Trash/
 # **/lost+found/
+
+# Binary executables
+metanode/bin/
