@@ -3,6 +3,7 @@
 
 use crate::system_transaction::SystemTransaction;
 use consensus_config::Epoch;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::{info, warn};
 
@@ -34,6 +35,12 @@ pub struct DefaultSystemTransactionProvider {
     /// OPTIMIZED: Default reduced to 50 commits for faster epoch transitions (was 100)
     /// With commit rate 200 commits/s, 50 commits = 250ms (faster than 100 commits = 500ms)
     commit_index_buffer: u32,
+    /// BACKPRESSURE: Go executor lag (in blocks). When Go is lagging behind Rust,
+    /// EndOfEpoch emission is suppressed to prevent epoch desynchronization.
+    /// Updated by CommitProcessor after each flush_buffer() cycle.
+    go_lag: Arc<AtomicU64>,
+    /// Maximum lag threshold: EndOfEpoch is suppressed when go_lag >= this value
+    go_lag_threshold: u64,
 }
 
 impl DefaultSystemTransactionProvider {
@@ -116,6 +123,8 @@ impl DefaultSystemTransactionProvider {
             time_based_enabled,
             last_checked_commit_index: Arc::new(RwLock::new(0)),
             commit_index_buffer,
+            go_lag: Arc::new(AtomicU64::new(0)),
+            go_lag_threshold: 50, // Suppress EndOfEpoch when Go is >= 50 blocks behind
         }
     }
 
@@ -168,6 +177,16 @@ impl DefaultSystemTransactionProvider {
         );
     }
 
+    /// Get a clone of the go_lag Arc for sharing with CommitProcessor
+    pub fn go_lag_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.go_lag)
+    }
+
+    /// Update the Go lag value (called by CommitProcessor after flush_buffer)
+    pub fn set_go_lag(&self, lag: u64) {
+        self.go_lag.store(lag, Ordering::Relaxed);
+    }
+
     /// Check if epoch transition should be triggered
     fn should_trigger_epoch_change(&self, current_commit_index: u32) -> bool {
         if !self.time_based_enabled {
@@ -211,15 +230,49 @@ impl DefaultSystemTransactionProvider {
             self.epoch_duration_seconds.saturating_sub(elapsed_seconds)
         );
 
-        let should_trigger = elapsed_seconds >= self.epoch_duration_seconds;
+        let time_elapsed = elapsed_seconds >= self.epoch_duration_seconds;
+
+        // BACKPRESSURE: Check Go lag before allowing epoch change
+        let current_go_lag = self.go_lag.load(Ordering::Relaxed);
+        let go_ready = current_go_lag < self.go_lag_threshold;
+
+        // Hard timeout: If elapsed > epoch_duration + 300s (5 min), force epoch change
+        // This prevents infinite wait if Go is permanently stuck
+        let hard_timeout = elapsed_seconds >= self.epoch_duration_seconds + 300;
+
+        let should_trigger = time_elapsed && (go_ready || hard_timeout);
 
         // Log every check (throttled by commit index check above)
         if should_trigger {
+            if hard_timeout && !go_ready {
+                warn!(
+                    "⏰ [BACKPRESSURE TIMEOUT] Force epoch change after {}s! Go still lagging by {} blocks (threshold={}). epoch={}, commit_index={}",
+                    elapsed_seconds,
+                    current_go_lag,
+                    self.go_lag_threshold,
+                    *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
+                    current_commit_index
+                );
+            } else {
+                info!(
+                    "⏰ SystemTransactionProvider: Epoch change triggered - epoch={}, elapsed={}s, duration={}s, commit_index={}, go_lag={}",
+                    *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
+                    elapsed_seconds,
+                    self.epoch_duration_seconds,
+                    current_commit_index,
+                    current_go_lag
+                );
+            }
+        } else if time_elapsed && !go_ready {
+            // BACKPRESSURE: Time elapsed but Go not ready — delay epoch change
             info!(
-                "⏰ SystemTransactionProvider: Epoch change triggered - epoch={}, elapsed={}s, duration={}s, commit_index={}",
-                *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
+                "⏳ [BACKPRESSURE] Delaying EndOfEpoch: Go lagging by {} blocks (threshold={}). \
+                 elapsed={}s, will force at {}s. epoch={}, commit_index={}",
+                current_go_lag,
+                self.go_lag_threshold,
                 elapsed_seconds,
-                self.epoch_duration_seconds,
+                self.epoch_duration_seconds + 300,
+                *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
                 current_commit_index
             );
         } else {
@@ -227,15 +280,15 @@ impl DefaultSystemTransactionProvider {
             if elapsed_seconds % 10 == 0
                 || elapsed_seconds >= self.epoch_duration_seconds.saturating_sub(30)
             {
-                // Use info level when past threshold to make it more visible
                 if elapsed_seconds >= self.epoch_duration_seconds {
                     tracing::info!(
-                        "⏰ SystemTransactionProvider: Epoch change check - epoch={}, elapsed={}s, duration={}s, remaining={}s, commit_index={} (PAST THRESHOLD!)",
+                        "⏰ SystemTransactionProvider: Epoch change check - epoch={}, elapsed={}s, duration={}s, remaining={}s, commit_index={}, go_lag={} (PAST THRESHOLD!)",
                         *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
                         elapsed_seconds,
                         self.epoch_duration_seconds,
                         self.epoch_duration_seconds.saturating_sub(elapsed_seconds),
-                        current_commit_index
+                        current_commit_index,
+                        current_go_lag
                     );
                 } else {
                     tracing::debug!(

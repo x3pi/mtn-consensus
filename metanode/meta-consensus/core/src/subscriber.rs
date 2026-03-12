@@ -211,6 +211,20 @@ impl<C: NetworkClient, S: NetworkService> Subscriber<C, S> {
                                         peer, peer_hostname, block_ref, reason
                                     );
                                 }
+                                // EPOCH MISMATCH FIX: When the peer is still in a
+                                // different epoch (hasn't completed its transition yet),
+                                // the subscription stream carries stale blocks that will
+                                // never become valid. Break and reconnect with backoff
+                                // so we eventually connect to the peer's new epoch service.
+                                ConsensusError::WrongEpoch { .. }
+                                | ConsensusError::InvalidGenesisAncestor(_) => {
+                                    info!(
+                                        "Epoch mismatch from peer {} {}, forcing reconnect: {}",
+                                        peer, peer_hostname, e
+                                    );
+                                    retries += 1;
+                                    break 'stream;
+                                }
                                 _ => {
                                     info!(
                                         "Invalid block received from peer {} {}: {}",
@@ -219,7 +233,7 @@ impl<C: NetworkClient, S: NetworkService> Subscriber<C, S> {
                                 }
                             }
                         }
-                        // Reset retries when a block is received.
+                        // Reset retries when a valid block is received.
                         retries = 0;
                     }
                     None => {

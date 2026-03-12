@@ -26,6 +26,7 @@ pub use persistence::{load_persisted_last_index, read_last_block_number};
 pub use socket_stream::{SocketAddress, SocketStream};
 
 use anyhow::Result;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, trace, warn};
@@ -70,6 +71,9 @@ pub struct ExecutorClient {
     pub(crate) send_cb_open_until: Arc<tokio::sync::RwLock<Option<tokio::time::Instant>>>,
     /// Connection pool for parallel RPC queries to Go Master
     pub(crate) request_pool: Arc<ConnectionPool>,
+    /// BACKPRESSURE: Shared handle to update Go lag in SystemTransactionProvider
+    /// When set, flush_buffer() will update this value with the computed lag
+    pub(crate) go_lag_handle: Option<Arc<AtomicU64>>,
 }
 
 /// Production safety constants
@@ -151,6 +155,7 @@ impl ExecutorClient {
             send_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             send_cb_open_until: Arc::new(tokio::sync::RwLock::new(None)),
             request_pool,
+            go_lag_handle: None, // Set via set_go_lag_handle() after construction
         }
     }
 
@@ -162,6 +167,11 @@ impl ExecutorClient {
     /// Check if this node can commit transactions (only node 0)
     pub fn can_commit(&self) -> bool {
         self.can_commit
+    }
+
+    /// Set the Go lag handle for backpressure signaling to SystemTransactionProvider
+    pub fn set_go_lag_handle(&mut self, handle: Arc<AtomicU64>) {
+        self.go_lag_handle = Some(handle);
     }
 
     /// Get reference to the RPC circuit breaker

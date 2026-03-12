@@ -615,15 +615,30 @@ impl ConsensusNode {
             1
         };
 
+        // MOVED UP: Create system_transaction_provider BEFORE executor_client_for_proc
+        // so we can wire the go_lag_handle for backpressure
+        let epoch_duration_seconds = storage.epoch_duration_from_go;
+        let system_transaction_provider = Arc::new(DefaultSystemTransactionProvider::new(
+            storage.current_epoch,
+            epoch_duration_seconds,
+            storage.epoch_timestamp_ms,
+            config.time_based_epoch_change,
+        ));
+
         let executor_client_for_proc = if config.executor_read_enabled {
-            Arc::new(ExecutorClient::new_with_initial_index(
+            let mut client = ExecutorClient::new_with_initial_index(
                 true,
                 config.executor_commit_enabled,
                 config.executor_send_socket_path.clone(),
                 config.executor_receive_socket_path.clone(),
                 initial_next_expected,
                 Some(config.storage_path.clone()),
-            ))
+            );
+            // BACKPRESSURE: Wire go_lag_handle from SystemTransactionProvider into ExecutorClient
+            // This creates the feedback loop: flush_buffer() computes lag → updates go_lag
+            // → SystemTransactionProvider checks go_lag before emitting EndOfEpoch
+            client.set_go_lag_handle(system_transaction_provider.go_lag_handle());
+            Arc::new(client)
         } else {
             Arc::new(ExecutorClient::new(
                 false,
@@ -690,14 +705,8 @@ impl ConsensusNode {
         std::fs::create_dir_all(&db_path)?;
         parameters.db_path = db_path;
 
-        // epoch_duration_seconds is now loaded from Go via protobuf (from genesis config)
-        let epoch_duration_seconds = storage.epoch_duration_from_go;
-        let system_transaction_provider = Arc::new(DefaultSystemTransactionProvider::new(
-            storage.current_epoch,
-            epoch_duration_seconds,
-            storage.epoch_timestamp_ms,
-            config.time_based_epoch_change,
-        ));
+        // system_transaction_provider and epoch_duration_seconds are created earlier
+        // (before executor_client_for_proc) for backpressure wiring
 
         // Start authority or hold commit_consumer for SyncOnly
         let (authority, commit_consumer_holder) = if storage.is_in_committee {

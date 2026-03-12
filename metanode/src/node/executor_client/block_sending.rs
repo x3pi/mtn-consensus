@@ -339,6 +339,12 @@ impl ExecutorClient {
 
                             // Check if Go is keeping up
                             let lag = current_expected.saturating_sub(go_last_block);
+                            
+                            // BACKPRESSURE: Update go_lag_handle for SystemTransactionProvider
+                            if let Some(ref handle) = self.go_lag_handle {
+                                handle.store(lag, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            
                             if lag > 100 {
                                 warn!(
                                     "⚠️ [GO LAG] Go is {} blocks behind Rust. sent={}, go={}",

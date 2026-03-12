@@ -133,21 +133,40 @@ pub async fn transition_to_epoch_from_system_tx(
             None,
         );
 
-        // Use synced_global_exec_index as the boundary (this is when the EndOfEpoch tx was committed)
-        // Timestamp is provisional (current time) - Go will derive real timestamp from block header
-        let provisional_timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        // CRITICAL FIX: Query Go's last_block_number FIRST to get the actual block boundary
+        // Go's block number ≠ global_exec_index (GEI counts ALL commits, blockNumber counts only non-empty)
+        // Using GEI as boundary causes Go to fail looking up the block → falls back to non-deterministic timestamp
+        let go_boundary_block = match early_executor_client.get_last_block_number().await {
+            Ok(block_num) => {
+                info!(
+                    "✅ [ADVANCE EPOCH FIRST] Got Go's last_block_number={} (GEI was {})",
+                    block_num, synced_global_exec_index
+                );
+                block_num
+            }
+            Err(e) => {
+                warn!(
+                    "⚠️ [ADVANCE EPOCH FIRST] Failed to get Go's last_block_number: {}. Using synced_global_exec_index={} as fallback.",
+                    e, synced_global_exec_index
+                );
+                synced_global_exec_index // fallback (may still cause the old bug but better than crashing)
+            }
+        };
+
+        // CRITICAL FIX: Use timestamp=0 as placeholder. The correct timestamp will be
+        // derived from Go's boundary block header via get_epoch_boundary_data() later.
+        // Previously used SystemTime::now() which differed by 1ms between nodes,
+        // causing different Genesis block hashes and permanent network partition.
+        let provisional_timestamp: u64 = 0;
 
         match early_executor_client
-            .advance_epoch(new_epoch, provisional_timestamp, synced_global_exec_index)
+            .advance_epoch(new_epoch, provisional_timestamp, go_boundary_block)
             .await
         {
             Ok(_) => {
                 info!(
-                    "✅ [ADVANCE EPOCH FIRST] Go notified about epoch {} (boundary={}). Committee fetch should now work.",
-                    new_epoch, synced_global_exec_index
+                    "✅ [ADVANCE EPOCH FIRST] Go notified about epoch {} (boundary=go_block_{}, gei={}). Committee fetch should now work.",
+                    new_epoch, go_boundary_block, synced_global_exec_index
                 );
 
                 // Save checkpoint: Go has been notified
@@ -349,6 +368,48 @@ pub async fn transition_to_epoch_from_system_tx(
 
     let synced_index =
         stop_authority_and_poll_go(node, new_epoch, &executor_client, &committee_source).await?;
+
+    // ═══════════════════════════════════════════════════════════════
+    // DISK CLEANUP: Remove old epoch directories beyond epochs_to_keep.
+    // LegacyEpochStoreManager prunes in-memory stores, but the on-disk
+    // epoch directories were never cleaned up — causing unbounded growth.
+    // Each node controls its own retention via epochs_to_keep config.
+    // ═══════════════════════════════════════════════════════════════
+    if config.epochs_to_keep > 0 {
+        let keep_from = if new_epoch > config.epochs_to_keep as u64 {
+            new_epoch - config.epochs_to_keep as u64
+        } else {
+            0
+        };
+        let epochs_dir = node.storage_path.join("epochs");
+        if epochs_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&epochs_dir) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        if let Some(epoch_str) = name.strip_prefix("epoch_") {
+                            if let Ok(epoch) = epoch_str.parse::<u64>() {
+                                if epoch < keep_from {
+                                    info!(
+                                        "🗑️ [EPOCH CLEANUP] Removing old epoch {} directory \
+                                        (keep_from={}, epochs_to_keep={}, current={})",
+                                        epoch, keep_from, config.epochs_to_keep, new_epoch
+                                    );
+                                    if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+                                        warn!(
+                                            "⚠️ [EPOCH CLEANUP] Failed to remove epoch {} dir: {}",
+                                            epoch, e
+                                        );
+                                    }
+                                    // Also remove from in-memory legacy store if present
+                                    node.legacy_store_manager.remove_store(epoch);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Update state
     node.current_epoch = new_epoch;
@@ -732,60 +793,103 @@ pub(super) async fn stop_authority_and_poll_go(
     // BlockNumber only counts non-empty commits (blocks with txs), while expected_last_block
     // is global_exec_index which counts ALL commits (including empty ones).
     // Comparing BlockNumber vs GEI would NEVER match when empty commits exist.
+    //
+    // ARCHITECTURE NOTE:
+    // - Node 0 (executor, can_commit=true): Rust sends blocks to Go Master →
+    //   Go Master executes TXs (EVM) → updates GEI → broadcasts results to Sub nodes.
+    //   The sync wait ensures Go has executed ALL blocks before epoch transition.
+    // - Node 1,2,3 (non-executor, can_commit=false): Rust handles consensus sync
+    //   independently via legacy epoch store (epochs_to_keep). Go Sub receives
+    //   block data from Node 0 via network replication. Go Master does NOT execute
+    //   blocks, so GEI is never updated (always 0). Polling GEI here would deadlock.
+    let is_executor = node
+        .executor_client
+        .as_ref()
+        .map(|ec| ec.can_commit())
+        .unwrap_or(false);
+
+    if !is_executor {
+        info!(
+            "⏩ [SYNC SKIP] Non-executor node — skipping Go GEI sync wait \
+            (expected_gei={}, new_epoch={}). Rust consensus sync is independent. \
+            Go Sub receives blocks from Node 0 via network replication.",
+            expected_last_block, new_epoch
+        );
+
+        // Log epoch lag for diagnostics. Each peer decides independently how
+        // many epochs to keep (epochs_to_keep), so we only report the lag here.
+        // The actual "data unavailable" warning comes from the sync mechanism
+        // when a peer responds that it no longer stores the requested epoch.
+        let go_epoch = match node.executor_client.as_ref() {
+            Some(ec) => ec.get_current_epoch().await.unwrap_or(0),
+            None => 0,
+        };
+        let epoch_lag = new_epoch.saturating_sub(go_epoch);
+        if epoch_lag > 0 {
+            info!(
+                "📊 [EPOCH LAG] Node is {} epoch(s) behind (go_epoch={}, network_epoch={}). \
+                Rust will attempt to catch up from peers.",
+                epoch_lag, go_epoch, new_epoch
+            );
+        }
+    }
+
     let poll_interval = Duration::from_millis(100);
     let mut attempt = 0u64;
     let max_wait = Duration::from_secs(300); // 5-minute safety timeout
     let wait_start = std::time::Instant::now();
 
-    loop {
-        attempt += 1;
+    if is_executor {
+        loop {
+            attempt += 1;
 
-        // Safety timeout to prevent infinite wait
-        if wait_start.elapsed() > max_wait {
-            warn!(
-                "⏱️ [SYNC TIMEOUT] Giving up after {:?}. Go may still be processing blocks. expected_gei={}, continuing with transition...",
-                wait_start.elapsed(), expected_last_block
-            );
-            break;
-        }
+            // Safety timeout to prevent infinite wait
+            if wait_start.elapsed() > max_wait {
+                warn!(
+                    "⏱️ [SYNC TIMEOUT] Giving up after {:?}. Go may still be processing blocks. expected_gei={}, continuing with transition...",
+                    wait_start.elapsed(), expected_last_block
+                );
+                break;
+            }
 
-        match executor_client.get_last_global_exec_index().await {
-            Ok(go_last_gei) => {
-                if go_last_gei >= expected_last_block {
-                    info!(
-                        "✅ [SYNC VERIFIED] Go confirmed processing all commits: go_gei={} >= expected_gei={} (took {} attempts, {:?})",
-                        go_last_gei, expected_last_block, attempt, wait_start.elapsed()
-                    );
-                    break;
-                } else if attempt % 100 == 0 {
-                    warn!(
-                        "⏳ [SYNC WAIT] Waiting for Go to catch up: go_gei={}, expected_gei={} (waiting for {:?})",
-                        go_last_gei, expected_last_block, wait_start.elapsed()
-                    );
+            match executor_client.get_last_global_exec_index().await {
+                Ok(go_last_gei) => {
+                    if go_last_gei >= expected_last_block {
+                        info!(
+                            "✅ [SYNC VERIFIED] Go confirmed processing all commits: go_gei={} >= expected_gei={} (took {} attempts, {:?})",
+                            go_last_gei, expected_last_block, attempt, wait_start.elapsed()
+                        );
+                        break;
+                    } else if attempt % 100 == 0 {
+                        warn!(
+                            "⏳ [SYNC WAIT] Waiting for Go to catch up: go_gei={}, expected_gei={} (waiting for {:?})",
+                            go_last_gei, expected_last_block, wait_start.elapsed()
+                        );
 
-                    // If we've been waiting too long, try flushing buffer again
-                    if attempt % 300 == 0 {
-                        if let Some(ref exec_client) = node.executor_client {
-                            warn!(
-                                "🔄 [SYNC WAIT] Re-flushing buffer after {:?} of waiting...",
-                                wait_start.elapsed()
-                            );
-                            let _ = exec_client.flush_buffer().await;
+                        // If we've been waiting too long, try flushing buffer again
+                        if attempt % 300 == 0 {
+                            if let Some(ref exec_client) = node.executor_client {
+                                warn!(
+                                    "🔄 [SYNC WAIT] Re-flushing buffer after {:?} of waiting...",
+                                    wait_start.elapsed()
+                                );
+                                let _ = exec_client.flush_buffer().await;
+                            }
                         }
                     }
                 }
-            }
-            Err(e) => {
-                if attempt % 100 == 0 {
-                    error!(
-                        "❌ [SYNC POLL] Cannot reach Go (attempt {}): {}. Will keep trying...",
-                        attempt, e
-                    );
+                Err(e) => {
+                    if attempt % 100 == 0 {
+                        error!(
+                            "❌ [SYNC POLL] Cannot reach Go (attempt {}): {}. Will keep trying...",
+                            attempt, e
+                        );
+                    }
                 }
             }
+            tokio::time::sleep(poll_interval).await;
         }
-        tokio::time::sleep(poll_interval).await;
-    }
+    } // end if is_executor
 
     // Fetch final synced_index from Go (use GEI, not block number)
     // CRITICAL FIX: Use max(go_gei, expected_last_block) to prevent epoch_base_index regression!
