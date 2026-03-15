@@ -415,11 +415,22 @@ pub async fn transition_to_epoch_from_system_tx(
     node.current_epoch = new_epoch;
     node.current_commit_index.store(0, Ordering::SeqCst);
 
+    // CRITICAL: Use max(synced_index, synced_global_exec_index) as epoch base.
+    // synced_index comes from stop_authority_and_poll_go() which may return 0
+    // on non-executor nodes. synced_global_exec_index comes from catch_up_to_network_epoch()
+    // which correctly returns the boundary block (e.g., 1624 for epoch 5).
+    let effective_synced = std::cmp::max(synced_index, synced_global_exec_index);
+    if effective_synced > synced_index {
+        info!(
+            "📊 [SYNC FLOOR] Using catch-up boundary {} instead of Go-reported {} as epoch base",
+            synced_global_exec_index, synced_index
+        );
+    }
     {
         let mut g = node.shared_last_global_exec_index.lock().await;
-        *g = synced_index;
+        *g = effective_synced;
     }
-    node.last_global_exec_index = synced_index;
+    node.last_global_exec_index = effective_synced;
 
     // =========================================================================
     // MEMORY LEAK FIX: Clear committed_transaction_hashes on epoch transition
@@ -891,50 +902,52 @@ pub(super) async fn stop_authority_and_poll_go(
         }
     } // end if is_executor
 
-    // Fetch final synced_index from Go (use GEI, not block number)
-    // CRITICAL FIX: Use max(go_gei, expected_last_block) to prevent epoch_base_index regression!
-    // If Go returns gei=0 (stale proto, timing issue, or restart), we MUST NOT go backward.
-    // expected_last_block is the GEI that the commit processor already sent to Go in this epoch,
-    // so it is the correct floor for the next epoch's base index.
-    let raw_synced = if let Ok(go_last_gei) = executor_client.get_last_global_exec_index().await {
+    // Fetch final synced_index from Go
+    // Try GEI first (works on executor/Node 0), then block_number as fallback
+    let raw_synced_gei = executor_client.get_last_global_exec_index().await.unwrap_or(0);
+    // CRITICAL FIX: Also get block_number as floor!
+    // On non-executor nodes (Node 1,2,3), GEI is ALWAYS 0 because only Node 0
+    // updates GEI when it executes transactions. But sync_blocks correctly
+    // updates block_number via storage.UpdateLastBlockNumber(). Without this
+    // floor, epoch_base_index=0 after snapshot restore, causing commit_syncer
+    // to search commits in the wrong global range.
+    let raw_synced_block = executor_client.get_last_block_number().await.unwrap_or(0);
+    let raw_synced = std::cmp::max(raw_synced_gei, raw_synced_block);
+
+    info!(
+        "📊 [SYNC] Go state: gei={}, block={}, using max={}",
+        raw_synced_gei, raw_synced_block, raw_synced
+    );
+
+    // Additional floors: committee source and expected_last_block
+    let committee_floor = if committee_source.last_block > 0 {
         info!(
-            "📊 [SYNC] Go last global_exec_index (from RPC): {}",
-            go_last_gei
-        );
-        go_last_gei
-    } else if committee_source.last_block > 0 {
-        info!(
-            "📊 [SYNC] Using committee source last block: {} (from {})",
+            "📊 [SYNC] Committee source last block: {} (from {})",
             committee_source.last_block,
-            if committee_source.is_peer {
-                "peer"
-            } else {
-                "local"
-            }
+            if committee_source.is_peer { "peer" } else { "local" }
         );
         committee_source.last_block
     } else {
-        warn!(
-            "❌ [SYNC] Failed to get last block from Go, using node last_global_exec_index {}",
-            node.last_global_exec_index
-        );
-        node.last_global_exec_index
+        0
     };
 
     // SAFETY FLOOR: Never let synced_index go below what the commit processor already sent.
     // This prevents the catastrophic bug where epoch_base_index=0 after epoch transition
     // when Go's RPC returns stale/zero GEI.
-    let synced_index = std::cmp::max(raw_synced, expected_last_block);
-    if raw_synced < expected_last_block {
+    let synced_index = *[raw_synced, expected_last_block, committee_floor]
+        .iter()
+        .max()
+        .unwrap();
+    if synced_index > raw_synced {
         warn!(
-            "🚨 [SYNC SAFETY] Go returned gei={} < expected_last_block={}. Using expected_last_block as floor to prevent epoch_base regression!",
-            raw_synced, expected_last_block
+            "🚨 [SYNC SAFETY] Go returned max(gei,block)={} < floor={}. Using floor to prevent epoch_base regression!",
+            raw_synced, synced_index
         );
     }
 
     info!(
-        "📊 Snapshot: Last committed block from Go: {} (raw_from_go={}, expected_floor={})",
-        synced_index, raw_synced, expected_last_block
+        "📊 Snapshot: Last committed block from Go: {} (raw_gei={}, raw_block={}, expected_floor={}, committee_floor={})",
+        synced_index, raw_synced_gei, raw_synced_block, expected_last_block, committee_floor
     );
     Ok(synced_index)
 }
