@@ -53,6 +53,8 @@ struct StorageSetup {
     network_keypair: consensus_config::NetworkKeyPair,
     /// Epoch duration in seconds, loaded from Go via protobuf (from genesis.json)
     epoch_duration_from_go: u64,
+    /// Indicates if the node's local Go state is significantly behind the peer network
+    is_lagging: bool,
 }
 
 /// Results from consensus setup phase.
@@ -133,14 +135,55 @@ impl ConsensusNode {
             Some(config.storage_path.clone()),
         ));
 
-        let latest_block_number = match executor_client.get_last_block_number().await {
-            Ok(n) => n,
-            Err(e) => {
-                warn!("⚠️ [STARTUP] Failed to fetch latest block from Go: {}. Attempting to read persisted value.", e);
-                super::executor_client::read_last_block_number(&config.storage_path)
-                    .await
-                    .unwrap_or(0)
+        // SNAPSHOT RESTORE FIX: Go Master needs time to load DB after snapshot restore.
+        // Without retry, Rust gets block=0/epoch=0 and initializes consensus at epoch 0,
+        // making it permanently stuck and unable to catch up with the cluster.
+        // Retry up to 30 times (2s intervals = 60s max) waiting for Go to report block > 0.
+        let latest_block_number = {
+            let max_retries = 30;
+            let retry_interval = std::time::Duration::from_secs(2);
+            let mut block_num = 0u64;
+            
+            for attempt in 1..=max_retries {
+                match executor_client.get_last_block_number().await {
+                    Ok(n) => {
+                        block_num = n;
+                        if n > 0 {
+                            info!(
+                                "✅ [STARTUP] Got block number {} from Go (attempt {})",
+                                n, attempt
+                            );
+                            break;
+                        } else if attempt < max_retries {
+                            info!(
+                                "⏳ [STARTUP] Go returned block=0 (attempt {}/{}). Go may still be loading DB after snapshot restore. Retrying in {}s...",
+                                attempt, max_retries, retry_interval.as_secs()
+                            );
+                            tokio::time::sleep(retry_interval).await;
+                        }
+                    }
+                    Err(e) => {
+                        if attempt < max_retries {
+                            warn!(
+                                "⚠️ [STARTUP] Failed to fetch block from Go (attempt {}/{}): {}. Retrying...",
+                                attempt, max_retries, e
+                            );
+                            tokio::time::sleep(retry_interval).await;
+                        } else {
+                            warn!("⚠️ [STARTUP] Failed to fetch latest block from Go after {} attempts: {}. Attempting to read persisted value.", max_retries, e);
+                            block_num = super::executor_client::read_last_block_number(&config.storage_path)
+                                .await
+                                .unwrap_or(0);
+                        }
+                    }
+                }
             }
+            
+            if block_num == 0 {
+                warn!("⚠️ [STARTUP] Go still reporting block=0 after {} retries. This may be a fresh node or Go failed to load snapshot data.", max_retries);
+            }
+            
+            block_num
         };
 
         // PEER EPOCH DISCOVERY: Query TCP peers to get correct epoch (with retry)
@@ -156,10 +199,62 @@ impl ConsensusNode {
         let is_sync_only = matches!(config.initial_node_mode, NodeMode::SyncOnly);
         let (go_epoch, peer_last_block, best_socket) = if is_sync_only {
             // SyncOnly: ALWAYS use local Go epoch to prevent deadlock
-            let epoch = executor_client
-                .get_current_epoch()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to fetch current epoch from Go: {}", e))?;
+            // SNAPSHOT RESTORE FIX: If we already know block > 0 (from retry above),
+            // Go should also report epoch > 0. Retry until epoch matches.
+            let epoch = if latest_block_number > 0 {
+                let max_epoch_retries = 30;
+                let retry_interval = std::time::Duration::from_secs(2);
+                let mut final_epoch = 0u64;
+                
+                for attempt in 1..=max_epoch_retries {
+                    match executor_client.get_current_epoch().await {
+                        Ok(e) => {
+                            final_epoch = e;
+                            if e > 0 {
+                                info!(
+                                    "✅ [SYNC-ONLY STARTUP] Got epoch {} from Go (attempt {}, block={})",
+                                    e, attempt, latest_block_number
+                                );
+                                break;
+                            } else if attempt < max_epoch_retries {
+                                info!(
+                                    "⏳ [SYNC-ONLY STARTUP] Go returned epoch=0 but block={}. DB still loading. Retrying in {}s... (attempt {}/{})",
+                                    latest_block_number, retry_interval.as_secs(), attempt, max_epoch_retries
+                                );
+                                tokio::time::sleep(retry_interval).await;
+                            }
+                        }
+                        Err(e) => {
+                            if attempt < max_epoch_retries {
+                                warn!(
+                                    "⚠️ [SYNC-ONLY STARTUP] Failed to get epoch (attempt {}/{}): {}. Retrying...",
+                                    attempt, max_epoch_retries, e
+                                );
+                                tokio::time::sleep(retry_interval).await;
+                            } else {
+                                return Err(anyhow::anyhow!(
+                                    "Failed to fetch epoch from Go after {} attempts: {}",
+                                    max_epoch_retries, e
+                                ));
+                            }
+                        }
+                    }
+                }
+                
+                if final_epoch == 0 && latest_block_number > 0 {
+                    warn!(
+                        "⚠️ [SYNC-ONLY STARTUP] Go still reporting epoch=0 despite block={}. Snapshot data may not have loaded correctly.",
+                        latest_block_number
+                    );
+                }
+                final_epoch
+            } else {
+                executor_client
+                    .get_current_epoch()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to fetch current epoch from Go: {}", e))?
+            };
+            
             info!(
                 "📋 [SYNC-ONLY STARTUP] Using LOCAL Go epoch {} (skipping peer discovery to prevent deadlock)",
                 epoch
@@ -348,16 +443,74 @@ impl ConsensusNode {
                         }
                         Err(e2) => {
                             warn!(
-                                "⚠️ [STARTUP] No epoch boundary available (local epoch {} error: {}). Using epoch 0 genesis.",
+                                "⚠️ [STARTUP] No epoch boundary available (local epoch {} error: {}). Trying genesis validators...",
                                 local_epoch, e2
                             );
-                            let (genesis_validators, _genesis_epoch, _) = executor_client
-                                .get_validators_at_block(0)
-                                .await
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Failed to fetch genesis validators: {}", e)
-                                })?;
-                            (0u64, 0u64, 0u64, genesis_validators, 900u64)
+                            // Try local Go first
+                            match executor_client.get_validators_at_block(0).await {
+                                Ok((genesis_validators, _genesis_epoch, _)) => {
+                                    (0u64, 0u64, 0u64, genesis_validators, 900u64)
+                                }
+                                Err(e3) => {
+                                    // LOCAL GO FAILED (PebbleDB corrupted after snapshot restore)
+                                    // FALLBACK: Query peers for epoch 0 boundary data
+                                    warn!(
+                                        "⚠️ [STARTUP] Local Go genesis validators failed: {}. Querying peers...",
+                                        e3
+                                    );
+                                    if !config.peer_rpc_addresses.is_empty() {
+                                        let mut peer_validators = None;
+                                        for peer_addr in &config.peer_rpc_addresses {
+                                            match crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                                                peer_addr, 0,
+                                            ).await {
+                                                Ok(boundary) => {
+                                                    info!(
+                                                        "✅ [STARTUP] Got epoch 0 boundary from peer {}: {} validators",
+                                                        peer_addr, boundary.validators.len()
+                                                    );
+                                                    peer_validators = Some(boundary);
+                                                    break;
+                                                }
+                                                Err(pe) => {
+                                                    warn!("⚠️ [STARTUP] Peer {} epoch 0 boundary failed: {}", peer_addr, pe);
+                                                }
+                                            }
+                                        }
+                                        if let Some(boundary) = peer_validators {
+                                            use super::executor_client::proto::ValidatorInfo as ProtoVI;
+                                            let validators: Vec<ProtoVI> = boundary.validators.into_iter().map(|v| {
+                                                ProtoVI {
+                                                    address: v.address,
+                                                    stake: v.stake.to_string(),
+                                                    name: v.name,
+                                                    authority_key: v.authority_key,
+                                                    protocol_key: v.protocol_key,
+                                                    network_key: v.network_key,
+                                                    description: String::new(),
+                                                    website: String::new(),
+                                                    image: String::new(),
+                                                    commission_rate: 0,
+                                                    min_self_delegation: String::new(),
+                                                    accumulated_rewards_per_share: String::new(),
+                                                    p2p_address: String::new(),
+                                                }
+                                            }).collect();
+                                            (0u64, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64)
+                                        } else {
+                                            return Err(anyhow::anyhow!(
+                                                "Failed to fetch genesis validators from both local Go and peers. Local: {}, No peers returned data.",
+                                                e3
+                                            ));
+                                        }
+                                    } else {
+                                        return Err(anyhow::anyhow!(
+                                            "Failed to fetch genesis validators: {} (no peers configured for fallback)",
+                                            e3
+                                        ));
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -392,7 +545,7 @@ impl ConsensusNode {
         );
 
         // EXECUTION INDEX SYNC
-        let last_global_exec_index = Self::calculate_last_global_exec_index(
+        let (last_global_exec_index, is_lagging) = Self::calculate_last_global_exec_index(
             config,
             &executor_client,
             &best_socket,
@@ -469,18 +622,20 @@ impl ConsensusNode {
             protocol_keypair,
             network_keypair,
             epoch_duration_from_go,
+            is_lagging,
         })
     }
 
     /// Determines the effective last global execution index from local Go, peers, and persisted state.
+    /// Returns (effective_index, is_lagging).
     async fn calculate_last_global_exec_index(
         config: &NodeConfig,
         executor_client: &Arc<ExecutorClient>,
         best_socket: &str,
         peer_last_block: u64,
-    ) -> u64 {
+    ) -> (u64, bool) {
         if !config.executor_read_enabled {
-            return 0;
+            return (0, false);
         }
 
         let local_go_block = executor_client.get_last_block_number().await.unwrap_or(0);
@@ -516,19 +671,21 @@ impl ConsensusNode {
             if local_go_block > peer_last_block + 5 {
                 warn!("🚨 [STARTUP] STALE CHAIN DETECTED: Local ({}) is ahead of Peer ({})! Forcing resync from Peer.", 
                        local_go_block, peer_last_block);
-                peer_last_block
+                (peer_last_block, false)
             } else if local_go_block < peer_last_block.saturating_sub(5) {
+                let lag = peer_last_block - local_go_block;
                 info!(
                     "ℹ️ [STARTUP] Local Go Master ({}) is behind Peer ({}) by {} blocks. Using Local {} to trigger recovery/backfill.",
-                    local_go_block, peer_last_block, peer_last_block - local_go_block, local_go_block
+                    local_go_block, peer_last_block, lag, local_go_block
                 );
-                local_go_block
+                // Flag as lagging if behind by more than 50 blocks
+                (local_go_block, lag > 50)
             } else {
                 info!(
                     "✅ [STARTUP] Local and Peer are in sync (Local={}, Peer={}). Using Local Go as authoritative.",
                     local_go_block, peer_last_block
                 );
-                local_go_block
+                (local_go_block, false)
             }
         } else {
             if persisted_index > local_go_block {
@@ -539,7 +696,7 @@ impl ConsensusNode {
                 "📊 [STARTUP] No peer reference, using Local Go Last Block: {}",
                 local_go_block
             );
-            local_go_block
+            (local_go_block, false)
         }
     }
 
@@ -734,7 +891,8 @@ impl ConsensusNode {
         // (before executor_client_for_proc) for backpressure wiring
 
         // Start authority or hold commit_consumer for SyncOnly
-        let (authority, commit_consumer_holder) = if storage.is_in_committee {
+        let start_as_validator = storage.is_in_committee && !storage.is_lagging;
+        let (authority, commit_consumer_holder) = if start_as_validator {
             info!("🚀 Starting consensus authority node...");
             (
                 Some(
@@ -762,8 +920,12 @@ impl ConsensusNode {
                 None,
             )
         } else {
-            info!("🔄 Starting as sync-only node");
-            info!("📡 Keeping commit_consumer alive for SyncOnly mode to prevent channel close");
+            if storage.is_in_committee {
+                info!("🔄 Node is a Validator but is lagging behind. Starting as SyncOnly temporarily for catch-up...");
+            } else {
+                info!("🔄 Starting as sync-only node");
+            }
+            info!("📡 Keeping commit_consumer alive for SyncOnly/Catch-up mode to prevent channel close");
             (None, Some(commit_consumer))
         };
 
@@ -869,7 +1031,11 @@ impl ConsensusNode {
                 config.epochs_to_keep,
             )),
             node_mode: if storage.is_in_committee {
-                NodeMode::Validator
+                if storage.is_lagging {
+                    NodeMode::SyncingUp
+                } else {
+                    NodeMode::Validator
+                }
             } else {
                 NodeMode::SyncOnly
             },

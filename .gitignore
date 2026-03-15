@@ -295,3 +295,14 @@ temp_script.sh
 
 # Binary executables
 metanode/bin/
+
+# Root-level runtime output and logs
+/rust_node.log
+/full_system.log
+/startup.log
+/system_run.log
+/nohup.out
+metanode/rust_run_log.out
+
+# Scratch test scripts
+/test_*.sh

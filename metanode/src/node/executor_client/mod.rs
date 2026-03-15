@@ -264,9 +264,9 @@ impl ExecutorClient {
             return;
         }
 
-        // Query Go Master for last_global_exec_index (using get_validators_at_block as a carrier)
-        let last_global_exec_index_opt = match self.get_validators_at_block(0).await {
-            Ok((_, _, gei)) => Some(gei),
+        // Query Go Master for last_global_exec_index directly
+        let last_global_exec_index_opt = match self.get_last_global_exec_index().await {
+            Ok(gei) => Some(gei),
             Err(e) => {
                 warn!("⚠️  [INIT] Failed to get last block number from Go Master: {}. Attempting to read persisted value.", e);
                 // Fallback to persisted last block number if available

@@ -458,7 +458,7 @@ pub async fn fetch_blocks_from_peer(
     );
 
     let mut all_blocks = Vec::new();
-    let batch_size = 5u64; // Smaller batches to avoid 1GB+ JSON payloads
+    let batch_size = 100u64; // Each block is ~67 bytes, 100 blocks ≈ 7KB
     let mut current_from = from_block;
 
     while current_from <= to_block {

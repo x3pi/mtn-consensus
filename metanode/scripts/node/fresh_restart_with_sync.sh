@@ -167,7 +167,11 @@ cd "$GO_SIMPLE_ROOT"
 for i in "${!ALL_NODES[@]}"; do
     id=${ALL_NODES[$i]}; DATA="${GO_DATA_DIR[$i]}"
     XAPIAN="sample/$DATA/data/data/xapian_node"
-    PPROF_ARG=""; [ "$id" -eq "0" ] && PPROF_ARG="--pprof-addr=localhost:6060"
+    if [ "$id" -eq "0" ]; then
+        PPROF_ARG="--pprof-addr=localhost:6060"
+    else
+        PPROF_ARG="--pprof-addr="
+    fi
     
     if [ "$id" -eq 4 ]; then
         echo -e "  🚀 Go Master $id ${CYAN}(SyncOnly)${NC}..."

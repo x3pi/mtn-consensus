@@ -256,6 +256,33 @@ impl<C: NetworkClient> CommitSyncer<C> {
         // Update synced_commit_index periodically to make sure it is no smaller than
         // local commit index.
         self.synced_commit_index = self.synced_commit_index.max(local_commit_index);
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // COLD-START FAST-FORWARD (Snapshot Restore Support)
+        // When a node starts fresh from a Go snapshot (local_commit=0) and the
+        // network is far ahead, skip historical consensus commits. Go already has
+        // the blockchain state from the snapshot — we only need recent commits so
+        // the DAG can continue. Without this, verify_commits() fails with
+        // "Not enough votes (0)" because the committee from the stale epoch can't
+        // validate vote blocks from the current epoch.
+        // ═══════════════════════════════════════════════════════════════════════
+        if local_commit_index == 0 && self.synced_commit_index == 0 && quorum_commit_index > 200 {
+            // SNAPSHOT RESTORE: Skip ALL historical consensus commits.
+            // Go already has the complete blockchain state from the snapshot.
+            // Only keep a tiny window (5 commits) so the DAG can bootstrap from
+            // live block sync. Using a larger window (e.g., batch_size=200) causes
+            // the block_manager to hit the suspended blocks limit (4000) because
+            // DAG is missing predecessor blocks for those historical commits.
+            let small_window = 5u32;
+            let fast_forward_to = quorum_commit_index.saturating_sub(small_window);
+            warn!(
+                "🚀 [COLD-START] Fast-forwarding synced_commit_index: 0 → {} (quorum={}, window={}). \
+                 Go already has historical state from snapshot — skipping all historical consensus.",
+                fast_forward_to, quorum_commit_index, small_window
+            );
+            self.synced_commit_index = fast_forward_to;
+        }
+
         let unhandled_commits_threshold = self.unhandled_commits_threshold();
         // Throttle noisy logs:
         // - When healthy (no lag): log at most once per 120s.

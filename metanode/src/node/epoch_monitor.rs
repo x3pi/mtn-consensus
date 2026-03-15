@@ -102,6 +102,46 @@ pub fn start_unified_epoch_monitor(
                     continue;
                 };
 
+            // ═══════════════════════════════════════════════════════════════
+            // BLOCK SYNC: Proactively sync application blocks from peers.
+            // After snapshot restore, Rust consensus may be severely behind
+            // (e.g. lag=5249 commits) and unable to push blocks to Go.
+            // This ensures Go always has the latest application blocks
+            // regardless of Rust consensus state.
+            // ═══════════════════════════════════════════════════════════════
+            {
+                let go_block = client_arc.get_last_block_number().await.unwrap_or(0);
+                let peer_rpc = config_clone.peer_rpc_addresses.clone();
+                if !peer_rpc.is_empty() {
+                    let fetch_from = go_block + 1;
+                    let fetch_to = go_block + 100; // Fetch in batches of 100
+                    match crate::network::peer_rpc::fetch_blocks_from_peer(
+                        &peer_rpc, fetch_from, fetch_to,
+                    ).await {
+                        Ok(blocks) if !blocks.is_empty() => {
+                            let count = blocks.len();
+                            match client_arc.sync_blocks(blocks).await {
+                                Ok((synced, last_block)) => {
+                                    info!(
+                                        "✅ [EPOCH MONITOR] Block sync: fetched {} blocks, synced {} to Go (last_block={})",
+                                        count, synced, last_block
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ [EPOCH MONITOR] Block sync: sync_blocks failed: {}", e);
+                                }
+                            }
+                        }
+                        Ok(_) => {
+                            // No blocks available from peers — Go is caught up
+                        }
+                        Err(e) => {
+                            debug!("⚠️ [EPOCH MONITOR] Block sync: fetch failed: {}", e);
+                        }
+                    }
+                }
+            }
+
             // 4. Check if transition needed (NETWORK epoch ahead of Rust)
             // Use network_epoch instead of local_go_epoch!
             if network_epoch <= rust_epoch {
@@ -110,17 +150,108 @@ pub fn start_unified_epoch_monitor(
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // CRITICAL FIX: SyncOnly nodes must NOT trigger epoch transitions
-            // from epoch_monitor! SyncOnly nodes sync blocks sequentially via
-            // sync_loop → blocks reach boundary → check_and_process_pending_epoch_transitions
-            // handles it naturally. If epoch_monitor triggers transition early,
-            // it causes DEADLOCK: Go GEI=0 but deferred transition waits for GEI>=boundary.
+            // SyncOnly nodes: advance Go Master epoch by fetching blocks + advance_epoch
+            // Previously this was a complete `continue` which left Go permanently behind.
+            // SyncOnly nodes don't run full transitions, but Go must advance epoch
+            // to serve blocks at the correct epoch to other nodes and to itself.
             // ═══════════════════════════════════════════════════════════════
             if matches!(_current_mode, crate::node::NodeMode::SyncOnly) {
-                debug!(
-                    "📋 [EPOCH MONITOR] SyncOnly mode: skipping epoch transition {} → {} (sync_loop handles transitions via block sync)",
-                    rust_epoch, network_epoch
+                // Skip if Go is already caught up
+                if local_go_epoch >= network_epoch {
+                    continue;
+                }
+                info!(
+                    "🔄 [EPOCH MONITOR] SyncOnly mode: advancing Go epoch {} → {} (fetching blocks + advance_epoch)",
+                    local_go_epoch, network_epoch
                 );
+
+                // Fetch boundary data from peers
+                let peer_rpc = config_clone.peer_rpc_addresses.clone();
+                if peer_rpc.is_empty() {
+                    warn!("[EPOCH MONITOR] SyncOnly: no peer_rpc_addresses, cannot advance Go epoch");
+                    continue;
+                }
+
+                // Advance Go through each intermediate epoch sequentially
+                let mut current_go_epoch = local_go_epoch;
+                for target_epoch in (local_go_epoch + 1)..=network_epoch {
+                    // Get boundary data from peer for this epoch
+                    let mut boundary_found = false;
+                    for peer_addr in &peer_rpc {
+                        match crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                            peer_addr, target_epoch,
+                        ).await {
+                            Ok(data) => {
+                                info!(
+                                    "📦 [EPOCH MONITOR] SyncOnly: epoch {} boundary={}, timestamp={}ms (from {})",
+                                    target_epoch, data.boundary_block, data.timestamp_ms, peer_addr
+                                );
+
+                                // Fetch blocks up to boundary from peers
+                                let go_block = client_arc.get_last_block_number().await.unwrap_or(0);
+                                if go_block < data.boundary_block {
+                                    // Fetch missing blocks
+                                    match crate::network::peer_rpc::fetch_blocks_from_peer(
+                                        &peer_rpc, go_block + 1, data.boundary_block,
+                                    ).await {
+                                        Ok(blocks) if !blocks.is_empty() => {
+                                            match client_arc.sync_blocks(blocks).await {
+                                                Ok((synced, last)) => {
+                                                    info!(
+                                                        "✅ [EPOCH MONITOR] SyncOnly: synced {} blocks to Go (last: {})",
+                                                        synced, last
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    warn!("⚠️ [EPOCH MONITOR] SyncOnly: sync_blocks failed: {}", e);
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                // Advance Go epoch
+                                if current_go_epoch < target_epoch {
+                                    match client_arc.advance_epoch(target_epoch, data.timestamp_ms, data.boundary_block).await {
+                                        Ok(_) => {
+                                            info!(
+                                                "✅ [EPOCH MONITOR] SyncOnly: advanced Go to epoch {} (boundary={})",
+                                                target_epoch, data.boundary_block
+                                            );
+                                            current_go_epoch = target_epoch;
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "⚠️ [EPOCH MONITOR] SyncOnly: failed to advance Go to epoch {}: {}",
+                                                target_epoch, e
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                boundary_found = true;
+                                break;
+                            }
+                            Err(e) => {
+                                debug!(
+                                    "[EPOCH MONITOR] SyncOnly: peer {} failed for epoch {}: {}",
+                                    peer_addr, target_epoch, e
+                                );
+                            }
+                        }
+                    }
+
+                    if !boundary_found {
+                        warn!(
+                            "⚠️ [EPOCH MONITOR] SyncOnly: no peer had boundary for epoch {}. Stopping at epoch {}.",
+                            target_epoch, current_go_epoch
+                        );
+                        break;
+                    }
+                }
+
                 continue;
             }
 

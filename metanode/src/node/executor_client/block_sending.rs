@@ -79,10 +79,15 @@ impl ExecutorClient {
             }
             // Don't insert yet - insert only after successful send
         }
+
         // Convert CommittedSubDag to protobuf CommittedEpochData
-        // CRITICAL FORK-SAFETY: Include global_exec_index and commit_index for deterministic ordering
-        let epoch_data_bytes =
-            self.convert_to_protobuf(subdag, epoch, global_exec_index, leader_address)?;
+        // OPTIMIZATION: For empty commits (0 transactions), use fast-path that bypasses
+        // the expensive per-tx hash/filter/sort logic in convert_to_protobuf
+        let epoch_data_bytes = if total_tx_before == 0 {
+            self.convert_to_protobuf_empty(subdag, epoch, global_exec_index, leader_address)?
+        } else {
+            self.convert_to_protobuf(subdag, epoch, global_exec_index, leader_address)?
+        };
 
         // Count total transactions after conversion (should match before)
         let total_tx: usize = total_tx_before;
@@ -179,6 +184,7 @@ impl ExecutorClient {
     /// Flush buffered blocks in sequential order
     /// This ensures Go executor receives blocks in the correct order even if Rust sends them out-of-order
     /// CRITICAL: This function will send all consecutive commits starting from next_expected_index
+    /// OPTIMIZATION: Batches consecutive socket writes and reduces lock contention
     pub async fn flush_buffer(&self) -> Result<()> {
         // Connect if needed
         if let Err(e) = self.connect().await {
@@ -200,9 +206,6 @@ impl ExecutorClient {
         }
 
         // CRITICAL: Do NOT skip blocks - ensure all blocks are sent sequentially
-        // If next_expected is behind, it means blocks are missing - we must wait for them
-        // Do not skip to min_buffered as this would break sequential ordering
-        // Instead, log a warning and let the system handle missing blocks through retry mechanism
         {
             let buffer = self.send_buffer.lock().await;
             let next_expected = self.next_expected_index.lock().await;
@@ -210,22 +213,13 @@ impl ExecutorClient {
                 let min_buffered = *buffer.keys().next().unwrap_or(&0);
                 let gap = min_buffered.saturating_sub(*next_expected);
 
-                // CRITICAL FIX (2026-02-13): Auto-recover from ANY gap, not just large ones (was > 100).
-                // A gap of even 1 block means next_expected is wrong (e.g., from stale epoch boundary).
-                // The off-by-one bug in epoch_boundary_block produces a gap of exactly 1, causing
-                // the buffer to wait forever for a block that was already processed in the previous epoch.
-                // Syncing with Go (SINGLE SOURCE OF TRUTH) immediately recovers from this.
                 if gap > 100 {
-                    // PERFORMANCE FIX: Only sync with Go for LARGE gaps (>100).
-                    // Small gaps are normal during high throughput and resolve as blocks arrive.
-                    // Instead of blocking consensus (which causes 20-60s delays), we spawn a background task.
                     drop(buffer);
                     drop(next_expected);
 
                     warn!("⚠️  [SEQUENTIAL-BUFFER] Large gap detected: min_buffered={}, gap={}. Syncing with Go using fast 2-second timeout...", 
                         min_buffered, gap);
 
-                    // Add a strict outer timeout to get_last_block_number to ensure it never hangs consensus
                     let sync_future = self.get_last_block_number();
                     if let Ok(Ok(go_last_block)) =
                         tokio::time::timeout(tokio::time::Duration::from_secs(2), sync_future).await
@@ -259,130 +253,184 @@ impl ExecutorClient {
             }
         }
 
-        // Send all consecutive blocks starting from next_expected
-        loop {
-            // Get current next_expected and check if we have that block
-            let current_expected = {
-                let next_expected = self.next_expected_index.lock().await;
-                *next_expected
-            };
+        // ═══════════════════════════════════════════════════════════════════
+        // BATCHED FLUSH: Collect consecutive blocks and write them in a
+        // single batched operation. This reduces socket flushes from N to 1
+        // and batches lock operations for sent_indices and persistence.
+        // ═══════════════════════════════════════════════════════════════════
+        const BATCH_WRITE_LIMIT: usize = 500; // Max blocks per batch write
+        const PERSIST_INTERVAL: u64 = 100; // Persist to disk every N commits
 
-            // Try to get the block for current_expected
-            let block_data = {
-                let mut buffer = self.send_buffer.lock().await;
-                buffer.remove(&current_expected)
-            };
-
-            if let Some((epoch_data_bytes, epoch, commit_index)) = block_data {
-                // This is the next expected block - send it immediately
-                trace!("📤 [SEQUENTIAL-BUFFER] Sending block: global_exec_index={}, commit_index={}, epoch={}, size={} bytes",
-                    current_expected, commit_index, epoch, epoch_data_bytes.len());
-                if let Err(e) = self
-                    .send_block_data(&epoch_data_bytes, current_expected, epoch, commit_index)
-                    .await
-                {
-                    warn!("⚠️  [SEQUENTIAL-BUFFER] Failed to send block global_exec_index={}: {}, re-adding to buffer", 
-                        current_expected, e);
-                    // Re-add to buffer for retry
-                    let mut buffer_retry = self.send_buffer.lock().await;
-                    buffer_retry.insert(current_expected, (epoch_data_bytes, epoch, commit_index));
-                    return Ok(());
+        // Phase 1: Collect consecutive blocks from buffer
+        let mut batch: Vec<(u64, Vec<u8>, u64, u32)> = Vec::new(); // (global_exec_index, data, epoch, commit_index)
+        {
+            let mut buffer = self.send_buffer.lock().await;
+            let next_expected = self.next_expected_index.lock().await;
+            let mut idx = *next_expected;
+            while batch.len() < BATCH_WRITE_LIMIT {
+                if let Some((data, epoch, commit_index)) = buffer.remove(&idx) {
+                    batch.push((idx, data, epoch, commit_index));
+                    idx += 1;
+                } else {
+                    break; // Gap — stop collecting
                 }
-
-                // Successfully sent, increment next_expected and persist
-                {
-                    let mut next_expected = self.next_expected_index.lock().await;
-                    *next_expected += 1;
-                    trace!("✅ [SEQUENTIAL-BUFFER] Successfully sent block global_exec_index={}, next_expected={}", 
-                        current_expected, *next_expected);
-
-                    // DUAL-STREAM TRACKING: Mark this index as successfully sent
-                    // This prevents duplicate sends from both Consensus and Sync streams
-                    {
-                        let mut sent = self.sent_indices.lock().await;
-                        sent.insert(current_expected);
-                        // Limit memory: only keep last 10000 indices
-                        if sent.len() > 10000 {
-                            if let Some(&min_idx) = sent.iter().min() {
-                                sent.remove(&min_idx);
-                            }
-                        }
-                    }
-
-                    // PERSIST: Save last successfully sent index for crash recovery
-                    if let Some(ref storage_path) = self.storage_path {
-                        if let Err(e) =
-                            persist_last_sent_index(storage_path, current_expected, commit_index)
-                                .await
-                        {
-                            warn!(
-                                "⚠️ [PERSIST] Failed to persist last_sent_index={}: {}",
-                                current_expected, e
-                            );
-                        }
-                    }
-
-                    // GO VERIFICATION: Periodically verify Go actually received blocks
-                    // This detects forks where Go's state diverges from what Rust sent
-                    if current_expected % GO_VERIFICATION_INTERVAL == 0 {
-                        if let Ok(go_last_block) = self.get_last_block_number().await {
-                            let mut last_verified = self.last_verified_go_index.lock().await;
-
-                            // FORK DETECTION: Go's block should never decrease
-                            if go_last_block < *last_verified {
-                                error!("🚨 [FORK DETECTED] Go's block number DECREASED! last_verified={}, go_now={}. CRITICAL: Possible fork or Go state corruption!",
-                                    *last_verified, go_last_block);
-                            }
-
-                            // Update last verified
-                            *last_verified = go_last_block;
-
-                            // Check if Go is keeping up
-                            let lag = current_expected.saturating_sub(go_last_block);
-                            
-                            // BACKPRESSURE: Update go_lag_handle for SystemTransactionProvider
-                            if let Some(ref handle) = self.go_lag_handle {
-                                handle.store(lag, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            
-                            if lag > 100 {
-                                warn!(
-                                    "⚠️ [GO LAG] Go is {} blocks behind Rust. sent={}, go={}",
-                                    lag, current_expected, go_last_block
-                                );
-                            } else {
-                                trace!(
-                                    "✓ [GO VERIFY] Go verified at block {}. Rust sent={}, lag={}",
-                                    go_last_block,
-                                    current_expected,
-                                    lag
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // CRITICAL: Continue loop to try sending next block immediately
-                // Don't break here - there might be more consecutive blocks to send
-            } else {
-                // No more consecutive blocks to send (gap detected)
-                // Log and break - will retry when next block arrives
-                {
-                    let buffer = self.send_buffer.lock().await;
-                    if !buffer.is_empty() {
-                        let min_buffered = *buffer.keys().next().unwrap_or(&0);
-                        let gap = min_buffered.saturating_sub(current_expected);
-                        if gap > 0 {
-                            trace!("⏸️  [SEQUENTIAL-BUFFER] Gap detected: next_expected={}, min_buffered={}, gap={}. Waiting for missing blocks.", 
-                                current_expected, min_buffered, gap);
-                        }
-                    }
-                }
-                break;
             }
         }
 
-        // Log buffer status
+        if batch.is_empty() {
+            // Nothing to send
+            return Ok(());
+        }
+
+        let batch_size = batch.len();
+        let first_idx = batch[0].0;
+        let last_idx = batch[batch_size - 1].0;
+        let last_commit_index = batch[batch_size - 1].3;
+
+        // Phase 2: Write all blocks to socket in a single batch (1 flush)
+        {
+            // Auto-reconnect if needed
+            {
+                let conn_check = self.connection.lock().await;
+                if conn_check.is_none() {
+                    drop(conn_check);
+                    self.connect().await?;
+                }
+            }
+
+            let mut conn_guard = self.connection.lock().await;
+            if let Some(ref mut stream) = *conn_guard {
+                use tokio::time::{timeout, Duration};
+                // Scale timeout with batch size (30s base + 1s per 100 blocks)
+                let send_timeout = Duration::from_secs(30 + (batch_size as u64 / 100));
+
+                let send_result = timeout(send_timeout, async {
+                    for (_, data, _, _) in &batch {
+                        let mut len_buf = Vec::new();
+                        write_uvarint(&mut len_buf, data.len() as u64)
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                        stream.write_all(&len_buf).await?;
+                        stream.write_all(data).await?;
+                    }
+                    stream.flush().await?; // Single flush for entire batch
+                    Ok::<(), std::io::Error>(())
+                })
+                .await;
+
+                match send_result {
+                    Ok(Ok(())) => {
+                        self.record_send_success().await;
+                        if batch_size > 1 {
+                            info!("⚡ [BATCH-SEND] Sent {} blocks in 1 batch (GEI {}→{})",
+                                batch_size, first_idx, last_idx);
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        warn!("⚠️  [BATCH-SEND] Write failed at batch GEI {}→{}: {}, re-adding to buffer",
+                            first_idx, last_idx, e);
+                        *conn_guard = None;
+                        self.record_send_failure().await;
+                        // Re-add all blocks to buffer
+                        let mut buffer = self.send_buffer.lock().await;
+                        for (idx, data, epoch, ci) in batch {
+                            buffer.insert(idx, (data, epoch, ci));
+                        }
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        warn!("⏱️  [BATCH-SEND] Timeout sending {} blocks (GEI {}→{})",
+                            batch_size, first_idx, last_idx);
+                        *conn_guard = None;
+                        self.record_send_failure().await;
+                        let mut buffer = self.send_buffer.lock().await;
+                        for (idx, data, epoch, ci) in batch {
+                            buffer.insert(idx, (data, epoch, ci));
+                        }
+                        return Ok(());
+                    }
+                }
+            } else {
+                self.record_send_failure().await;
+                // Re-add all blocks
+                let mut buffer = self.send_buffer.lock().await;
+                for (idx, data, epoch, ci) in batch {
+                    buffer.insert(idx, (data, epoch, ci));
+                }
+                return Err(anyhow::anyhow!("Connection lost during batch send"));
+            }
+        }
+
+        // Phase 3: Update tracking state (batched — 1 lock per collection)
+        {
+            let mut next_expected = self.next_expected_index.lock().await;
+            *next_expected = last_idx + 1;
+        }
+        {
+            let mut sent = self.sent_indices.lock().await;
+            for idx in first_idx..=last_idx {
+                sent.insert(idx);
+            }
+            // Limit memory: trim if too large
+            while sent.len() > 10000 {
+                if let Some(&min_idx) = sent.iter().min() {
+                    sent.remove(&min_idx);
+                }
+            }
+        }
+
+        // Phase 4: Persist — only at intervals or end of batch (not every commit)
+        if let Some(ref storage_path) = self.storage_path {
+            if last_idx % PERSIST_INTERVAL == 0 || batch_size > 1 {
+                if let Err(e) =
+                    persist_last_sent_index(storage_path, last_idx, last_commit_index).await
+                {
+                    warn!(
+                        "⚠️ [PERSIST] Failed to persist last_sent_index={}: {}",
+                        last_idx, e
+                    );
+                }
+            }
+        }
+
+        // Phase 5: Go verification (unchanged — periodic check)
+        if last_idx % GO_VERIFICATION_INTERVAL == 0 {
+            if let Ok(go_last_block) = self.get_last_block_number().await {
+                let mut last_verified = self.last_verified_go_index.lock().await;
+                if go_last_block < *last_verified {
+                    error!("🚨 [FORK DETECTED] Go's block number DECREASED! last_verified={}, go_now={}. CRITICAL: Possible fork or Go state corruption!",
+                        *last_verified, go_last_block);
+                }
+                *last_verified = go_last_block;
+                let lag = last_idx.saturating_sub(go_last_block);
+                if let Some(ref handle) = self.go_lag_handle {
+                    handle.store(lag, std::sync::atomic::Ordering::Relaxed);
+                }
+                if lag > 100 {
+                    warn!(
+                        "⚠️ [GO LAG] Go is {} blocks behind Rust. sent={}, go={}",
+                        lag, last_idx, go_last_block
+                    );
+                } else {
+                    trace!(
+                        "✓ [GO VERIFY] Go verified at block {}. Rust sent={}, lag={}",
+                        go_last_block, last_idx, lag
+                    );
+                }
+            }
+        }
+
+        // If buffer still has consecutive blocks, recurse to flush remaining
+        {
+            let buffer = self.send_buffer.lock().await;
+            let next_expected = self.next_expected_index.lock().await;
+            if buffer.contains_key(&*next_expected) {
+                drop(buffer);
+                drop(next_expected);
+                return Box::pin(self.flush_buffer()).await;
+            }
+        }
+
+        // Log remaining buffer status
         {
             let buffer = self.send_buffer.lock().await;
             let next_expected = self.next_expected_index.lock().await;
@@ -576,6 +624,42 @@ impl ExecutorClient {
         }
     }
 
+    /// FAST-PATH: Convert empty CommittedSubDag to protobuf bytes.
+    /// Skips the expensive per-transaction hash/filter/sort logic.
+    /// Used when total user transactions == 0 (>95% of commits during sync).
+    fn convert_to_protobuf_empty(
+        &self,
+        subdag: &CommittedSubDag,
+        epoch: u64,
+        global_exec_index: u64,
+        leader_address: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>> {
+        // Build empty blocks (no transaction processing needed)
+        let blocks: Vec<CommittedBlock> = subdag
+            .blocks
+            .iter()
+            .map(|_| CommittedBlock {
+                epoch,
+                height: subdag.commit_ref.index as u64,
+                transactions: Vec::new(),
+            })
+            .collect();
+
+        let epoch_data = CommittedEpochData {
+            blocks,
+            global_exec_index,
+            commit_index: subdag.commit_ref.index as u32,
+            epoch,
+            commit_timestamp_ms: subdag.timestamp_ms,
+            leader_author_index: subdag.leader.author.value() as u32,
+            leader_address: leader_address.unwrap_or_default(),
+        };
+
+        let mut buf = Vec::new();
+        epoch_data.encode(&mut buf)?;
+        Ok(buf)
+    }
+
     /// Convert CommittedSubDag to protobuf CommittedEpochData bytes
     /// Uses generated protobuf code to ensure correct encoding
     ///
@@ -701,28 +785,20 @@ impl ExecutorClient {
         blocks.sort_by(|a, b| a.height.cmp(&b.height));
 
         // Create CommittedEpochData message using generated protobuf code
-        // CRITICAL FORK-SAFETY: Include global_exec_index and commit_index for deterministic ordering
-        // EPOCH TRACKING: Include epoch number for block header population in Go Master
-        // CRITICAL FORK-SAFETY: Include commit_timestamp_ms for deterministic block hashes
-        // Go Master MUST use this timestamp for BlockHeader instead of time.Now()
-        // CRITICAL FORK-SAFETY: Include leader_author_index for deterministic LeaderAddress
-        // Go Master MUST lookup validator address from committee using this index
         let epoch_data = CommittedEpochData {
             blocks,
             global_exec_index,
             commit_index: subdag.commit_ref.index as u32,
             epoch,
-            commit_timestamp_ms: subdag.timestamp_ms, // Consensus timestamp from Linearizer::calculate_commit_timestamp()
-            leader_author_index: subdag.leader.author.value() as u32, // Leader authority index for Go to lookup validator address
-            leader_address: leader_address.unwrap_or_default(), // 20-byte Ethereum address from Rust committee lookup
+            commit_timestamp_ms: subdag.timestamp_ms,
+            leader_author_index: subdag.leader.author.value() as u32,
+            leader_address: leader_address.unwrap_or_default(),
         };
 
         // Encode to protobuf bytes using prost::Message::encode
-        // This ensures correct protobuf encoding that Go can unmarshal
         let mut buf = Vec::new();
         epoch_data.encode(&mut buf)?;
 
-        // Count total transactions in encoded data
         let total_tx_encoded: usize = epoch_data.blocks.iter().map(|b| b.transactions.len()).sum();
         trace!("📦 [TX INTEGRITY] Encoded CommittedEpochData: global_exec_index={}, commit_index={}, epoch={}, blocks={}, total_tx={}, total_size={} bytes (using protobuf encoding)", 
             global_exec_index, subdag.commit_ref.index, epoch, epoch_data.blocks.len(), total_tx_encoded, buf.len());

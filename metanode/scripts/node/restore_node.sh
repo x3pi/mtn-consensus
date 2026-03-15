@@ -1,0 +1,149 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════
+#  RESTORE NODE TỪ SNAPSHOT MỚI NHẤT
+#  Usage: ./restore_node.sh <node_id> [snapshot_name]
+#    node_id:       0-4 (bắt buộc)
+#    snapshot_name:  tên snapshot (tùy chọn, mặc định = tự detect mới nhất)
+#
+#  Ví dụ:
+#    ./restore_node.sh 2                          # tự tìm snapshot mới nhất
+#    ./restore_node.sh 2 snap_epoch_1_block_50    # chỉ định snapshot cụ thể
+# ═══════════════════════════════════════════════════════════════
+set -e
+
+NODE_ID="${1:?❌ Usage: $0 <node_id> [snapshot_name]}"
+
+if [[ ! "$NODE_ID" =~ ^[0-4]$ ]]; then
+    echo "❌ node_id phải từ 0-4, nhận được: $NODE_ID"
+    exit 1
+fi
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+# Paths
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+METANODE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+GO_PROJECT_ROOT="$(cd "$METANODE_ROOT/../.." && pwd)/mtn-simple-2025"
+GO_SIMPLE_ROOT="$GO_PROJECT_ROOT/cmd/simple_chain"
+LOG_DIR="$METANODE_ROOT/logs"
+
+# Snapshot source — mặc định từ Node 0
+SNAP_BASE_DIR="$GO_SIMPLE_ROOT/snapshot_data_node0"
+SNAP_API="http://localhost:8701/api/snapshots"
+
+NODE_DATA="$GO_SIMPLE_ROOT/sample/node${NODE_ID}"
+
+echo ""
+echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}  📸 RESTORE Node $NODE_ID từ Snapshot${NC}"
+echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
+echo ""
+
+# ─── Tìm snapshot mới nhất ────────────────────────────────────
+if [ -n "$2" ]; then
+    SNAP_NAME="$2"
+    echo -e "${BLUE}📸 Sử dụng snapshot chỉ định: ${NC}$SNAP_NAME"
+else
+    echo -e "${BLUE}🔍 Tự động tìm snapshot mới nhất...${NC}"
+    
+    # Thử qua API trước
+    SNAP_NAME=$(curl -sf "$SNAP_API" 2>/dev/null \
+        | python3 -c "import sys,json; snaps=json.load(sys.stdin); print(snaps[-1]['snapshot_name'])" 2>/dev/null) || true
+    
+    # Fallback: tìm trong thư mục
+    if [ -z "$SNAP_NAME" ]; then
+        SNAP_NAME=$(ls -1d "$SNAP_BASE_DIR"/snap_* 2>/dev/null | sort | tail -1 | xargs basename 2>/dev/null) || true
+    fi
+    
+    if [ -z "$SNAP_NAME" ]; then
+        echo -e "${RED}❌ Không tìm thấy snapshot nào!${NC}"
+        echo "   Kiểm tra: curl $SNAP_API"
+        echo "   Hoặc:     ls $SNAP_BASE_DIR/"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}  ✅ Tìm thấy: ${NC}$SNAP_NAME"
+fi
+
+SNAP_DIR="$SNAP_BASE_DIR/$SNAP_NAME"
+if [ ! -d "$SNAP_DIR" ]; then
+    echo -e "${RED}❌ Thư mục snapshot không tồn tại: $SNAP_DIR${NC}"
+    exit 1
+fi
+
+SNAP_SIZE=$(du -sh "$SNAP_DIR" 2>/dev/null | awk '{print $1}')
+echo -e "${BLUE}  📦 Kích thước: ${NC}$SNAP_SIZE"
+
+# ─── Xác nhận ─────────────────────────────────────────────────
+echo ""
+echo -e "${YELLOW}⚠️  Thao tác này sẽ:${NC}"
+echo "   1. Dừng Node $NODE_ID"
+echo "   2. Xóa TOÀN BỘ dữ liệu Node $NODE_ID"
+echo "   3. Khôi phục từ snapshot: $SNAP_NAME"
+echo "   4. Khởi động lại Node $NODE_ID"
+echo ""
+read -p "Tiếp tục? (y/N): " CONFIRM
+if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
+    echo "Đã hủy."
+    exit 0
+fi
+
+START_TIME=$(date +%s)
+
+# ─── Step 1: Stop Node ────────────────────────────────────────
+echo ""
+echo -e "${BLUE}[1/4] 🛑 Dừng Node $NODE_ID...${NC}"
+"$SCRIPT_DIR/stop_node.sh" "$NODE_ID" 2>/dev/null || true
+sleep 3
+echo -e "${GREEN}  ✅ Node $NODE_ID đã dừng${NC}"
+
+# ─── Step 2: Xóa data ─────────────────────────────────────────
+echo -e "${BLUE}[2/4] 🗑️  Xóa dữ liệu Node $NODE_ID...${NC}"
+rm -rf "$NODE_DATA/data"
+rm -rf "$NODE_DATA/data-write"
+rm -rf "$NODE_DATA/back_up"
+rm -rf "$NODE_DATA/back_up_write"
+echo -e "${GREEN}  ✅ Dữ liệu đã xóa${NC}"
+
+# ─── Step 3: Restore từ Snapshot ──────────────────────────────
+echo -e "${BLUE}[3/4] 📸 Khôi phục từ $SNAP_NAME...${NC}"
+
+# Tạo thư mục cha trước
+mkdir -p "$NODE_DATA/data"
+
+# Dùng hardlink (cp -rl) — gần như tức thì trên cùng filesystem
+cp -rl "$SNAP_DIR" "$NODE_DATA/data/data"
+
+# Tạo các thư mục bắt buộc
+mkdir -p "$NODE_DATA/data/data/xapian_node"
+mkdir -p "$NODE_DATA/data-write/data/xapian_node"
+mkdir -p "$NODE_DATA/back_up"
+mkdir -p "$NODE_DATA/back_up_write"
+
+RESTORED_SIZE=$(du -sh "$NODE_DATA/data/data" 2>/dev/null | awk '{print $1}')
+echo -e "${GREEN}  ✅ Đã khôi phục: $RESTORED_SIZE${NC}"
+
+# ─── Step 4: Khởi động lại ────────────────────────────────────
+echo -e "${BLUE}[4/4] 🚀 Khởi động Node $NODE_ID...${NC}"
+"$SCRIPT_DIR/resume_node.sh" "$NODE_ID"
+
+ELAPSED=$(( $(date +%s) - START_TIME ))
+
+echo ""
+echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}  ✅ RESTORE HOÀN TẤT trong ${ELAPSED}s${NC}"
+echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
+echo ""
+echo -e "  ${BLUE}Snapshot:${NC}  $SNAP_NAME"
+echo -e "  ${BLUE}Node:${NC}     $NODE_ID"
+echo -e "  ${BLUE}Data:${NC}     $RESTORED_SIZE"
+echo ""
+echo -e "  ${YELLOW}⏳ Rust Metanode đang replay commits (~3 phút)${NC}"
+echo -e "  ${BLUE}Theo dõi:${NC}"
+echo "    tail -f $LOG_DIR/node_$NODE_ID/rust.log"
+echo ""

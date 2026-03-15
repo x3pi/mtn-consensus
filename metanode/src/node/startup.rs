@@ -259,13 +259,19 @@ impl InitializedNode {
         };
 
         // ═══════════════════════════════════════════════════════════════════════
-        // CRITICAL FIX: Skip startup catchup for SyncOnly nodes!
-        // SyncOnly has its own sync mechanism: RustSyncNode P2P sync_loop
-        // The startup catchup loop was designed for Validators to catch up before
-        // joining consensus. For SyncOnly, it causes an infinite loop because:
-        //   - epoch_match is always false (local epoch=0, network epoch=N)
-        //   - The loop can't sync blocks without matching epoch
-        //   - Deadlock: can't match epoch without blocks, can't get blocks without matching epoch
+        // SNAPSHOT RESTORE SUPPORT for SyncOnly nodes:
+        // Previously, SyncOnly skipped catchup entirely, causing nodes restored
+        // from Go snapshot to get stuck (commit_syncer at stale epoch = "Not
+        // enough votes"). Now we run a LIGHTWEIGHT epoch-catchup: sync Go blocks
+        // from peers until Go reaches the current network epoch. After Go catches
+        // up, the existing epoch_monitor detects the epoch change and triggers
+        // consensus restart at the correct epoch. Combined with the cold-start
+        // fast-forward in commit_syncer, the node does NOT need Rust consensus
+        // storage copied from another node.
+        //
+        // The old deadlock (can't match epoch without blocks, can't get blocks
+        // without matching epoch) is broken by sync_go_to_current_epoch() which
+        // fetches blocks from peer Go nodes regardless of epoch match.
         // ═══════════════════════════════════════════════════════════════════════
         let is_sync_only_mode = {
             let node_guard = self.node.lock().await;
@@ -273,21 +279,60 @@ impl InitializedNode {
         };
 
         if is_sync_only_mode {
-            info!("📋 [STARTUP] SyncOnly mode: skipping startup catchup (sync_loop handles block sync)");
+            // SyncOnly: Run lightweight epoch-catchup only (no consensus join wait)
+            if let Some(ref cm) = catchup_manager {
+                info!("📋 [STARTUP] SyncOnly mode: running epoch-catchup before sync_loop...");
+                let local_epoch = {
+                    let node_guard = self.node.lock().await;
+                    node_guard.current_epoch
+                };
+                match cm.check_sync_status(local_epoch, 0).await {
+                    Ok(status) if !status.epoch_match => {
+                        info!(
+                            "🔄 [STARTUP] SyncOnly epoch mismatch: Local={}, Network={}. Syncing Go blocks...",
+                            local_epoch, status.go_epoch
+                        );
+                        match cm.sync_go_to_current_epoch(status.go_epoch).await {
+                            Ok(synced) => {
+                                info!(
+                                    "✅ [STARTUP] SyncOnly epoch-catchup complete: {} blocks synced. \
+                                     epoch_monitor will handle consensus restart at correct epoch.",
+                                    synced
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "⚠️ [STARTUP] SyncOnly epoch-catchup failed: {}. \
+                                     sync_loop will handle catchup at runtime.",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        info!("✅ [STARTUP] SyncOnly: epoch matches network, no catchup needed.");
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [STARTUP] SyncOnly sync status check failed: {}. Proceeding.", e);
+                    }
+                }
+            } else {
+                info!("📋 [STARTUP] SyncOnly mode: no executor client, skipping catchup.");
+            }
         } else if let Some(cm) = catchup_manager {
-            info!("⏳ [STARTUP] Verifying sync status before joining consensus...");
-            let _check_interval = std::time::Duration::from_secs(2); // kept for reference
+            let is_syncing_up_mode = {
+                let node_guard = self.node.lock().await;
+                matches!(node_guard.node_mode, crate::node::NodeMode::SyncingUp)
+            };
+
+            if is_syncing_up_mode {
+                info!("⏳ [STARTUP] Verifying sync status before joining consensus...");
+                let _check_interval = std::time::Duration::from_secs(2); // kept for reference
+                let timeout = std::time::Duration::from_secs(600); // 10 minutes timeout
             let timeout = std::time::Duration::from_secs(600); // 10 minutes timeout
             let start = std::time::Instant::now();
 
-            // Force SyncingUp mode while waiting
-            {
-                let mut node_guard = self.node.lock().await;
-                if node_guard.node_mode == crate::node::NodeMode::Validator {
-                    info!("🔄 [STARTUP] Switching to SyncingUp mode while waiting for catchup");
-                    node_guard.node_mode = crate::node::NodeMode::SyncingUp;
-                }
-            }
+                // Node is already in SyncingUp mode, we just wait.
 
             loop {
                 // Check timeout
@@ -378,10 +423,33 @@ impl InitializedNode {
                                 warn!("⚠️ [CATCHUP] Block sync from peers failed: {}", e);
                             }
                         } else {
+                            // ═══════════════════════════════════════════════════
+                            // CROSS-EPOCH BLOCK SYNC (Snapshot Restore Support)
+                            // Go is at a different epoch than the network.
+                            // Fetch blocks from peer Go nodes until Go catches up
+                            // to the current network epoch. This enables nodes to
+                            // start from only a Go snapshot without Rust data.
+                            // ═══════════════════════════════════════════════════
                             info!(
-                                "🔄 [CATCHUP] Syncing epoch: Local={}, Network={}",
+                                "🔄 [CATCHUP] Epoch mismatch: GoLocal={}, Network={}. Syncing Go blocks to reach target epoch...",
                                 local_epoch, status.go_epoch
                             );
+                            match cm.sync_go_to_current_epoch(status.go_epoch).await {
+                                Ok(synced) => {
+                                    info!(
+                                        "✅ [CATCHUP] Cross-epoch sync complete: {} blocks synced. Go should now be at epoch {}.",
+                                        synced, status.go_epoch
+                                    );
+                                    // Don't delay — immediately re-check sync status
+                                    continue;
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "⚠️ [CATCHUP] Cross-epoch sync failed: {}. Will retry...",
+                                        e
+                                    );
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -389,23 +457,78 @@ impl InitializedNode {
                     }
                 }
 
-                // Dynamic delay: 200ms for near-caught-up (much faster than original 2s)
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    // Dynamic delay: 200ms for near-caught-up (much faster than original 2s)
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            } else {
+                // ═══════════════════════════════════════════════════════════════
+                // SNAPSHOT RESTORE: Even when "not lagging" (no peer reference),
+                // the node may be behind by entire epochs after snapshot restore.
+                // Check if Go epoch matches network epoch — if not, sync Go
+                // blocks from peers until Go catches up to the current epoch.
+                // Without this, the node joins consensus at a stale epoch and
+                // commit_syncer fails with "wrong epoch" on every fetch.
+                // ═══════════════════════════════════════════════════════════════
+                info!("✅ [STARTUP] Node is starting directly as Validator (lag is below threshold). Checking epoch match before proceeding...");
+                let local_epoch = {
+                    let node_guard = self.node.lock().await;
+                    node_guard.current_epoch
+                };
+                match cm.check_sync_status(local_epoch, 0).await {
+                    Ok(status) if !status.epoch_match => {
+                        warn!(
+                            "🔄 [STARTUP] Epoch mismatch detected at Validator startup: Local epoch={}, Network epoch={}. Running cross-epoch sync...",
+                            local_epoch, status.go_epoch
+                        );
+                        match cm.sync_go_to_current_epoch(status.go_epoch).await {
+                            Ok(synced) => {
+                                info!(
+                                    "✅ [STARTUP] Cross-epoch sync complete: {} blocks synced. epoch_monitor will handle transition.",
+                                    synced
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "⚠️ [STARTUP] Cross-epoch sync failed: {}. Proceeding anyway — epoch_monitor may handle it later.",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        info!("✅ [STARTUP] Epoch matches network. Consensus syncing will handle any minor lag.");
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [STARTUP] Epoch check failed: {}. Proceeding anyway.", e);
+                    }
+                }
             }
 
-            // Restore Validator mode
-            {
+            // Restore Validator mode by triggering a mode-only transition
+            let (was_syncing_up, epoch, exec_index) = {
+                let node_guard = self.node.lock().await;
+                (
+                    node_guard.node_mode == crate::node::NodeMode::SyncingUp,
+                    node_guard.current_epoch,
+                    node_guard.last_global_exec_index,
+                )
+            };
+
+            if was_syncing_up {
+                info!("✅ [STARTUP] Catch-up complete. Starting ConsensusAuthority for Validator...");
                 let mut node_guard = self.node.lock().await;
-                // Only switch if we intended to be a validator (based on committee)
-                // We re-run check_and_update_node_mode to determine correct mode
-                let _config = node_guard.protocol_config.clone(); // Need config... wait, protocol_config is strict.
-                                                                  // We need NodeConfig. It is not stored in ConsensusNode except parts.
-                                                                  // But we can just set to Validator if it was SyncingUp.
-                                                                  // Actually, check_and_update_node_mode requires Committee and NodeConfig.
-                                                                  // We don't have them easily here.
-                                                                  // Simpler: Set to Validator.
-                if node_guard.node_mode == crate::node::NodeMode::SyncingUp {
-                    info!("✅ [STARTUP] Switching to Validator mode");
+                
+                // Mode transition logic handles starting the authority
+                // We pass 0 for boundary_block since transition_mode_only fetches authoritative timestamp from Go
+                if let Err(e) = crate::node::transition::mode_transition::transition_mode_only(
+                    &mut *node_guard,
+                    epoch,
+                    0, // Unused
+                    exec_index,
+                    &self.node_config,
+                ).await {
+                    error!("❌ [STARTUP] Failed to transition to Validator mode: {}", e);
+                    // Fallback: just set the flag so at least we don't stay stuck
                     node_guard.node_mode = crate::node::NodeMode::Validator;
                 }
             }

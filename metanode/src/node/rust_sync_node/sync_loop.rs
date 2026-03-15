@@ -321,9 +321,12 @@ impl RustSyncNode {
 
             let peer_addresses = self.config.peer_rpc_addresses.clone();
             if !peer_addresses.is_empty() {
-                let fetch_from = {
-                    let queue = self.block_queue.lock().await;
-                    queue.next_expected()
+                let fetch_from = match self.executor_client.get_last_block_number().await {
+                    Ok(last_block) => last_block + 1,
+                    Err(e) => {
+                        warn!("[PEER-GO-SYNC] Failed to get last block number: {}", e);
+                        return Ok(());
+                    }
                 };
 
                 // Use turbo batch size for faster catchup - SyncOnly without network usually needs to catch up fast
