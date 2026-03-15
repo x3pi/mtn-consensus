@@ -38,14 +38,6 @@ impl ExecutorClient {
             return Ok(()); // Silently skip if not enabled
         }
 
-        if !self.can_commit() {
-            // This node has executor client but cannot commit (not node 0)
-            // Log but don't actually send the commit
-            let total_tx: usize = subdag.blocks.iter().map(|b| b.transactions().len()).sum();
-            info!("ℹ️  [EXECUTOR] Node has executor client but cannot commit (not node 0): global_exec_index={}, commit_index={}, epoch={}, blocks={}, total_tx={}",
-                global_exec_index, subdag.commit_ref.index, epoch, subdag.blocks.len(), total_tx);
-            return Ok(()); // Skip actual commit
-        }
 
         // Count total transactions BEFORE conversion (to detect if transactions are lost)
         let total_tx_before: usize = subdag.blocks.iter().map(|b| b.transactions().len()).sum();
@@ -470,9 +462,6 @@ impl ExecutorClient {
             return Ok(()); // Silently skip if not enabled
         }
 
-        if !self.can_commit() {
-            return Ok(()); // Skip if cannot commit
-        }
 
         // Convert to protobuf bytes
         let epoch_data_bytes =

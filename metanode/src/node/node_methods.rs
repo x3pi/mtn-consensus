@@ -32,9 +32,11 @@ impl ConsensusNode {
         if self.last_transition_hash.is_some() {
             return (
                 false,
-                false, // FORK SAFETY: Do NOT queue TXs during epoch transition.
-                // Queued TXs risk nonce conflicts when replayed in new epoch.
-                // Instead, epoch_duration is set to 24h to prevent transitions during normal operation.
+                true, // QUEUE TXs during epoch transition (was: false).
+                // The UDS tx_socket_server already handles queuing + replay.
+                // TXs are buffered and re-submitted after new epoch starts via
+                // submit_queued_transactions(). Nonce conflicts are handled by
+                // the Go nonce validation layer (tx.GetNonce() == as.Nonce()).
                 format!(
                     "Epoch transition in progress: epoch {} -> {}",
                     self.current_epoch,

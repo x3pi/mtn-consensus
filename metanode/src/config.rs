@@ -326,7 +326,7 @@ impl NodeConfig {
                 ntp_servers: default_ntp_servers(),
                 ntp_sync_interval_seconds: 300,
                 executor_read_enabled: true, // All nodes can read committee state from Go
-                executor_commit_enabled: idx == 0, // Only node 0 can commit blocks by default
+                executor_commit_enabled: true, // All validators commit blocks to their local Go Master
                 executor_send_socket_path: format!("/tmp/executor{}.sock", idx), // Rust -> Go
                 executor_receive_socket_path: "/tmp/rust-go.sock_1".to_string(), // Go -> Rust (all nodes read from same socket)
                 commit_sync_batch_size: default_commit_sync_batch_size(),

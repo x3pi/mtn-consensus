@@ -514,16 +514,18 @@ mod tests {
     }
 
     #[test]
-    fn test_executor_client_enabled_no_commit() {
+    fn test_executor_client_enabled_always_commits() {
+        // All enabled executor clients should be able to commit
+        // (can_commit guard was removed — executor_commit_enabled config controls creation)
         let client = ExecutorClient::new(
             true,
-            false,
+            true, // All enabled clients commit
             "/tmp/test_send.sock".to_string(),
             "/tmp/test_recv.sock".to_string(),
             None,
         );
         assert!(client.is_enabled());
-        assert!(!client.can_commit());
+        assert!(client.can_commit());
     }
 
     #[tokio::test]
