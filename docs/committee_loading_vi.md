@@ -148,48 +148,49 @@ let is_validator = committee.authorities()
 ### 3.3 Epoch Transition (Validator)
 
 ```rust
-// File: metanode/src/node/transition.rs
+// File: metanode/src/node/transition/epoch_transition.rs
 
 // Khi nhận EndOfEpoch system transaction:
 // 1. CommitProcessor phát hiện EndOfEpoch
-// 2. Trigger epoch_transition_callback
-// 3. transition_to_epoch_from_system_tx() được gọi
+// 2. Trigger epoch_transition_callback qua channel
+// 3. EpochTransitionManager hoặc epoch_monitor bắt signal
+// 4. transition_to_epoch_from_system_tx() được gọi
 
 async fn transition_to_epoch_from_system_tx(
     node: &mut ConsensusNode,
     new_epoch: u64,
-    new_epoch_timestamp_ms: u64,
-    synced_global_exec_index: u64,  // boundary_block
+    boundary_block_from_tx: u64,
+    synced_global_exec_index: u64,
     config: &NodeConfig,
 ) {
-    // 1. Discover best committee source
+    // 1. Advance Go epoch TRƯỚC (tránh deadlock khi fetch committee)
+    executor_client.advance_epoch(
+        new_epoch, 0, go_boundary_block
+    ).await?;
+    
+    // 2. Discover best committee source
     let committee_source = CommitteeSource::discover(config).await?;
     
-    // 2. Fetch new committee (với retry vô hạn)
+    // 3. Flush buffer + Stop old authority
+    executor_client.flush_buffer().await?;
+    if let Some(auth) = node.authority.take() {
+        auth.stop().await;
+    }
+    
+    // 4. Fetch new committee (retry với MAX_ATTEMPTS=60)
     let committee = committee_source.fetch_committee(
         &config.executor_send_socket_path,
         new_epoch
     ).await?;
     
-    // 3. Stop old authority
-    if let Some(auth) = node.authority.take() {
-        auth.stop().await;
-    }
-    
-    // 4. Start new authority với committee mới
+    // 5. Start new authority với committee mới
+    //    Timestamp lấy từ Go boundary block header (UNIFIED TIMESTAMP)
     node.authority = Some(ConsensusAuthority::start(
-        new_epoch_timestamp_ms,
+        epoch_timestamp_from_go,
         own_index,
         committee,
         ...
     ).await);
-    
-    // 5. Advance epoch trong Go
-    executor_client.advance_epoch(
-        new_epoch, 
-        new_epoch_timestamp_ms,
-        synced_global_exec_index  // boundary_block
-    ).await;
 }
 ```
 
@@ -266,9 +267,9 @@ loop {
 pub struct CommitteeSource {
     pub socket_path: String,       // Go Master socket 
     pub epoch: u64,                // Epoch từ nguồn này
-    pub epoch_timestamp_ms: u64,   // CRITICAL cho genesis hash
     pub last_block: u64,           // Last committed block
     pub is_peer: bool,             // Từ peer hay local
+    pub peer_rpc_addresses: Vec<String>, // Peer RPC addresses cho fallback
 }
 ```
 
@@ -281,18 +282,20 @@ async fn discover(config: &NodeConfig) -> Result<Self> {
     // 1. Query local Go Master
     let local_epoch = local_client.get_current_epoch().await?;
     
-    // 2. Query các peers
+    // 2. Query các TCP peers qua peer_rpc_addresses
     let mut best_epoch = local_epoch;
-    for peer_socket in &config.peer_go_master_sockets {
-        let peer_epoch = peer_client.get_current_epoch().await?;
-        if peer_epoch > best_epoch {
-            best_epoch = peer_epoch;
-            best_socket = peer_socket;
+    for peer_address in &config.peer_rpc_addresses {
+        let peer_info = query_peer_info(peer_address).await?;
+        if peer_info.epoch > best_epoch 
+            || (peer_info.epoch == best_epoch && peer_info.last_block > best_block) {
+            best_epoch = peer_info.epoch;
+            best_block = peer_info.last_block;
+            is_peer = true;
         }
     }
     
-    // 3. Sử dụng nguồn có epoch cao nhất
-    Ok(Self { socket_path: best_socket, epoch: best_epoch, ... })
+    // 3. Sử dụng nguồn có epoch cao nhất (nhưng luôn dùng local socket cho data)
+    Ok(Self { socket_path: local_socket, epoch: best_epoch, ... })
 }
 ```
 
@@ -301,22 +304,22 @@ async fn discover(config: &NodeConfig) -> Result<Self> {
 ```rust
 // Retry vô hạn vì epoch transition PHẢI thành công
 
-async fn fetch_committee(&self, target_epoch: u64) -> Result<Committee> {
-    loop {
+async fn fetch_committee(&self, send_socket: &str, target_epoch: u64) -> Result<Committee> {
+    // Retry có giới hạn: MAX_ATTEMPTS=60 (~30 giây)
+    for attempt in 1..=MAX_ATTEMPTS {
         match client.get_epoch_boundary_data(target_epoch).await {
-            Ok((epoch, timestamp, boundary_block, validators)) => {
-                if epoch != target_epoch {
-                    // Go chưa advance epoch, chờ và retry
-                    continue;
+            Ok((epoch, timestamp, boundary_block, validators, _)) => {
+                if epoch == target_epoch && !validators.is_empty() {
+                    return build_committee_from_validator_info_list(&validators, epoch);
                 }
-                return build_committee_from_validator_list(validators, epoch);
             }
             Err(_) => {
-                // Retry until success
-                continue;
+                // Chờ và retry
             }
         }
+        sleep(500ms).await;
     }
+    Err("Timeout waiting for epoch committee")
 }
 ```
 

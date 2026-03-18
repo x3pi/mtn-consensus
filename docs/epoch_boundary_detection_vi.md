@@ -23,7 +23,7 @@ VALIDATOR MODE:
 
 FULL NODE (SyncOnly) MODE:
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  1. epoch_monitor.rs poll Go Master định kỳ (mặc định 5s)              │
+│  1. epoch_monitor.rs poll Go Master định kỳ (cấu hình, mặc định 10s) │
 │  2. Gọi get_current_epoch() → phát hiện epoch thay đổi                  │
 │  3. Gọi get_epoch_boundary_data(new_epoch) để lấy:                      │
 │     - boundary_block (global_exec_index cuối epoch trước)               │
@@ -134,8 +134,10 @@ impl CommittedSubDag {
 // File: metanode/src/node/epoch_monitor.rs
 
 loop {
-    // 1. Poll Go Master định kỳ (mặc định 5s)
+    // 1. Poll Go Master định kỳ (cấu hình qua epoch_monitor_poll_interval_secs, mặc định 10s)
     let go_epoch = client.get_current_epoch().await?;
+    // Cũng query TCP peers để lấy network_epoch
+    let network_epoch = query_peer_epochs_network(&peer_rpc_addresses).await?;
     
     // 2. Phát hiện epoch change
     if go_epoch > last_known_epoch {
@@ -265,8 +267,9 @@ Epoch 1 (starts from block 4274)
 | `meta-consensus/core/src/system_transaction_provider.rs` | Tạo EndOfEpoch khi hết epoch duration |
 | `meta-consensus/core/src/commit.rs` | `extract_end_of_epoch_transaction()` |
 | `src/consensus/commit_processor.rs` | Xử lý commit, phát hiện EndOfEpoch |
-| `src/node/epoch_monitor.rs` | Poll Go cho SyncOnly nodes |
-| `executor/unix_socket_handler.go` | `GetEpochBoundaryData()` |
+| `src/node/epoch_monitor.rs` | Unified monitor cho tất cả node types |
+| `src/node/epoch_transition_manager.rs` | Quản lý transition state |
+| `executor/unix_socket_handler_epoch.go` | `GetEpochBoundaryData()` |
 | `pkg/blockchain/chain_state.go` | `AdvanceEpochWithBoundary()`, `GetEpochBoundaryBlock()` |
 
 ---

@@ -16,7 +16,7 @@ Khi một node khởi động lại, nó trải qua các giai đoạn chính sau
 
 ## 2. Chi Tiết Các Hàm và Modules Tham Gia
 
-### A. Giai đoạn Khởi Tạo (`metanode/src/node/startup.rs` & `mod.rs`)
+### A. Giai đoạn Khởi Tạo (`metanode/src/node/consensus_node.rs` & `mod.rs`)
 
 Quá trình bắt đầu từ `main.rs` gọi đến `InitializedNode::initialize`.
 
@@ -26,19 +26,20 @@ Quá trình bắt đầu từ `main.rs` gọi đến `InitializedNode::initializ
     *   Nếu Local Epoch < Network Epoch: Xóa dữ liệu cũ (Stale Data) trong `storage`.
 
 2.  **Load Committee (Tải Danh sách Validator):**
-    *   Hàm: `ConsensusNode::new_with_registry_and_service`
+    *   Hàm: `ConsensusNode::setup_storage()`
     *   Hành động:
-        *   Gọi `get_validators_at_block` từ Go Master (Local hoặc Peer tùy thuộc vào ai giữ Epoch đúng).
+        *   Gọi `get_epoch_boundary_data(epoch)` từ Go Master (Local hoặc Peer tùy thuộc vào ai giữ Epoch đúng).
         *   Lấy `epoch_timestamp_ms` để đảm bảo Genesis Block Hash khớp với mạng lưới.
-        *   Dùng `committee::build_committee_from_validator_list` để dựng đối tượng `Committee` cho mtn-consensus.
+        *   Dùng `committee::build_committee_with_eth_addresses` để dựng đối tượng `Committee` cho mtn-consensus.
         *   **Quan trọng:** Nếu Epoch được sync từ Peer, danh sách Validator cũng phải được lấy từ Peer đó để đảm bảo tính nhất quán.
 
 3.  **Startup Catchup Loop:**
     *   Hàm: `run_main_loop` (trong `startup.rs`)
     *   Hành động:
-        *   Tạo `CatchupManager` với danh sách peer sockets.
-        *   Liên tục gọi `cm.check_sync_status(local_epoch, local_commit)` mỗi 2 giây.
-        *   **Cập nhật mới:** `CatchupManager` sẽ query trực tiếp các Peer trong mạng lưới để lấy `Network Block Height`.
+        *   Tạo `CatchupManager` với `peer_rpc_addresses` (TCP WAN peers).
+        *   Liên tục gọi `cm.check_sync_status(local_epoch, local_commit)`.
+        *   **Cập nhật mới:** `CatchupManager` query trực tiếp các TCP Peer qua `query_peer_epochs_network()` để lấy `Network Block Height`.
+        *   **Fast Sync:** Cho gap lớn (>100 blocks), chạy liên tục fetching batches `sync_blocks_from_peers()`.
         *   **Block Consensus:** Trong lúc này, node set mode = `SyncingUp`. Nó sẽ **không** propose block mới cho đến khi synced.
 
 ### B. Cơ Chế Đồng Bộ Dữ Liệu (Consensus Core)
@@ -87,6 +88,7 @@ Component này xử lý các thiếu hụt nhỏ, tức thời (ví dụ: nhận
 
 2.  **Chuyển Mode:**
     *   `startup.rs` nhận thấy `ready`, log: `✅ [STARTUP] Node is synced`.
+    *   Gọi `transition_mode_only()` để khởi động `ConsensusAuthority`.
     *   Chuyển mode từ `SyncingUp` -> `Validator`.
     *   Bắt đầu tham gia consensus (propose block, vote).
 
@@ -97,7 +99,7 @@ Component này xử lý các thiếu hụt nhỏ, tức thời (ví dụ: nhận
 Đây là phần **quan trọng nhất** để đảm bảo tính liên tục của dữ liệu giữa Rust và Go.
 
 1.  **Lấy mốc từ Go Master:**
-    *   Trong `ConsensusNode::new_with_registry_and_service`, node gọi `executor_client.get_last_block_number()` để lấy `last_global_exec_index`.
+    *   Trong `ConsensusNode::setup_storage()`, node gọi `executor_client.get_last_block_number()` để lấy `last_global_exec_index` (với retry 30 lần cho snapshot restore).
     *   Mốc này chính là điểm dừng cuối cùng của Go. Rust sẽ bắt đầu đồng bộ các block tiếp theo từ chỉ số `last_global_exec_index + 1`.
 
 2.  **Kiểm tra Phục hồi (Recovery Check):**
@@ -134,7 +136,9 @@ graph TD
 
 ## 4. Các File Code Quan Trọng
 
-*   `metanode/src/node/startup.rs`: Chứa vòng lặp chờ đồng bộ (wait loop).
-*   `metanode/src/node/catchup.rs`: Logic kiểm tra Gap và trạng thái sync.
+*   `metanode/src/node/consensus_node.rs`: Chứa constructor và setup_storage/setup_consensus phases.
+*   `metanode/src/node/startup.rs`: Chứa vòng lặp chờ đồng bộ (wait loop) và InitializedNode.
+*   `metanode/src/node/catchup.rs`: Logic kiểm tra Gap và trạng thái sync (CatchupManager).
 *   `consensus/core/src/commit_syncer.rs`: Logic tải dữ liệu quá khứ (Catchup).
 *   `consensus/core/src/synchronizer.rs`: Logic tải dữ liệu tức thời (Live sync).
+*   `metanode/src/node/rust_sync_node/`: Module đồng bộ block cho SyncOnly nodes.
