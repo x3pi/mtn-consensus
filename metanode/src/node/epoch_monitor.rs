@@ -103,44 +103,13 @@ pub fn start_unified_epoch_monitor(
                 };
 
             // ═══════════════════════════════════════════════════════════════
-            // BLOCK SYNC: Proactively sync application blocks from peers.
-            // After snapshot restore, Rust consensus may be severely behind
-            // (e.g. lag=5249 commits) and unable to push blocks to Go.
-            // This ensures Go always has the latest application blocks
-            // regardless of Rust consensus state.
+            // BLOCK SYNC: REMOVED — sync_loop is the sole owner of block sync.
+            // Previously this section fetched blocks and called sync_blocks(),
+            // but it RACED with sync_loop doing the same thing → both calling
+            // sync_blocks() on the same UDS socket simultaneously → broken pipe
+            // → sync stops permanently. Block sync is now exclusively handled
+            // by sync_loop.rs with turbo mode for fast catch-up.
             // ═══════════════════════════════════════════════════════════════
-            {
-                let go_block = client_arc.get_last_block_number().await.unwrap_or(0);
-                let peer_rpc = config_clone.peer_rpc_addresses.clone();
-                if !peer_rpc.is_empty() {
-                    let fetch_from = go_block + 1;
-                    let fetch_to = go_block + 100; // Fetch in batches of 100
-                    match crate::network::peer_rpc::fetch_blocks_from_peer(
-                        &peer_rpc, fetch_from, fetch_to,
-                    ).await {
-                        Ok(blocks) if !blocks.is_empty() => {
-                            let count = blocks.len();
-                            match client_arc.sync_blocks(blocks).await {
-                                Ok((synced, last_block)) => {
-                                    info!(
-                                        "✅ [EPOCH MONITOR] Block sync: fetched {} blocks, synced {} to Go (last_block={})",
-                                        count, synced, last_block
-                                    );
-                                }
-                                Err(e) => {
-                                    warn!("⚠️ [EPOCH MONITOR] Block sync: sync_blocks failed: {}", e);
-                                }
-                            }
-                        }
-                        Ok(_) => {
-                            // No blocks available from peers — Go is caught up
-                        }
-                        Err(e) => {
-                            debug!("⚠️ [EPOCH MONITOR] Block sync: fetch failed: {}", e);
-                        }
-                    }
-                }
-            }
 
             // 4. Check if transition needed (NETWORK epoch ahead of Rust)
             // Use network_epoch instead of local_go_epoch!

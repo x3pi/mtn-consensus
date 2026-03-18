@@ -1,7 +1,13 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{sync::Arc, vec};
+use std::{
+    sync::{
+        atomic::AtomicBool,
+        Arc,
+    },
+    vec,
+};
 
 use consensus_config::ProtocolKeyPair;
 
@@ -99,6 +105,10 @@ pub(crate) struct Core {
     /// System transaction provider (for EndOfEpoch transactions)
     /// None if using legacy Proposal/Vote/Quorum mechanism
     pub(crate) system_transaction_provider: Option<Arc<dyn SystemTransactionProvider>>,
+    /// Quorum readiness gate: blocks proposals until enough peers have been heard from.
+    /// Set to `true` by the authority node after detecting ≥ quorum_threshold unique peers.
+    /// Prevents fork at startup where isolated subgroups form independent consensus.
+    pub(crate) quorum_ready: Arc<AtomicBool>,
 }
 
 impl Core {
@@ -116,6 +126,7 @@ impl Core {
         round_tracker: Arc<RwLock<PeerRoundTracker>>,
         adaptive_delay_state: Option<Arc<AdaptiveDelayState>>,
         system_transaction_provider: Option<Arc<dyn SystemTransactionProvider>>,
+        quorum_ready: Arc<AtomicBool>,
     ) -> Self {
         let last_decided_leader = dag_state.read().last_commit_leader();
         let number_of_leaders = context
@@ -184,6 +195,7 @@ impl Core {
             round_tracker,
             adaptive_delay_state,
             system_transaction_provider,
+            quorum_ready,
         }
         .recover()
         .expect("Core::recover() failed")

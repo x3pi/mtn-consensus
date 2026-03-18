@@ -357,10 +357,17 @@ impl CommitProcessor {
                                         warn!("❌ Failed to trigger epoch transition from system transaction: {}", e);
                                     }
                                 }
+                                
+                                // NEW: We MUST break here! This epoch is over. Any remaining commits in the channel 
+                                // belong to the old epoch (empty trailing commits) and must NOT be sent to Go,
+                                // otherwise Go will increment LastGlobalExecIndex and cause a hash mismatch for the new epoch.
+                                info!("🛑 [COMMIT PROCESSOR] Halting processing for current epoch after EndOfEpoch transaction.");
+                                break;
                             }
                         }
 
                         // Process pending out-of-order commits
+                        let mut should_break = false;
                         while let Some(pending) = pending_commits.remove(&next_expected_index) {
                             let pending_commit_index = next_expected_index;
 
@@ -389,6 +396,24 @@ impl CommitProcessor {
                             }
 
                             next_expected_index += 1;
+                            
+                            // Check for EndOfEpoch in pending commits
+                            if let Some((_block_ref, system_tx)) = pending.extract_end_of_epoch_transaction() {
+                                if let Some((new_epoch, boundary_block)) = system_tx.as_end_of_epoch() {
+                                    if let Some(ref callback) = epoch_transition_callback {
+                                        if let Err(e) = callback(new_epoch, boundary_block, global_exec_index) {
+                                            warn!("❌ Failed to trigger epoch transition from pending system transaction: {}", e);
+                                        }
+                                    }
+                                    info!("🛑 [COMMIT PROCESSOR] Halting processing for current epoch after EndOfEpoch transaction in PENDING commit.");
+                                    should_break = true;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if should_break {
+                            break;
                         }
                     } else if commit_index > next_expected_index {
                         warn!(

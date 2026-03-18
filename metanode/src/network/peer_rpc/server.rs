@@ -172,6 +172,8 @@ impl PeerRpcServer {
                     .await;
                 } else if request.starts_with("GET /get_epoch_boundary_data") {
                     Self::handle_get_epoch_boundary_data(&mut stream, &executor, &request).await;
+                } else if request.starts_with("GET /get_executable_blocks") {
+                    Self::handle_get_executable_blocks(&mut stream, &executor, node_id, &request).await;
                 } else if request.starts_with("GET /get_blocks") {
                     Self::handle_get_blocks(&mut stream, &executor, node_id, &request).await;
                 } else if request.starts_with("GET /health") {
@@ -381,6 +383,114 @@ impl PeerRpcServer {
         None
     }
 
+    /// Handle /get_executable_blocks request
+    /// Reads ExecutableBlock protobuf bytes directly from Rust file store.
+    /// No Go PebbleDB involved — pure Rust-to-Rust sync.
+    /// URL format: GET /get_executable_blocks?from=X&to=Y
+    async fn handle_get_executable_blocks(
+        stream: &mut tokio::net::TcpStream,
+        executor: &Arc<ExecutorClient>,
+        node_id: usize,
+        request: &str,
+    ) {
+        let (from_block, to_block) = Self::parse_block_range(request);
+
+        let (Some(from), Some(to)) = (from_block, to_block) else {
+            let response = GetBlocksResponse {
+                node_id,
+                blocks: std::collections::HashMap::new(),
+                count: 0,
+                error: Some("Missing or invalid from/to parameters".to_string()),
+            };
+            let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+            let http_response = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{}",
+                json
+            );
+            let _ = stream.write_all(http_response.as_bytes()).await;
+            return;
+        };
+
+        let max_batch = 500u64;
+        let actual_to = std::cmp::min(to, from + max_batch - 1);
+
+        info!(
+            "🌐 [PEER RPC] /get_executable_blocks request: from={}, to={} (actual_to={})",
+            from, to, actual_to
+        );
+
+        // Read from Rust file store — no Go PebbleDB
+        let storage_path = match executor.storage_path() {
+            Some(p) => p,
+            None => {
+                let response = GetBlocksResponse {
+                    node_id,
+                    blocks: std::collections::HashMap::new(),
+                    count: 0,
+                    error: Some("No storage path configured".to_string()),
+                };
+                let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+                let http_response = format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{}",
+                    json
+                );
+                let _ = stream.write_all(http_response.as_bytes()).await;
+                return;
+            }
+        };
+
+        match crate::node::executor_client::block_store::load_executable_blocks_range(
+            storage_path,
+            from,
+            actual_to,
+        )
+        .await
+        {
+            Ok(block_list) => {
+                let mut blocks = std::collections::HashMap::new();
+                for (gei, data) in &block_list {
+                    blocks.insert(*gei, hex::encode(data));
+                }
+
+                let count = blocks.len();
+                info!("🌐 [PEER RPC] Returning {} executable blocks from Rust store", count);
+
+                let response = GetBlocksResponse {
+                    node_id,
+                    blocks,
+                    count,
+                    error: None,
+                };
+
+                let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+                let http_response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
+                    json
+                );
+
+                if let Err(e) = stream.write_all(http_response.as_bytes()).await {
+                    error!("🌐 [PEER RPC] Failed to write /get_executable_blocks response: {}", e);
+                }
+            }
+            Err(e) => {
+                warn!("🌐 [PEER RPC] Failed to load executable blocks from store: {}", e);
+                let response = GetBlocksResponse {
+                    node_id,
+                    blocks: std::collections::HashMap::new(),
+                    count: 0,
+                    error: Some(format!("Failed to load blocks: {}", e)),
+                };
+
+                let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+                let http_response = format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{}",
+                    json
+                );
+                let _ = stream.write_all(http_response.as_bytes()).await;
+            }
+        }
+    }
+
     /// Handle /get_blocks request
     /// URL format: GET /get_blocks?from=X&to=Y
     async fn handle_get_blocks(
@@ -409,7 +519,7 @@ impl PeerRpcServer {
         };
 
         // Limit batch size to prevent DoS or timeouts on huge blocks (200MB+)
-        let max_batch = 5u64;
+        let max_batch = 500u64;
         let actual_to = std::cmp::min(to, from + max_batch - 1);
 
         info!(

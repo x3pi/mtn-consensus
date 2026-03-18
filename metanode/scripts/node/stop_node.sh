@@ -39,9 +39,9 @@ for sess in "$GO_MASTER_SESSION" "$GO_SUB_SESSION" "$RUST_SESSION"; do
     fi
 done
 
-# Wait for graceful shutdown (LevelDB flush, etc.)
-echo "  ⏳ Waiting 5s for graceful shutdown..."
-sleep 5
+# Wait for graceful shutdown (PebbleDB FlushAll, etc.)
+echo "  ⏳ Waiting 10s for graceful shutdown (FlushAll)..."
+sleep 10
 
 # ─── Step 2: Kill tmux sessions (cleanup) ────────────────────
 for sess in "$GO_MASTER_SESSION" "$GO_SUB_SESSION" "$RUST_SESSION"; do

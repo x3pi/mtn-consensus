@@ -61,7 +61,7 @@ echo ""
 # Step 1: Stop everything
 # ==============================================================================
 echo -e "${BLUE}📋 Step 1: Stop all processes...${NC}"
-"$SCRIPT_DIR/stop_all.sh"
+# "$SCRIPT_DIR/stop_all.sh"
 sleep 2
 
 # ==============================================================================

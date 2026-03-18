@@ -10,14 +10,9 @@ message TransactionExe {
     uint32 worker_id = 2;
 }
 
-message CommittedBlock {
-    uint64 epoch = 1; // Ta có thể dùng trường 'round' của Certificate
-    uint64 height = 2; // Tương tự, có thể dùng 'round'
-    repeated TransactionExe transactions = 3;
-}
-
-message CommittedEpochData {
-    repeated CommittedBlock blocks = 1;
+message ExecutableBlock {
+    // FLATTENED: List of all deduplicated and sorted transactions for this block
+    repeated TransactionExe transactions = 1;
     // CRITICAL FORK-SAFETY: global_exec_index ensures deterministic execution order across all nodes
     // This is the global execution index (Checkpoint Sequence Number) that increases continuously
     // across epochs without resetting. All nodes must execute blocks with the same global_exec_index

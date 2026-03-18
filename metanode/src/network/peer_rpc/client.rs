@@ -464,6 +464,7 @@ pub async fn fetch_blocks_from_peer(
     while current_from <= to_block {
         let current_to = std::cmp::min(current_from + batch_size - 1, to_block);
         let mut batch_fetched = false;
+        let mut max_block_fetched = 0;
 
         // Try each peer until one succeeds for this batch
         for peer_addr in peer_addresses {
@@ -483,8 +484,11 @@ pub async fn fetch_blocks_from_peer(
                         current_to,
                         peer_addr
                     );
-                    all_blocks.extend(blocks);
                     batch_fetched = true;
+                    if let Some(max_block) = blocks.iter().map(|b| b.block_number).max() {
+                        max_block_fetched = max_block;
+                    }
+                    all_blocks.extend(blocks);
                     break;
                 }
                 Err(e) => {
@@ -508,7 +512,7 @@ pub async fn fetch_blocks_from_peer(
         // Yield execution to allow other async tasks (like socket listeners) to run
         tokio::task::yield_now().await;
         
-        current_from = current_to + 1;
+        current_from = std::cmp::max(current_from + 1, max_block_fetched + 1);
     }
 
     info!(
@@ -606,5 +610,152 @@ async fn fetch_block_batch(
     // Sort blocks by block_number for sequential processing
     blocks.sort_by_key(|b| b.block_number);
 
+    Ok(blocks)
+}
+
+/// Fetch ExecutableBlock protobuf bytes from peer Rust's /get_executable_blocks endpoint.
+/// Returns Vec<(global_exec_index, raw_protobuf_bytes)> — these are EXACTLY what Go expects
+/// on the dataChan, ready to be sent via send_block_data().
+///
+/// NO Go PebbleDB involved — pure Rust-to-Rust sync.
+pub async fn fetch_executable_blocks_from_peer(
+    peer_addresses: &[String],
+    from_gei: u64,
+    to_gei: u64,
+) -> Result<Vec<(u64, Vec<u8>)>> {
+    if peer_addresses.is_empty() {
+        return Err(anyhow::anyhow!("No peer addresses configured"));
+    }
+
+    let total = to_gei.saturating_sub(from_gei) + 1;
+    info!(
+        "🔄 [EXEC-BLOCK-FETCH] Fetching {} executable blocks (GEI {} to {}) from {} peer(s)",
+        total, from_gei, to_gei, peer_addresses.len()
+    );
+
+    let mut all_blocks = Vec::new();
+    let batch_size = 100u64;
+    let mut current_from = from_gei;
+
+    while current_from <= to_gei {
+        let current_to = std::cmp::min(current_from + batch_size - 1, to_gei);
+        let mut batch_fetched = false;
+
+        for peer_addr in peer_addresses {
+            match fetch_executable_block_batch(peer_addr, current_from, current_to).await {
+                Ok(blocks) => {
+                    if blocks.is_empty() {
+                        continue;
+                    }
+                    info!(
+                        "✅ [EXEC-BLOCK-FETCH] Got {} executable blocks (GEI {}-{}) from peer {}",
+                        blocks.len(), current_from, current_to, peer_addr
+                    );
+                    batch_fetched = true;
+                    all_blocks.extend(blocks);
+                    break;
+                }
+                Err(e) => {
+                    warn!(
+                        "⚠️ [EXEC-BLOCK-FETCH] Peer {} failed for GEI {}-{}: {}",
+                        peer_addr, current_from, current_to, e
+                    );
+                    continue;
+                }
+            }
+        }
+
+        if !batch_fetched {
+            warn!(
+                "⚠️ [EXEC-BLOCK-FETCH] All peers failed for batch GEI {}-{}. Returning {} blocks so far.",
+                current_from, current_to, all_blocks.len()
+            );
+            break;
+        }
+
+        tokio::task::yield_now().await;
+        current_from = current_to + 1;
+    }
+
+    // Sort by GEI for sequential execution
+    all_blocks.sort_by_key(|(gei, _)| *gei);
+
+    info!(
+        "📦 [EXEC-BLOCK-FETCH] Total: {} executable blocks fetched",
+        all_blocks.len()
+    );
+    Ok(all_blocks)
+}
+
+/// Fetch a single batch of executable blocks from one peer via HTTP
+async fn fetch_executable_block_batch(
+    peer_addr: &str,
+    from_gei: u64,
+    to_gei: u64,
+) -> Result<Vec<(u64, Vec<u8>)>> {
+    use tokio::net::TcpStream;
+
+    let mut stream = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        TcpStream::connect(peer_addr),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Connection timeout to {}", peer_addr))?
+    .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {}", peer_addr, e))?;
+
+    // Use /get_executable_blocks — reads from Rust file store, NOT Go PebbleDB
+    let request = format!(
+        "GET /get_executable_blocks?from={}&to={} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        from_gei, to_gei, peer_addr
+    );
+    stream.write_all(request.as_bytes()).await?;
+
+    let mut buffer = Vec::new();
+    let mut temp = [0u8; 65536];
+    let read_result = tokio::time::timeout(std::time::Duration::from_secs(300), async {
+        loop {
+            match stream.read(&mut temp).await {
+                Ok(0) => break,
+                Ok(n) => buffer.extend_from_slice(&temp[..n]),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    })
+    .await;
+
+    match read_result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to read response: {}", e)),
+        Err(_) => return Err(anyhow::anyhow!("Timeout reading from {}", peer_addr)),
+    }
+
+    // Parse HTTP response
+    let response_str = String::from_utf8_lossy(&buffer);
+    let body_start = response_str
+        .find("\r\n\r\n")
+        .map(|i| i + 4)
+        .or_else(|| response_str.find("\n\n").map(|i| i + 2))
+        .unwrap_or(0);
+
+    let body = &response_str[body_start..];
+
+    // Parse response — same GetBlocksResponse format but blocks contain raw ExecutableBlock bytes
+    let response: GetBlocksResponse = serde_json::from_str(body.trim())
+        .map_err(|e| anyhow::anyhow!("Failed to parse response JSON: {}", e))?;
+
+    if let Some(error) = &response.error {
+        return Err(anyhow::anyhow!("Peer returned error: {}", error));
+    }
+
+    // Decode hex → raw ExecutableBlock protobuf bytes (NOT proto::BlockData!)
+    let mut blocks = Vec::with_capacity(response.blocks.len());
+    for (gei, hex_data) in &response.blocks {
+        let data = hex::decode(hex_data)
+            .map_err(|e| anyhow::anyhow!("Failed to decode hex for GEI {}: {}", gei, e))?;
+        blocks.push((*gei, data));
+    }
+
+    blocks.sort_by_key(|(gei, _)| *gei);
     Ok(blocks)
 }

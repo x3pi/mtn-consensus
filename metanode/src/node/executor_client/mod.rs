@@ -12,6 +12,7 @@
 //! - `transition_handoff`: Epoch transition handoff APIs
 
 mod block_sending;
+pub mod block_store;
 mod block_sync;
 pub mod connection_pool;
 pub mod persistence;
@@ -167,6 +168,11 @@ impl ExecutorClient {
     /// Check if this node can commit transactions (only node 0)
     pub fn can_commit(&self) -> bool {
         self.can_commit
+    }
+
+    /// Get the storage path for persistence (used by block_store for sync)
+    pub fn storage_path(&self) -> Option<&std::path::Path> {
+        self.storage_path.as_deref()
     }
 
     /// Set the Go lag handle for backpressure signaling to SystemTransactionProvider

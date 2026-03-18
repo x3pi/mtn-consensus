@@ -108,25 +108,46 @@ rm -rf "$NODE_DATA/data"
 rm -rf "$NODE_DATA/data-write"
 rm -rf "$NODE_DATA/back_up"
 rm -rf "$NODE_DATA/back_up_write"
+# Delete Rust DAG database so it can sync from scratch over the network
+rm -rf "$METANODE_ROOT/config/storage/node_$NODE_ID"
 echo -e "${GREEN}  ✅ Dữ liệu đã xóa${NC}"
 
 # ─── Step 3: Restore từ Snapshot ──────────────────────────────
-echo -e "${BLUE}[3/4] 📸 Khôi phục từ $SNAP_NAME...${NC}"
+echo -e "${BLUE}[3/4] 📸 Khôi phục từ $SNAP_NAME (Copying 59GB)...${NC}"
 
 # Tạo thư mục cha trước
-mkdir -p "$NODE_DATA/data"
-
-# Dùng hardlink (cp -rl) — gần như tức thì trên cùng filesystem
-cp -rl "$SNAP_DIR" "$NODE_DATA/data/data"
-
-# Tạo các thư mục bắt buộc
-mkdir -p "$NODE_DATA/data/data/xapian_node"
-mkdir -p "$NODE_DATA/data-write/data/xapian_node"
+mkdir -p "$NODE_DATA/data/data"
+mkdir -p "$NODE_DATA/data-write/data"
 mkdir -p "$NODE_DATA/back_up"
 mkdir -p "$NODE_DATA/back_up_write"
 
-RESTORED_SIZE=$(du -sh "$NODE_DATA/data/data" 2>/dev/null | awk '{print $1}')
-echo -e "${GREEN}  ✅ Đã khôi phục: $RESTORED_SIZE${NC}"
+# Copy LevelDB dirs to BOTH Master (data/data) and Sub (data-write/data)
+# Because the snapshot was taken from Sub, putting it in Master makes Master fully synced.
+# Putting it in Sub allows Sub to continue executing.
+echo "  📁 Mapping LevelDB & Xapian dirs..."
+for folder in account_state blocks mapping receipts smart_contract_code smart_contract_storage stake_db transaction_state trie_database backup_device_key_storage xapian_node; do
+  if [ -d "$SNAP_DIR/$folder" ]; then
+    cp -a "$SNAP_DIR/$folder" "$NODE_DATA/data/data/"
+    cp -a "$SNAP_DIR/$folder" "$NODE_DATA/data-write/data/"
+  fi
+done
+
+# Copy PebbleDB dirs
+echo "  📁 Mapping PebbleDB dirs..."
+if [ -d "$SNAP_DIR/back_up" ]; then 
+    cp -a "$SNAP_DIR/back_up/"* "$NODE_DATA/back_up/" 2>/dev/null || true
+fi
+if [ -d "$SNAP_DIR/back_up_write" ]; then 
+    cp -a "$SNAP_DIR/back_up_write/"* "$NODE_DATA/back_up_write/" 2>/dev/null || true
+fi
+
+# Tạo các thư mục bắt buộc (và loại bỏ LOCK cũ rác nếu có)
+find "$NODE_DATA" -name "LOCK" -delete 2>/dev/null
+mkdir -p "$NODE_DATA/data/data/xapian_node"
+mkdir -p "$NODE_DATA/data-write/data/xapian_node"
+
+RESTORED_SIZE=$(du -sh "$NODE_DATA" 2>/dev/null | awk '{print $1}')
+echo -e "${GREEN}  ✅ Đã khôi phục tổng cộng: $RESTORED_SIZE${NC}"
 
 # ─── Step 4: Khởi động lại ────────────────────────────────────
 echo -e "${BLUE}[4/4] 🚀 Khởi động Node $NODE_ID...${NC}"

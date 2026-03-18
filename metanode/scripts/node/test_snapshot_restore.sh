@@ -134,45 +134,36 @@ echo ""
 echo -e "${YELLOW}📂 Step 5: Restoring data to Node $DST_NODE...${NC}"
 
 # Create target directory structure
+# Create target directory structure
 mkdir -p "$DST/data/data"
 mkdir -p "$DST/back_up"
-mkdir -p "$DST/data-write"
+mkdir -p "$DST/data-write/data"
 mkdir -p "$DST/back_up_write"
 
-# 5a. Move LevelDB dirs → data/data/
-echo "  📁 Mapping LevelDB dirs → data/data/"
+# 5a. Move LevelDB dirs to BOTH Master (data/data) and Sub (data-write/data)
+echo "  📁 Mapping LevelDB & Xapian dirs..."
 for dir_name in $LEVELDB_DIRS; do
     if [ -d "$DOWNLOAD_DIR/$dir_name" ]; then
-        mv "$DOWNLOAD_DIR/$dir_name" "$DST/data/data/$dir_name"
+        # Copy to Master
+        cp -a "$DOWNLOAD_DIR/$dir_name" "$DST/data/data/"
+        # Copy to Sub
+        cp -a "$DOWNLOAD_DIR/$dir_name" "$DST/data-write/data/"
         echo -e "${GREEN}    ✅ $dir_name/${NC}"
     fi
 done
 
-# 5b. Move back_up/ (PebbleDB) → back_up/
+# 5b. Move back_up/ (Master PebbleDB) → back_up/
 if [ -d "$DOWNLOAD_DIR/back_up" ]; then
-    # Snapshot stores back_up/ which contains backup_db/
     cp -r "$DOWNLOAD_DIR/back_up/"* "$DST/back_up/" 2>/dev/null || true
-    rm -rf "$DOWNLOAD_DIR/back_up"
     SIZE=$(du -sh "$DST/back_up" 2>/dev/null | cut -f1)
     echo -e "${GREEN}    ✅ back_up/ → $SIZE${NC}"
 else
     echo -e "${YELLOW}    ⚠️  back_up/ not in snapshot${NC}"
 fi
 
-# 5c. Move data-write/ (Sub LevelDB) → data-write/
-if [ -d "$DOWNLOAD_DIR/data-write" ]; then
-    cp -r "$DOWNLOAD_DIR/data-write/"* "$DST/data-write/" 2>/dev/null || true
-    rm -rf "$DOWNLOAD_DIR/data-write"
-    SIZE=$(du -sh "$DST/data-write" 2>/dev/null | cut -f1)
-    echo -e "${GREEN}    ✅ data-write/ → $SIZE${NC}"
-else
-    echo -e "${YELLOW}    ⚠️  data-write/ not in snapshot${NC}"
-fi
-
-# 5d. Move back_up_write/ (Sub PebbleDB) → back_up_write/
+# 5c. Move back_up_write/ (Sub PebbleDB) → back_up_write/
 if [ -d "$DOWNLOAD_DIR/back_up_write" ]; then
     cp -r "$DOWNLOAD_DIR/back_up_write/"* "$DST/back_up_write/" 2>/dev/null || true
-    rm -rf "$DOWNLOAD_DIR/back_up_write"
     SIZE=$(du -sh "$DST/back_up_write" 2>/dev/null | cut -f1)
     echo -e "${GREEN}    ✅ back_up_write/ → $SIZE${NC}"
 else
@@ -183,8 +174,8 @@ fi
 echo ""
 echo -e "${GREEN}  📊 Restored data:${NC}"
 echo "     data/data/:     $(du -sh "$DST/data/data/" 2>/dev/null | cut -f1)"
+echo "     data-write/data/: $(du -sh "$DST/data-write/data/" 2>/dev/null | cut -f1)"
 echo "     back_up/:       $(du -sh "$DST/back_up/" 2>/dev/null | cut -f1)"
-echo "     data-write/:    $(du -sh "$DST/data-write/" 2>/dev/null | cut -f1)"
 echo "     back_up_write/: $(du -sh "$DST/back_up_write/" 2>/dev/null | cut -f1)"
 
 # ── Step 5e: Clean PebbleDB LOCK files ─────────────────────

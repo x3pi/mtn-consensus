@@ -20,8 +20,8 @@ pkill -f "metanode start" 2>/dev/null || true
 pkill -f "metanode run" 2>/dev/null || true
 pkill -f "tps_blast" 2>/dev/null || true
 
-echo "⏳ Waiting 5s for graceful shutdown..."
-sleep 5
+echo "⏳ Waiting 10s for graceful shutdown (FlushAll)..."
+sleep 10
 
 # Kill all tmux sessions
 echo -e "${YELLOW}🗑️  Cleaning tmux sessions...${NC}"

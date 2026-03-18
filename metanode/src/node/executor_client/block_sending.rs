@@ -17,7 +17,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{error, info, trace, warn};
 
 use super::persistence::{persist_last_sent_index, write_uvarint};
-use super::proto::{CommittedBlock, CommittedEpochData, TransactionExe};
+use super::proto::{ExecutableBlock, TransactionExe};
 use super::ExecutorClient;
 use super::{GO_VERIFICATION_INTERVAL, MAX_BUFFER_SIZE};
 
@@ -41,6 +41,16 @@ impl ExecutorClient {
 
         // Count total transactions BEFORE conversion (to detect if transactions are lost)
         let total_tx_before: usize = subdag.blocks.iter().map(|b| b.transactions().len()).sum();
+
+        // 🔍 DIAGNOSTIC: Log ALL commits with transactions (not just trace level)
+        if total_tx_before > 0 {
+            let block_details: Vec<String> = subdag.blocks.iter().enumerate().map(|(i, b)| {
+                format!("block[{}]: {} txs, {} bytes each", i, b.transactions().len(),
+                    b.transactions().first().map(|t| t.data().len()).unwrap_or(0))
+            }).collect();
+            info!("🔍 [DIAG] send_committed_subdag: global_exec_index={}, commit_index={}, epoch={}, total_tx_before={}, blocks={}, details=[{}]",
+                global_exec_index, subdag.commit_ref.index, epoch, total_tx_before, subdag.blocks.len(), block_details.join(", "));
+        }
 
         // REPLAY PROTECTION: Discard blocks that are already processed
         // This is critical when Consensus replays old commits on restart
@@ -78,6 +88,8 @@ impl ExecutorClient {
         let epoch_data_bytes = if total_tx_before == 0 {
             self.convert_to_protobuf_empty(subdag, epoch, global_exec_index, leader_address)?
         } else {
+            info!("🔍 [DIAG] Using FULL convert_to_protobuf path for global_exec_index={} (total_tx_before={})",
+                global_exec_index, total_tx_before);
             self.convert_to_protobuf(subdag, epoch, global_exec_index, leader_address)?
         };
 
@@ -155,7 +167,7 @@ impl ExecutorClient {
                 global_exec_index,
                 (epoch_data_bytes, epoch, subdag.commit_ref.index),
             );
-            trace!("📦 [SEQUENTIAL-BUFFER] Added block to buffer: global_exec_index={}, commit_index={}, epoch={}, blocks={}, total_tx={}, buffer_size={}",
+            info!("📦 [SEQUENTIAL-BUFFER] Added block to buffer: global_exec_index={}, commit_index={}, epoch={}, blocks={}, total_tx={}, buffer_size={}",
                 global_exec_index, subdag.commit_ref.index, epoch, subdag.blocks.len(), total_tx, buffer.len());
         }
 
@@ -192,7 +204,7 @@ impl ExecutorClient {
                 let min_buffered = *buffer.keys().next().unwrap_or(&0);
                 let max_buffered = *buffer.keys().last().unwrap_or(&0);
                 let gap = min_buffered.saturating_sub(*next_expected);
-                trace!("📊 [FLUSH BUFFER] Buffer status: size={}, range={}..{}, next_expected={}, gap={}", 
+                info!("📊 [FLUSH BUFFER] Buffer status: size={}, range={}..{}, next_expected={}, gap={}", 
                     buffer.len(), min_buffered, max_buffered, *next_expected, gap);
             }
         }
@@ -212,16 +224,21 @@ impl ExecutorClient {
                     warn!("⚠️  [SEQUENTIAL-BUFFER] Large gap detected: min_buffered={}, gap={}. Syncing with Go using fast 2-second timeout...", 
                         min_buffered, gap);
 
-                    let sync_future = self.get_last_block_number();
-                    if let Ok(Ok(go_last_block)) =
+                    // CRITICAL FIX: Use get_last_global_exec_index() instead of get_last_block_number()
+                    // get_last_block_number() returns Go block NUMBER (counts only non-empty commits)
+                    // but next_expected_index tracks GEI (counts ALL commits including empty ones)
+                    // Using block number (e.g. 6) when GEI is ~9000 creates a permanent gap > 100,
+                    // causing an infinite sync loop where TX blocks are buffered but never sent.
+                    let sync_future = self.get_last_global_exec_index();
+                    if let Ok(Ok(go_last_gei)) =
                         tokio::time::timeout(tokio::time::Duration::from_secs(2), sync_future).await
                     {
-                        let go_next_expected = go_last_block + 1;
+                        let go_next_expected = go_last_gei + 1;
 
                         let mut next_expected_guard = self.next_expected_index.lock().await;
                         if go_next_expected > *next_expected_guard {
-                            info!("📊 [SINGLE-SOURCE-TRUTH] Updating next_expected from {} to {} (from Go last_block={})",
-                                *next_expected_guard, go_next_expected, go_last_block);
+                            info!("📊 [SINGLE-SOURCE-TRUTH] Updating next_expected from {} to {} (from Go last_gei={})",
+                                *next_expected_guard, go_next_expected, go_last_gei);
                             *next_expected_guard = go_next_expected;
 
                             let mut buffer = self.send_buffer.lock().await;
@@ -237,7 +254,7 @@ impl ExecutorClient {
                             }
                         }
                     } else {
-                        warn!("⚠️  [SEQUENTIAL-BUFFER] get_last_block_number timed out or failed. Continuing buffered sender...");
+                        warn!("⚠️  [SEQUENTIAL-BUFFER] get_last_global_exec_index timed out or failed. Continuing buffered sender...");
                     }
                 } else if gap > 0 {
                     trace!("⏸️  [SEQUENTIAL-BUFFER] Small gap={} (normal during high throughput), waiting for blocks to arrive", gap);
@@ -382,6 +399,25 @@ impl ExecutorClient {
                     );
                 }
             }
+
+            // Phase 4.5: Store ExecutableBlock bytes for sync peers
+            // This allows sync nodes to fetch blocks directly from Rust RocksDB
+            // without going through Go PebbleDB.
+            {
+                let block_refs: Vec<(u64, &[u8])> = batch
+                    .iter()
+                    .map(|(gei, data, _, _)| (*gei, data.as_slice()))
+                    .collect();
+                if let Err(e) =
+                    super::block_store::store_executable_blocks_batch(storage_path, &block_refs)
+                        .await
+                {
+                    warn!(
+                        "⚠️ [BLOCK STORE] Failed to store executable blocks (GEI {}→{}): {}",
+                        first_idx, last_idx, e
+                    );
+                }
+            }
         }
 
         // Phase 5: Go verification (unchanged — periodic check)
@@ -488,7 +524,7 @@ impl ExecutorClient {
     }
 
     /// Send block data via UDS/TCP (internal helper)
-    pub(super) async fn send_block_data(
+    pub async fn send_block_data(
         &self,
         epoch_data_bytes: &[u8],
         global_exec_index: u64,
@@ -613,9 +649,6 @@ impl ExecutorClient {
         }
     }
 
-    /// FAST-PATH: Convert empty CommittedSubDag to protobuf bytes.
-    /// Skips the expensive per-transaction hash/filter/sort logic.
-    /// Used when total user transactions == 0 (>95% of commits during sync).
     fn convert_to_protobuf_empty(
         &self,
         subdag: &CommittedSubDag,
@@ -623,19 +656,8 @@ impl ExecutorClient {
         global_exec_index: u64,
         leader_address: Option<Vec<u8>>,
     ) -> Result<Vec<u8>> {
-        // Build empty blocks (no transaction processing needed)
-        let blocks: Vec<CommittedBlock> = subdag
-            .blocks
-            .iter()
-            .map(|_| CommittedBlock {
-                epoch,
-                height: subdag.commit_ref.index as u64,
-                transactions: Vec::new(),
-            })
-            .collect();
-
-        let epoch_data = CommittedEpochData {
-            blocks,
+        let epoch_data = ExecutableBlock {
+            transactions: Vec::new(),
             global_exec_index,
             commit_index: subdag.commit_ref.index as u32,
             epoch,
@@ -664,118 +686,93 @@ impl ExecutorClient {
         global_exec_index: u64,
         leader_address: Option<Vec<u8>>,
     ) -> Result<Vec<u8>> {
-        // Build CommittedEpochData protobuf message using generated types
-        let mut blocks = Vec::new();
+        // Extract all transactions with hash for deterministic deduplication and sorting
+        // CRITICAL FORK-SAFETY: Deduplicate and sort transactions by hash to ensure all nodes send same order
+        let mut all_transactions_with_hash: Vec<(&[u8], Vec<u8>)> = Vec::new(); // (tx_data_ref, tx_hash)
+        let mut skipped_count = 0;
+        let mut system_tx_skipped = 0;
+        let mut protobuf_invalid_skipped = 0;
 
         for (block_idx, block) in subdag.blocks.iter().enumerate() {
-            // Extract transactions with hash for deterministic sorting
-            // CRITICAL FORK-SAFETY: Sort transactions by hash to ensure all nodes send same order
-            // OPTIMIZATION: Use references during sorting to reduce memory allocations
-            let mut transactions_with_hash: Vec<(&[u8], Vec<u8>)> =
-                Vec::with_capacity(block.transactions().len()); // (tx_data_ref, tx_hash)
-            let mut skipped_count = 0;
             let total_tx_in_block = block.transactions().len();
+            info!("🔍 [DIAG] convert_to_protobuf: block[{}] has {} transactions, global_exec_index={}",
+                block_idx, total_tx_in_block, global_exec_index);
             for (tx_idx, tx) in block.transactions().iter().enumerate() {
                 // Get transaction data (raw bytes) - Go needs transaction data, not digest
-                // IMPORTANT: tx.data() returns a reference to the original bytes, no modification
                 let tx_data = tx.data();
-                // 🔍 HASH INTEGRITY CHECK: Verify transaction data integrity by calculating hash
-                // This ensures data hasn't been modified during consensus
                 use crate::types::tx_hash::calculate_transaction_hash;
                 let tx_hash = calculate_transaction_hash(tx_data);
                 let tx_hash_hex = hex::encode(&tx_hash[..8.min(tx_hash.len())]);
-                let _tx_hash_full_hex = ""; // Removed: was hex::encode(&tx_hash) — unused computation
+
+                info!("🔍 [DIAG] TX[{}/{}]: hash={}..., size={} bytes",
+                    tx_idx, total_tx_in_block, tx_hash_hex, tx_data.len());
 
                 // 🔍 FILTER: Check if this is a SystemTransaction (BCS format) - skip if so
-                // SystemTransaction should not be sent to Go executor as Go doesn't understand BCS
                 if SystemTransaction::from_bytes(tx_data).is_ok() {
-                    trace!("ℹ️ [SYSTEM TX FILTER] Skipping SystemTransaction (BCS format) in block {} tx {}: hash={}..., size={} bytes",
+                    info!("⚠️ [SYSTEM TX FILTER] Skipping SystemTransaction (BCS format) in block {} tx {}: hash={}..., size={} bytes",
                         block_idx, tx_idx, tx_hash_hex, tx_data.len());
                     skipped_count += 1;
+                    system_tx_skipped += 1;
                     continue;
                 }
-
-                // Log transaction processing (general tracking, not specific transaction)
-                trace!("🔍 [TX HASH] Processing transaction: hash={}..., size={} bytes, block_idx={}, tx_idx={}",
-                    tx_hash_hex, tx_data.len(), block_idx, tx_idx);
 
                 // Verify transaction data is valid protobuf before sending to Go
-                // Uses strict validation (from_address must be non-empty) to filter
-                // non-user data like consensus internal messages
                 use crate::types::tx_hash::verify_transaction_protobuf;
                 if !verify_transaction_protobuf(tx_data) {
-                    trace!("🚫 [TX FILTER] Non-user transaction in committed block (hash={}..., size={} bytes, global_exec_index={}, commit_index={}). Skipping.", 
-                        tx_hash_hex, tx_data.len(), global_exec_index, subdag.commit_ref.index);
+                    info!("⚠️ [TX FILTER] Non-user transaction REJECTED by verify_transaction_protobuf (hash={}..., size={} bytes, global_exec_index={}, commit_index={}). First 32 bytes: {:?}", 
+                        tx_hash_hex, tx_data.len(), global_exec_index, subdag.commit_ref.index,
+                        &tx_data[..tx_data.len().min(32)]);
                     skipped_count += 1;
+                    protobuf_invalid_skipped += 1;
                     continue;
                 }
 
-                trace!(
-                    "🔍 [TX INTEGRITY] Verifying transaction data: hash={}, size={} bytes",
-                    tx_hash_hex,
-                    tx_data.len()
-                );
-
-                // Store transaction data reference with hash for sorting
-                // OPTIMIZATION: Avoid first clone by storing reference during sorting
-                transactions_with_hash.push((tx_data, tx_hash));
-                trace!("✅ [TX INTEGRITY] Transaction data preserved: hash={}..., size={} bytes (unchanged from submission)", 
-                    tx_hash_hex, tx_data.len());
+                info!("✅ [DIAG] TX[{}/{}] PASSED all filters: hash={}..., size={} bytes",
+                    tx_idx, total_tx_in_block, tx_hash_hex, tx_data.len());
+                all_transactions_with_hash.push((tx_data, tx_hash));
             }
-
-            // CRITICAL FORK-SAFETY: Sort transactions by hash (deterministic ordering)
-            // This ensures all nodes send transactions in the same order within a block
-            // Sort by hash bytes (lexicographic order) - deterministic across all nodes
-            transactions_with_hash.sort_by(|(_, hash_a), (_, hash_b)| hash_a.cmp(hash_b));
-
-            // Convert to TransactionExe messages after sorting
-            // OPTIMIZATION: Only clone once here instead of twice (during push + here)
-            let mut transactions = Vec::new();
-            for (_sorted_idx, (tx_data_ref, tx_hash)) in transactions_with_hash.iter().enumerate() {
-                let tx_hash_hex = hex::encode(&tx_hash[..8.min(tx_hash.len())]);
-                trace!(
-                    "📋 [FORK-SAFETY] Sorted transaction in block[{}]: hash={}",
-                    block_idx,
-                    tx_hash_hex
-                );
-
-                // Create TransactionExe message using generated protobuf code
-                // NOTE: We use "digest" field to store transaction data (raw bytes)
-                // Go will unmarshal this as transaction data
-                // OPTIMIZATION: Only clone once here (instead of during push + here)
-                let tx_exe = TransactionExe {
-                    digest: tx_data_ref.to_vec(), // Clone &[u8] to Vec<u8> - the only clone needed
-                    worker_id: 0,                 // Optional, set to 0 for now
-                };
-                transactions.push(tx_exe);
-            }
-            if skipped_count > 0 {
-                trace!(
-                    "⏭️ [TX FILTER] Block[{}] skipped {} non-user transactions out of {} total",
-                    block_idx,
-                    skipped_count,
-                    total_tx_in_block
-                );
-            }
-            trace!("✅ [FORK-SAFETY] Block[{}] transactions sorted: {} transactions (deterministic order by hash)", 
-                block_idx, transactions.len());
-
-            // Create CommittedBlock message using generated protobuf code
-            let committed_block = CommittedBlock {
-                epoch,
-                height: subdag.commit_ref.index as u64,
-                transactions,
-            };
-            blocks.push(committed_block);
         }
 
-        // CRITICAL FORK-SAFETY: Sort blocks by height (commit_index) to ensure deterministic order
-        // All nodes must send blocks in the same order
-        blocks.sort_by(|a, b| a.height.cmp(&b.height));
+        info!("🔍 [DIAG] convert_to_protobuf SUMMARY: global_exec_index={}, total_input={}, passed={}, system_tx_skipped={}, protobuf_invalid_skipped={}",
+            global_exec_index, skipped_count + all_transactions_with_hash.len(), all_transactions_with_hash.len(),
+            system_tx_skipped, protobuf_invalid_skipped);
 
-        // Create CommittedEpochData message using generated protobuf code
-        let epoch_data = CommittedEpochData {
-            blocks,
+        // CRITICAL FORK-SAFETY: Deduplicate and Sort transactions by hash (deterministic ordering)
+        // Step 1: Dedup by txHash — keep first occurrence
+        let original_len = all_transactions_with_hash.len();
+        let mut unique_txs = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (tx_data, tx_hash) in all_transactions_with_hash {
+            if seen.insert(tx_hash.clone()) {
+                unique_txs.push((tx_data, tx_hash));
+            }
+        }
+        if unique_txs.len() < original_len {
+            trace!("🔍 [FORK-SAFETY] Deduped transactions: {} → {} unique", original_len, unique_txs.len());
+        }
+
+        // Step 2: Sort by txHash for deterministic ordering across all nodes
+        unique_txs.sort_by(|(_, hash_a), (_, hash_b)| hash_a.cmp(hash_b));
+
+        // Convert to TransactionExe messages after sorting
+        let mut transactions = Vec::with_capacity(unique_txs.len());
+        for (_sorted_idx, (tx_data_ref, tx_hash)) in unique_txs.iter().enumerate() {
+            let tx_hash_hex = hex::encode(&tx_hash[..8.min(tx_hash.len())]);
+            trace!(
+                "📋 [FORK-SAFETY] Sorted transaction: hash={}",
+                tx_hash_hex
+            );
+
+            let tx_exe = TransactionExe {
+                digest: tx_data_ref.to_vec(),
+                worker_id: 0,
+            };
+            transactions.push(tx_exe);
+        }
+
+        // Create ExecutableBlock message using generated protobuf code
+        let epoch_data = ExecutableBlock {
+            transactions,
             global_exec_index,
             commit_index: subdag.commit_ref.index as u32,
             epoch,
@@ -788,9 +785,9 @@ impl ExecutorClient {
         let mut buf = Vec::new();
         epoch_data.encode(&mut buf)?;
 
-        let total_tx_encoded: usize = epoch_data.blocks.iter().map(|b| b.transactions.len()).sum();
-        trace!("📦 [TX INTEGRITY] Encoded CommittedEpochData: global_exec_index={}, commit_index={}, epoch={}, blocks={}, total_tx={}, total_size={} bytes (using protobuf encoding)", 
-            global_exec_index, subdag.commit_ref.index, epoch, epoch_data.blocks.len(), total_tx_encoded, buf.len());
+        let total_tx_encoded = epoch_data.transactions.len();
+        info!("📦 [TX INTEGRITY] Encoded ExecutableBlock: global_exec_index={}, commit_index={}, epoch={}, total_tx={}, total_size={} bytes (using protobuf encoding)", 
+            global_exec_index, subdag.commit_ref.index, epoch, total_tx_encoded, buf.len());
 
         Ok(buf)
     }

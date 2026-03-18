@@ -49,16 +49,13 @@ impl RustSyncNode {
         // STABILITY FIX: Track consecutive sync errors to detect stale connections
         let mut consecutive_errors: u32 = 0;
         const MAX_CONSECUTIVE_ERRORS: u32 = 5;
+        let mut last_sync_got_blocks = false; // Track if last sync fetched any blocks
 
         loop {
             // Determine if we're catching up (behind network)
-            let catching_up = {
-                let queue = self.block_queue.lock().await;
-                let pending = queue.pending_count();
-                // Turbo mode ONLY if we have pending commits waiting to be drained
-                // Previously had `queue.next_expected() > 1` which was always true!
-                pending > 0
-            };
+            // FIXED: Use last_sync_got_blocks instead of queue.pending_count()
+            // The old Mysticeti queue is not used with RUST-ONLY sync path
+            let catching_up = last_sync_got_blocks;
 
             // Check if peer epoch is ahead (triggers turbo mode)
             let go_epoch = self.executor_client.get_current_epoch().await.unwrap_or(0);
@@ -82,7 +79,8 @@ impl RustSyncNode {
             }
 
             let sleep_duration = if is_turbo_mode {
-                turbo_interval
+                // When catching up: minimal sleep to maximize throughput
+                Duration::from_millis(50)
             } else {
                 normal_interval
             };
@@ -91,7 +89,9 @@ impl RustSyncNode {
                 _ = tokio::time::sleep(sleep_duration) => {
                     let timer = self.metrics.sync_round_duration_seconds.start_timer();
                     match self.sync_once().await {
-                        Ok(_) => {
+                        Ok(blocks_synced) => {
+                            // Track whether we got blocks for turbo mode detection
+                            last_sync_got_blocks = blocks_synced > 0;
                             // Success - reset error counter
                             if consecutive_errors > 0 {
                                 info!("✅ [RUST-SYNC] Sync recovered after {} errors", consecutive_errors);
@@ -133,7 +133,8 @@ impl RustSyncNode {
     /// 1. Sync queue with Go's progress (authoritative)
     /// 2. Fetch commits from peers → push to queue
     /// 3. Drain ready commits from queue → send to Go sequentially
-    async fn sync_once(&mut self) -> Result<()> {
+    /// Returns Ok(blocks_synced_count) on success
+    async fn sync_once(&mut self) -> Result<usize> {
         // Get current state from Go - this is the AUTHORITATIVE source of truth
         // CRITICAL: Use GEI (global_exec_index) instead of block_number for queue sync!
         // block_number only counts TX-containing blocks (stays 0 for empty consensus blocks)
@@ -210,161 +211,86 @@ impl RustSyncNode {
             );
         }
 
-        // PHASE 2: Fetch commits from peers and push to queue
-        if let Some(ref network_client) = self.network_client {
-            // Clone committee before await to drop guard immediately
-            let committee_opt: Option<consensus_config::Committee> = {
-                let guard = self.committee.read().expect("committee lock poisoned");
-                guard.clone()
-            }; // guard dropped here
+        // ═══════════════════════════════════════════════════════════════════════════
+        // SYNC STRATEGY: PRE-COMMITTED BLOCK IMPORT (PRODUCTION)
+        // ═══════════════════════════════════════════════════════════════════════════
+        // Fetch pre-committed BlockData from peer's /get_blocks endpoint.
+        // Import directly via sync_blocks → Go HandleSyncBlocksRequest.
+        // NO RE-EXECUTION on sync node — blocks arrive with correct hash, stateRoot,
+        // blockNumber already embedded. Fork impossible.
+        //
+        // Flow: Peer Go (backup storage) → Peer Rust RPC → Network → Local Rust
+        //       → sync_blocks (UDS) → Go HandleSyncBlocksRequest → direct DB import
+        //
+        // Validator stores backup data after execution. Sync node imports same data.
+        // Both nodes end up with identical blocks — no re-execution, no numbering mismatch.
+        // ═══════════════════════════════════════════════════════════════════════════
+        let peer_rpc_addresses = self.config.peer_rpc_addresses.clone();
+        if !peer_rpc_addresses.is_empty() {
+            // Use Go's last block number as the sync cursor
+            // HandleSyncBlocksRequest works with block numbers from block headers
+            let go_block = match self.executor_client.get_last_block_number().await {
+                Ok(block_num) => block_num,
+                Err(e) => {
+                    warn!("[RUST-SYNC] Failed to get last block number: {}", e);
+                    return Ok(0);
+                }
+            };
 
-            if let Some(ref committee) = committee_opt {
-                let fetch_from_gei = {
-                    let queue = self.block_queue.lock().await;
-                    queue.next_expected()
-                };
+            let from_block = go_block + 1;
+            let batch_size = self.config.turbo_batch_size as u64;
+            let to_block = from_block + batch_size - 1;
 
-                let batch_size = self.config.fetch_batch_size as u64;
+            debug!(
+                "🔄 [RUST-SYNC] Fetching pre-committed blocks {} to {} from peers",
+                from_block, to_block
+            );
 
-                // ═══════════════════════════════════════════════════════════════
-                // OPTIMIZED: Always use global range fetch for SyncOnly nodes.
-                // Epoch-local fetch consistently hits a gap (epoch-local commit
-                // indices ≠ GEI), wasting a full round-trip before falling back.
-                // Global range fetch uses the actual GEI directly — no conversion.
-                // ═══════════════════════════════════════════════════════════════
-                debug!(
-                    "[RUST-SYNC] PHASE 2: Direct global-range fetch from GEI={} batch={}",
-                    fetch_from_gei, batch_size
-                );
+            // Fetch pre-committed BlockData from peer's /get_blocks endpoint
+            match crate::network::peer_rpc::fetch_blocks_from_peer(
+                &peer_rpc_addresses,
+                from_block,
+                to_block,
+            )
+            .await
+            {
+                Ok(blocks) if !blocks.is_empty() => {
+                    let count = blocks.len();
+                    info!(
+                        "✅ [RUST-SYNC] Got {} pre-committed blocks from peers, importing via sync_blocks",
+                        count
+                    );
 
-                match self
-                    .fetch_and_queue_by_global_range(
-                        network_client,
-                        committee,
-                        fetch_from_gei,
-                        fetch_from_gei + batch_size,
-                    )
-                    .await
-                {
-                    Ok(pushed) => {
-                        if pushed == 0 {
-                            debug!("[RUST-SYNC] PHASE 2: No commits fetched this iteration");
-
-                            // EPOCH EXHAUSTION DETECTION:
-                            let rust_epoch = self.current_epoch.load(Ordering::SeqCst);
-                            let peer_addrs = &self.config.peer_rpc_addresses;
-                            if !peer_addrs.is_empty() {
-                                match query_peer_epochs_network(peer_addrs).await {
-                                    Ok((peer_max_epoch, _peer_block, _peer_addr, _peer_gei)) => {
-                                        if peer_max_epoch > rust_epoch {
-                                            info!(
-                                                "🔄 [EPOCH-EXHAUSTION] Current epoch {} exhausted! Peers at epoch {}. Advancing...",
-                                                rust_epoch, peer_max_epoch
-                                            );
-                                            self.auto_epoch_sync(peer_max_epoch, rust_epoch).await;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        debug!("[EPOCH-EXHAUSTION] Failed to query peers: {}", e);
-                                    }
-                                }
-                            }
-
-                            // GO BLOCK-FETCH FALLBACK: When GLOBAL-SYNC fails (validators
-                            // pruned old epoch commits from Mysticeti), fetch blocks from
-                            // peers' Go databases which store ALL historical blocks.
-                            let peer_rpc_addresses = self.config.peer_rpc_addresses.clone();
-                            if !peer_rpc_addresses.is_empty() {
-                                match self.executor_client.get_last_block_number().await {
-                                    Ok(last_block) => {
-                                        let from_block = last_block + 1;
-                                        let go_batch = self.config.turbo_batch_size as u64;
-                                        info!(
-                                            "🔄 [GO-BLOCK-FALLBACK] GLOBAL-SYNC empty, trying Go block fetch from block {} (batch={})",
-                                            from_block, go_batch
-                                        );
-                                        match self
-                                            .fetch_blocks_from_peer_go(&peer_rpc_addresses, from_block, go_batch)
-                                            .await
-                                        {
-                                            Ok(synced) if synced > 0 => {
-                                                info!(
-                                                    "✅ [GO-BLOCK-FALLBACK] Synced {} blocks via Go block fetch",
-                                                    synced
-                                                );
-                                            }
-                                            Ok(_) => {
-                                                debug!("[GO-BLOCK-FALLBACK] No blocks available from Go peers");
-                                            }
-                                            Err(e) => {
-                                                debug!("[GO-BLOCK-FALLBACK] Go block fetch failed: {}", e);
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        debug!("[GO-BLOCK-FALLBACK] Failed to get last block number: {}", e);
-                                    }
-                                }
-                            }
+                    // Import blocks directly into Go — NO re-execution
+                    match self.executor_client.sync_blocks(blocks).await {
+                        Ok((synced, last_block)) => {
+                            info!(
+                                "✅ [RUST-SYNC] Imported {} blocks (last: {})",
+                                synced, last_block
+                            );
+                            self.check_and_process_pending_epoch_transitions(go_last_gei).await;
+                            return Ok(synced as usize);
+                        }
+                        Err(e) => {
+                            warn!("⚠️ [RUST-SYNC] sync_blocks failed: {}", e);
                         }
                     }
-                    Err(e) => {
-                        warn!("[RUST-SYNC] PHASE 2 Fetch error: {}, will retry", e);
-                    }
                 }
-            } else {
-                warn!("[RUST-SYNC] PHASE 2 SKIPPED: committee is None");
+                Ok(_) => {
+                    debug!("[RUST-SYNC] No new blocks available from peers");
+                }
+                Err(e) => {
+                    debug!("[RUST-SYNC] Fetch from peers failed: {}", e);
+                }
             }
         } else {
-            // PHASE 2.5: Use Peer Go Sync when network_client is None (SyncOnly mode)
-            debug!("[RUST-SYNC] PHASE 2.5: No Mysticeti network, using Peer Go Sync");
-
-            let peer_addresses = self.config.peer_rpc_addresses.clone();
-            if !peer_addresses.is_empty() {
-                let fetch_from = match self.executor_client.get_last_block_number().await {
-                    Ok(last_block) => last_block + 1,
-                    Err(e) => {
-                        warn!("[PEER-GO-SYNC] Failed to get last block number: {}", e);
-                        return Ok(());
-                    }
-                };
-
-                // Use turbo batch size for faster catchup - SyncOnly without network usually needs to catch up fast
-                let batch_size = self.config.turbo_batch_size as u64;
-
-                match self
-                    .fetch_blocks_from_peer_go(&peer_addresses, fetch_from, batch_size)
-                    .await
-                {
-                    Ok(synced) => {
-                        if synced > 0 {
-                            debug!("✅ [PEER-GO-SYNC] Synced {} blocks via Peer Go", synced);
-                        }
-                    }
-                    Err(e) => {
-                        debug!("[PEER-GO-SYNC] Peer Go sync failed: {}", e);
-                    }
-                }
-            } else {
-                warn!("[RUST-SYNC] PHASE 2.5 SKIPPED: No peer addresses available (network_client is None and committee is None)");
-            }
+            warn!("[RUST-SYNC] No peer addresses configured — cannot sync");
         }
 
-        // PHASE 3: Drain ready commits from queue and send to Go
-        let blocks_sent = self.process_queue().await?;
-        if blocks_sent > 0 {
-            info!(
-                "📥 [RUST-SYNC] Sent {} blocks to Go (queue-based)",
-                blocks_sent
-            );
-            // Update throughput gauge
-            let round_elapsed = go_query_start.elapsed().as_secs_f64();
-            if round_elapsed > 0.0 {
-                self.metrics
-                    .blocks_per_second
-                    .set(blocks_sent as f64 / round_elapsed);
-            }
-        }
+        // NOTE: process_queue() is INTENTIONALLY NOT CALLED.
+        // CommittedSubDag causes Go to re-execute transactions → fork.
+        // GO-BLOCK-FALLBACK sends pre-committed blocks directly → no fork.
+
         // =============================================================================
         // PHASE 4: Check pending epoch transitions (from deferred AdvanceEpoch)
         // If sync has caught up to a pending transition's boundary, process it now
@@ -377,7 +303,7 @@ impl RustSyncNode {
         // This simplifies the sync code and prevents duplicate advance_epoch calls.
         // See epoch_monitor.rs:start_unified_epoch_monitor()
 
-        Ok(())
+        Ok(0)
     }
 
     /// AUTO-EPOCH-SYNC: Update internal state when Go epoch is ahead
