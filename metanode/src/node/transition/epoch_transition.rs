@@ -461,12 +461,32 @@ pub async fn transition_to_epoch_from_system_tx(
         node.node_mode
     );
 
+    // CRITICAL FIX: Use Go's block_number (NOT synced_global_exec_index/GEI) for advance_epoch.
+    // GEI counts ALL commits (including empty), block_number counts only non-empty blocks.
+    // Go uses block_number for its epoch boundary storage, so we must use the same metric.
+    let go_boundary_for_advance = match executor_client.get_last_block_number().await {
+        Ok(bn) => {
+            info!(
+                "✅ [EPOCH ADVANCE] Got Go's last_block_number={} (GEI was {})",
+                bn, synced_global_exec_index
+            );
+            bn
+        }
+        Err(e) => {
+            warn!(
+                "⚠️ [EPOCH ADVANCE] Failed to get Go's last_block_number: {}. Using go_last_block={} as fallback.",
+                e, go_last_block
+            );
+            go_last_block // Fallback to value queried earlier (line 252)
+        }
+    };
+
     info!(
-        "📤 [EPOCH ADVANCE] Notifying Go about epoch {} transition (boundary: {})",
-        new_epoch, synced_global_exec_index
+        "📤 [EPOCH ADVANCE] Notifying Go about epoch {} transition (boundary: go_block_{}, gei={})",
+        new_epoch, go_boundary_for_advance, synced_global_exec_index
     );
     if let Err(e) = executor_client
-        .advance_epoch(new_epoch, epoch_timestamp_to_use, synced_global_exec_index)
+        .advance_epoch(new_epoch, epoch_timestamp_to_use, go_boundary_for_advance)
         .await
     {
         warn!(
@@ -488,10 +508,12 @@ pub async fn transition_to_epoch_from_system_tx(
             // Save the authoritative epoch boundary block
             epoch_boundary_block = stored_boundary;
             // Validate boundary block matches what we sent
-            if stored_boundary != synced_global_exec_index {
+            // CRITICAL FIX: Compare stored_boundary (Go's block_number) with go_boundary_for_advance
+            // (also block_number), NOT with synced_global_exec_index (GEI) — they are different metrics
+            if stored_boundary != go_boundary_for_advance {
                 error!(
-                    "🚨 [BOUNDARY MISMATCH] Go stored boundary={} but we sent {}! Potential block skip!",
-                    stored_boundary, synced_global_exec_index
+                    "🚨 [BOUNDARY MISMATCH] Go stored boundary={} but we sent go_block_{}! Potential block skip! (gei={})",
+                    stored_boundary, go_boundary_for_advance, synced_global_exec_index
                 );
             } else {
                 info!(
