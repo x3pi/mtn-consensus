@@ -141,6 +141,25 @@ if [ -d "$SNAP_DIR/back_up_write" ]; then
     cp -a "$SNAP_DIR/back_up_write/"* "$NODE_DATA/back_up_write/" 2>/dev/null || true
 fi
 
+# CRITICAL: Copy epoch_data_backup.json — without this, Go starts at epoch 0
+# after restore and Rust gets stuck at wrong epoch forever
+echo "  📁 Copying epoch data..."
+EPOCH_RESTORED=false
+for EPOCH_SRC in "$SNAP_DIR/back_up/epoch_data_backup.json" "$SNAP_DIR/back_up_write/epoch_data_backup.json"; do
+    if [ -f "$EPOCH_SRC" ]; then
+        cp -a "$EPOCH_SRC" "$NODE_DATA/back_up/epoch_data_backup.json"
+        cp -a "$EPOCH_SRC" "$NODE_DATA/back_up_write/epoch_data_backup.json"
+        EPOCH_RESTORED=true
+        EPOCH_INFO=$(python3 -c "import json; d=json.load(open('$EPOCH_SRC')); print(f'epoch={d[\"current_epoch\"]}')" 2>/dev/null || echo "epoch=?")
+        echo -e "${GREEN}  ✅ Epoch data restored: ${EPOCH_INFO}${NC}"
+        break
+    fi
+done
+if [ "$EPOCH_RESTORED" = false ]; then
+    echo -e "${YELLOW}  ⚠️  epoch_data_backup.json NOT found in snapshot! Go will start at epoch 0.${NC}"
+    echo -e "${YELLOW}      Node may need manual epoch sync after startup.${NC}"
+fi
+
 # Tạo các thư mục bắt buộc (và loại bỏ LOCK cũ rác nếu có)
 find "$NODE_DATA" -name "LOCK" -delete 2>/dev/null
 mkdir -p "$NODE_DATA/data/data/xapian_node"

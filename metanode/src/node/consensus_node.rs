@@ -424,90 +424,159 @@ impl ConsensusNode {
                 }
                 Err(e) => {
                     warn!(
-                        "⚠️ [STARTUP] Failed to get epoch boundary for epoch {}: {}. Falling back to local Go's epoch.",
+                        "⚠️ [STARTUP] Failed to get epoch boundary for epoch {}: {}. Trying fallbacks...",
                         current_epoch, e
                     );
-                    let local_epoch = executor_client.get_current_epoch().await.unwrap_or(0);
-                    info!(
-                        "📊 [STARTUP] Falling back to local Go epoch {} (network epoch was {})",
-                        local_epoch, current_epoch
-                    );
 
-                    match executor_client.get_epoch_boundary_data(local_epoch).await {
-                        Ok((epoch, timestamp, boundary, vals, epoch_dur)) => {
-                            info!(
-                                "✅ [STARTUP] Got epoch boundary data for local epoch {} (epoch_duration={}s)",
-                                epoch, epoch_dur
-                            );
-                            (epoch, timestamp, boundary, vals, epoch_dur)
-                        }
-                        Err(e2) => {
-                            warn!(
-                                "⚠️ [STARTUP] No epoch boundary available (local epoch {} error: {}). Trying genesis validators...",
-                                local_epoch, e2
-                            );
-                            // Try local Go first
-                            match executor_client.get_validators_at_block(0).await {
-                                Ok((genesis_validators, _genesis_epoch, _)) => {
-                                    (0u64, 0u64, 0u64, genesis_validators, 900u64)
-                                }
-                                Err(e3) => {
-                                    // LOCAL GO FAILED (PebbleDB corrupted after snapshot restore)
-                                    // FALLBACK: Query peers for epoch 0 boundary data
-                                    warn!(
-                                        "⚠️ [STARTUP] Local Go genesis validators failed: {}. Querying peers...",
-                                        e3
+                    // SNAPSHOT RESTORE FIX (2026-03-19):
+                    // After snapshot restore, Go may have stale epoch data (epoch=0) while
+                    // peers are at epoch N. Instead of falling back to local Go's stale epoch,
+                    // query peers FIRST for epoch boundary data.
+                    let local_epoch = executor_client.get_current_epoch().await.unwrap_or(0);
+                    
+                    if local_epoch < current_epoch && !config.peer_rpc_addresses.is_empty() {
+                        warn!(
+                            "🔄 [STARTUP] Local Go epoch {} < peer epoch {}. Go may have stale data (snapshot restore?). Querying peers for epoch boundary...",
+                            local_epoch, current_epoch
+                        );
+                        
+                        // Try each peer for epoch boundary data at the CORRECT (peer) epoch
+                        let mut peer_boundary = None;
+                        for peer_addr in &config.peer_rpc_addresses {
+                            match crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                                peer_addr, current_epoch,
+                            ).await {
+                                Ok(boundary) => {
+                                    info!(
+                                        "✅ [STARTUP] Got epoch {} boundary from peer {}: {} validators, boundary_block={}",
+                                        current_epoch, peer_addr, boundary.validators.len(), boundary.boundary_block
                                     );
-                                    if !config.peer_rpc_addresses.is_empty() {
-                                        let mut peer_validators = None;
-                                        for peer_addr in &config.peer_rpc_addresses {
-                                            match crate::network::peer_rpc::query_peer_epoch_boundary_data(
-                                                peer_addr, 0,
-                                            ).await {
-                                                Ok(boundary) => {
-                                                    info!(
-                                                        "✅ [STARTUP] Got epoch 0 boundary from peer {}: {} validators",
-                                                        peer_addr, boundary.validators.len()
-                                                    );
-                                                    peer_validators = Some(boundary);
-                                                    break;
-                                                }
-                                                Err(pe) => {
-                                                    warn!("⚠️ [STARTUP] Peer {} epoch 0 boundary failed: {}", peer_addr, pe);
+                                    peer_boundary = Some(boundary);
+                                    break;
+                                }
+                                Err(pe) => {
+                                    warn!("⚠️ [STARTUP] Peer {} epoch {} boundary failed: {}", peer_addr, current_epoch, pe);
+                                }
+                            }
+                        }
+                        
+                        if let Some(boundary) = peer_boundary {
+                            use super::executor_client::proto::ValidatorInfo as ProtoVI;
+                            let validators: Vec<ProtoVI> = boundary.validators.into_iter().map(|v| {
+                                ProtoVI {
+                                    address: v.address,
+                                    stake: v.stake.to_string(),
+                                    name: v.name,
+                                    authority_key: v.authority_key,
+                                    protocol_key: v.protocol_key,
+                                    network_key: v.network_key,
+                                    description: String::new(),
+                                    website: String::new(),
+                                    image: String::new(),
+                                    commission_rate: 0,
+                                    min_self_delegation: String::new(),
+                                    accumulated_rewards_per_share: String::new(),
+                                    p2p_address: String::new(),
+                                }
+                            }).collect();
+                            (current_epoch, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64)
+                        } else {
+                            warn!("⚠️ [STARTUP] No peers returned epoch {} boundary. Falling back to local Go epoch {}.", current_epoch, local_epoch);
+                            // Fall through to local Go fallback below
+                            match executor_client.get_epoch_boundary_data(local_epoch).await {
+                                Ok((epoch, timestamp, boundary, vals, epoch_dur)) => {
+                                    (epoch, timestamp, boundary, vals, epoch_dur)
+                                }
+                                Err(e2) => {
+                                    return Err(anyhow::anyhow!(
+                                        "Failed to get epoch boundary from peers AND local Go. Peer epoch={} error: {}, Local epoch={} error: {}",
+                                        current_epoch, e, local_epoch, e2
+                                    ));
+                                }
+                            }
+                        }
+                    } else {
+                        // Local epoch matches or no peers — use local Go
+                        info!(
+                            "📊 [STARTUP] Using local Go epoch {} for boundary data",
+                            local_epoch
+                        );
+
+                        match executor_client.get_epoch_boundary_data(local_epoch).await {
+                            Ok((epoch, timestamp, boundary, vals, epoch_dur)) => {
+                                info!(
+                                    "✅ [STARTUP] Got epoch boundary data for local epoch {} (epoch_duration={}s)",
+                                    epoch, epoch_dur
+                                );
+                                (epoch, timestamp, boundary, vals, epoch_dur)
+                            }
+                            Err(e2) => {
+                                warn!(
+                                    "⚠️ [STARTUP] No epoch boundary available (local epoch {} error: {}). Trying genesis validators...",
+                                    local_epoch, e2
+                                );
+                                // Try local Go first
+                                match executor_client.get_validators_at_block(0).await {
+                                    Ok((genesis_validators, _genesis_epoch, _)) => {
+                                        (0u64, 0u64, 0u64, genesis_validators, 900u64)
+                                    }
+                                    Err(e3) => {
+                                        // LOCAL GO FAILED — query peers for epoch 0
+                                        warn!(
+                                            "⚠️ [STARTUP] Local Go genesis validators failed: {}. Querying peers...",
+                                            e3
+                                        );
+                                        if !config.peer_rpc_addresses.is_empty() {
+                                            let mut peer_validators = None;
+                                            for peer_addr in &config.peer_rpc_addresses {
+                                                match crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                                                    peer_addr, 0,
+                                                ).await {
+                                                    Ok(boundary) => {
+                                                        info!(
+                                                            "✅ [STARTUP] Got epoch 0 boundary from peer {}: {} validators",
+                                                            peer_addr, boundary.validators.len()
+                                                        );
+                                                        peer_validators = Some(boundary);
+                                                        break;
+                                                    }
+                                                    Err(pe) => {
+                                                        warn!("⚠️ [STARTUP] Peer {} epoch 0 boundary failed: {}", peer_addr, pe);
+                                                    }
                                                 }
                                             }
-                                        }
-                                        if let Some(boundary) = peer_validators {
-                                            use super::executor_client::proto::ValidatorInfo as ProtoVI;
-                                            let validators: Vec<ProtoVI> = boundary.validators.into_iter().map(|v| {
-                                                ProtoVI {
-                                                    address: v.address,
-                                                    stake: v.stake.to_string(),
-                                                    name: v.name,
-                                                    authority_key: v.authority_key,
-                                                    protocol_key: v.protocol_key,
-                                                    network_key: v.network_key,
-                                                    description: String::new(),
-                                                    website: String::new(),
-                                                    image: String::new(),
-                                                    commission_rate: 0,
-                                                    min_self_delegation: String::new(),
-                                                    accumulated_rewards_per_share: String::new(),
-                                                    p2p_address: String::new(),
-                                                }
-                                            }).collect();
-                                            (0u64, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64)
+                                            if let Some(boundary) = peer_validators {
+                                                use super::executor_client::proto::ValidatorInfo as ProtoVI;
+                                                let validators: Vec<ProtoVI> = boundary.validators.into_iter().map(|v| {
+                                                    ProtoVI {
+                                                        address: v.address,
+                                                        stake: v.stake.to_string(),
+                                                        name: v.name,
+                                                        authority_key: v.authority_key,
+                                                        protocol_key: v.protocol_key,
+                                                        network_key: v.network_key,
+                                                        description: String::new(),
+                                                        website: String::new(),
+                                                        image: String::new(),
+                                                        commission_rate: 0,
+                                                        min_self_delegation: String::new(),
+                                                        accumulated_rewards_per_share: String::new(),
+                                                        p2p_address: String::new(),
+                                                    }
+                                                }).collect();
+                                                (0u64, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64)
+                                            } else {
+                                                return Err(anyhow::anyhow!(
+                                                    "Failed to fetch genesis validators from both local Go and peers. Local: {}, No peers returned data.",
+                                                    e3
+                                                ));
+                                            }
                                         } else {
                                             return Err(anyhow::anyhow!(
-                                                "Failed to fetch genesis validators from both local Go and peers. Local: {}, No peers returned data.",
+                                                "Failed to fetch genesis validators: {} (no peers configured for fallback)",
                                                 e3
                                             ));
                                         }
-                                    } else {
-                                        return Err(anyhow::anyhow!(
-                                            "Failed to fetch genesis validators: {} (no peers configured for fallback)",
-                                            e3
-                                        ));
                                     }
                                 }
                             }
