@@ -69,6 +69,9 @@ pub struct EpochBoundaryDataResponse {
     pub boundary_block: u64,
     /// Validators for this epoch
     pub validators: Vec<ValidatorInfoSimple>,
+    /// Authoritative GEI for the epoch boundary
+    #[serde(default)]
+    pub boundary_gei: u64,
     /// Error message if any
     pub error: Option<String>,
 }

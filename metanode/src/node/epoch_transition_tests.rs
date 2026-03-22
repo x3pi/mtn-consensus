@@ -135,6 +135,7 @@ async fn test_checkpoint_full_lifecycle() {
         TransitionState::AdvancedEpochToGo {
             epoch: 5,
             boundary_block: 1000,
+            boundary_gei: 0,
             timestamp_ms: 1700000000000,
         },
         "node-0",
@@ -213,7 +214,7 @@ async fn test_incomplete_checkpoint_detected() {
 
     // Save a mid-transition checkpoint
     manager
-        .checkpoint_advance_epoch(3, 500, 1700000000000)
+        .checkpoint_advance_epoch(3, 500, 500, 1700000000000)
         .await
         .unwrap();
 
@@ -380,7 +381,7 @@ async fn test_epoch_transition_with_checkpoint_and_state() {
 
     // Step 2: Checkpoint advance_epoch
     checkpoint_manager
-        .checkpoint_advance_epoch(2, 500, 1700000000000)
+        .checkpoint_advance_epoch(2, 500, 500, 1700000000000)
         .await
         .unwrap();
     assert!(checkpoint_manager.has_incomplete_transition().await);
@@ -415,7 +416,7 @@ async fn test_epoch_transition_with_checkpoint_and_state() {
         .unwrap();
 
     checkpoint_manager
-        .checkpoint_advance_epoch(3, 1000, 1700000060000)
+        .checkpoint_advance_epoch(3, 1000, 1000, 1700000060000)
         .await
         .unwrap();
 
@@ -787,6 +788,7 @@ fn test_resume_instructions_all_states() {
             TransitionState::AdvancedEpochToGo {
                 epoch: 1,
                 boundary_block: 0,
+                boundary_gei: 0,
                 timestamp_ms: 0,
             },
             "fetch_committee",
@@ -907,6 +909,7 @@ fn test_transition_state_epoch_and_name() {
     let s = TransitionState::AdvancedEpochToGo {
         epoch: 5,
         boundary_block: 1000,
+        boundary_gei: 0,
         timestamp_ms: 1700000000000,
     };
     assert_eq!(s.epoch(), Some(5));

@@ -60,6 +60,11 @@ struct StorageSetup {
 /// Results from consensus setup phase.
 struct ConsensusSetup {
     authority: Option<ConsensusAuthority>,
+    /// Whether DAG storage has prior history. False after snapshot restore (DAG deleted).
+    /// When false, CommitProcessor uses timestamp-based guard to skip stale replay commits.
+    dag_has_history: bool,
+    /// Cold-start flag shared with CommitProcessor for timestamp-based stale commit filtering
+    cold_start: Arc<std::sync::atomic::AtomicBool>,
     commit_consumer_holder: Option<CommitConsumerArgs>,
     transaction_client_proxy: Option<Arc<TransactionClientProxy>>,
     executor_client_for_proc: Arc<ExecutorClient>,
@@ -146,7 +151,7 @@ impl ConsensusNode {
             
             for attempt in 1..=max_retries {
                 match executor_client.get_last_block_number().await {
-                    Ok(n) => {
+                    Ok((n, _is_ready)) => {
                         block_num = n;
                         if n > 0 {
                             info!(
@@ -415,7 +420,7 @@ impl ConsensusNode {
                 .get_epoch_boundary_data(current_epoch)
                 .await
             {
-                Ok((epoch, timestamp, boundary, vals, epoch_dur)) => {
+                Ok((epoch, timestamp, boundary, vals, epoch_dur, _boundary_gei)) => {
                     info!(
                         "✅ [STARTUP] Got epoch boundary data for epoch {} from Go (epoch_duration={}s)",
                         epoch, epoch_dur
@@ -484,7 +489,7 @@ impl ConsensusNode {
                             warn!("⚠️ [STARTUP] No peers returned epoch {} boundary. Falling back to local Go epoch {}.", current_epoch, local_epoch);
                             // Fall through to local Go fallback below
                             match executor_client.get_epoch_boundary_data(local_epoch).await {
-                                Ok((epoch, timestamp, boundary, vals, epoch_dur)) => {
+                                Ok((epoch, timestamp, boundary, vals, epoch_dur, _boundary_gei)) => {
                                     (epoch, timestamp, boundary, vals, epoch_dur)
                                 }
                                 Err(e2) => {
@@ -503,7 +508,7 @@ impl ConsensusNode {
                         );
 
                         match executor_client.get_epoch_boundary_data(local_epoch).await {
-                            Ok((epoch, timestamp, boundary, vals, epoch_dur)) => {
+                            Ok((epoch, timestamp, boundary, vals, epoch_dur, _boundary_gei)) => {
                                 info!(
                                     "✅ [STARTUP] Got epoch boundary data for local epoch {} (epoch_duration={}s)",
                                     epoch, epoch_dur
@@ -707,7 +712,7 @@ impl ConsensusNode {
             return (0, false);
         }
 
-        let local_go_block = executor_client.get_last_block_number().await.unwrap_or(0);
+        let (local_go_block, _go_ready) = executor_client.get_last_block_number().await.unwrap_or((0, false));
         let storage_path = &config.storage_path;
 
         let (persisted_index, persisted_commit) =
@@ -820,6 +825,34 @@ impl ConsensusNode {
         let shared_last_global_exec_index =
             Arc::new(tokio::sync::Mutex::new(storage.epoch_base_exec_index));
 
+        // ═══════════════════════════════════════════════════════════════════
+        // FORK-SAFETY: Detect empty DAG BEFORE commit_processor creation.
+        // When DAG is empty (snapshot restore), create cold_start flag for
+        // CommitProcessor's GEI-based stale commit filter.
+        // MOVED HERE so commit_processor can use cold_start immediately.
+        // ═══════════════════════════════════════════════════════════════════
+        let dag_has_history = {
+            let epoch_db = config
+                .storage_path
+                .join("epochs")
+                .join(format!("epoch_{}", storage.current_epoch))
+                .join("consensus_db");
+            epoch_db.exists()
+                && std::fs::read_dir(&epoch_db)
+                    .map(|mut entries| entries.next().is_some())
+                    .unwrap_or(false)
+        };
+        let cold_start = Arc::new(std::sync::atomic::AtomicBool::new(
+            !dag_has_history && storage.is_in_committee && storage.current_epoch > 0
+        ));
+        if !dag_has_history && storage.is_in_committee && storage.current_epoch > 0 {
+            warn!(
+                "⚠️ [FORK-SAFETY] DAG storage empty for epoch {} — cold-start guard active. \
+                 Node will vote in DAG but skip stale replay commits until live rounds detected.",
+                storage.current_epoch
+            );
+        }
+
         let mut commit_processor = crate::consensus::commit_processor::CommitProcessor::new(
             commit_receiver,
         )
@@ -857,7 +890,15 @@ impl ConsensusNode {
                 storage.validator_eth_addresses.clone(),
             );
             Arc::new(tokio::sync::Mutex::new(map))
-        });
+        })
+        .with_cold_start(cold_start.clone())
+        .with_cold_start_skip_gei(
+            if !dag_has_history && storage.is_in_committee && storage.current_epoch > 0 {
+                u64::MAX  // Block ALL commits — mode_transition processor will handle them
+            } else {
+                0  // Normal operation — no GEI skip needed
+            }
+        );
 
         // ExecutorClient for commit processing
         let initial_next_expected = if config.executor_read_enabled {
@@ -905,13 +946,15 @@ impl ConsensusNode {
             executor_client_for_init.initialize_from_go().await;
         });
 
+
         // ♻️ TX Recycler: Create shared instance for tracking and recycling uncommitted TXs
         let tx_recycler = Arc::new(crate::consensus::tx_recycler::TxRecycler::new());
         info!("♻️ [TX RECYCLER] Created shared TxRecycler instance");
 
         commit_processor = commit_processor
             .with_executor_client(executor_client_for_proc.clone())
-            .with_tx_recycler(tx_recycler.clone());
+            .with_tx_recycler(tx_recycler.clone())
+            .with_cold_start(cold_start.clone());
 
         // Spawn background recycler is done in setup_epoch_management where tx_client is accessible
 
@@ -960,7 +1003,7 @@ impl ConsensusNode {
         // (before executor_client_for_proc) for backpressure wiring
 
         // Start authority or hold commit_consumer for SyncOnly
-        let start_as_validator = storage.is_in_committee && !storage.is_lagging;
+        let start_as_validator = storage.is_in_committee && !storage.is_lagging && (dag_has_history || storage.current_epoch == 0);
         let (authority, commit_consumer_holder) = if start_as_validator {
             info!("🚀 Starting consensus authority node...");
             (
@@ -1008,6 +1051,8 @@ impl ConsensusNode {
 
         Ok(ConsensusSetup {
             authority,
+            dag_has_history,
+            cold_start,
             commit_consumer_holder,
             transaction_client_proxy,
             executor_client_for_proc,
@@ -1100,7 +1145,7 @@ impl ConsensusNode {
                 config.epochs_to_keep,
             )),
             node_mode: if storage.is_in_committee {
-                if storage.is_lagging {
+                if storage.is_lagging || (!consensus.dag_has_history && storage.current_epoch > 0) {
                     NodeMode::SyncingUp
                 } else {
                     NodeMode::Validator
@@ -1108,6 +1153,7 @@ impl ConsensusNode {
             } else {
                 NodeMode::SyncOnly
             },
+            cold_start: !consensus.dag_has_history && storage.is_in_committee && storage.current_epoch > 0,
             execution_lock: Arc::new(tokio::sync::RwLock::new(storage.current_epoch)),
             reconfig_state: Arc::new(tokio::sync::RwLock::new(ReconfigState::default())),
             transaction_client_proxy: consensus.transaction_client_proxy,

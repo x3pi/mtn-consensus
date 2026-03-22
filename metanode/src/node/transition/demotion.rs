@@ -67,18 +67,18 @@ pub async fn demote_to_synconly_and_catchup(
         loop {
             attempt += 1;
             match executor_client.get_last_block_number().await {
-                Ok(go_last_block) => {
-                    if go_last_block >= expected_last_block {
+                Ok((b, _)) => {
+                    if b >= expected_last_block {
                         info!(
                             "✅ [DEMOTION] Go reached block {} (expected: {}) after {} polls",
-                            go_last_block, expected_last_block, attempt
+                            b, expected_last_block, attempt
                         );
                         break;
                     }
                     if attempt % 100 == 0 {
                         info!(
                             "⏳ [DEMOTION] Go: {}/{} blocks (waiting {}s)",
-                            go_last_block,
+                            b,
                             expected_last_block,
                             attempt / 10
                         );

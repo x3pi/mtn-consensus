@@ -83,6 +83,9 @@ pub struct StateTransitionManager {
     /// Time of last successful transition (for debouncing)
     last_transition_time: Mutex<Option<Instant>>,
 
+    /// Time when the current transition was started (for stale detection)
+    transition_started_at: Mutex<Option<Instant>>,
+
     /// Minimum duration between transitions
     debounce_duration: Duration,
 }
@@ -106,6 +109,7 @@ impl StateTransitionManager {
             transition_in_progress: AtomicBool::new(false),
             current_transition: Mutex::new(None),
             last_transition_time: Mutex::new(None),
+            transition_started_at: Mutex::new(None),
             debounce_duration: DEFAULT_DEBOUNCE_DURATION,
         }
     }
@@ -253,6 +257,12 @@ impl StateTransitionManager {
             *current = Some((transition_type.clone(), source.to_string()));
         }
 
+        // Record transition start time for stale detection
+        {
+            let mut started = self.transition_started_at.lock().await;
+            *started = Some(Instant::now());
+        }
+
         info!(
             "🔒 [STATE MANAGER] Started {}, source={}",
             transition_type, source
@@ -297,6 +307,12 @@ impl StateTransitionManager {
             *last_time = Some(Instant::now());
         }
 
+        // Clear transition start time
+        {
+            let mut started = self.transition_started_at.lock().await;
+            *started = None;
+        }
+
         let source = {
             let mut current = self.current_transition.lock().await;
             let source = current.as_ref().map(|(_, s)| s.clone());
@@ -321,12 +337,66 @@ impl StateTransitionManager {
             info
         };
 
+        // Clear transition start time
+        {
+            let mut started = self.transition_started_at.lock().await;
+            *started = None;
+        }
+
         self.transition_in_progress.store(false, Ordering::SeqCst);
 
         warn!(
             "❌ [STATE MANAGER] Failed {:?}: {}",
             transition_info, reason
         );
+    }
+
+    /// Force-clear a stale transition that has been running too long.
+    /// Returns true if a stale transition was cleared.
+    /// This is a safety mechanism for the epoch monitor to recover from
+    /// stuck transitions (e.g., when consensus can't form quorum after restore).
+    pub async fn force_clear_stale_transition(&self, max_age: Duration) -> bool {
+        if !self.transition_in_progress.load(Ordering::SeqCst) {
+            return false;
+        }
+
+        let is_stale = {
+            let started = self.transition_started_at.lock().await;
+            match *started {
+                Some(start_time) => start_time.elapsed() > max_age,
+                None => {
+                    // No start time recorded but transition_in_progress is true
+                    // This shouldn't happen but treat as stale
+                    true
+                }
+            }
+        };
+
+        if !is_stale {
+            return false;
+        }
+
+        let transition_info = {
+            let mut current = self.current_transition.lock().await;
+            let info = current.clone();
+            *current = None;
+            info
+        };
+
+        {
+            let mut started = self.transition_started_at.lock().await;
+            *started = None;
+        }
+
+        self.transition_in_progress.store(false, Ordering::SeqCst);
+
+        warn!(
+            "🚨 [STATE MANAGER] FORCE-CLEARED stale transition {:?} (exceeded {:?}). \
+             This indicates a previous transition hung (e.g., consensus had no quorum).",
+            transition_info, max_age
+        );
+
+        true
     }
 
     /// Force update state (for sync after restart)

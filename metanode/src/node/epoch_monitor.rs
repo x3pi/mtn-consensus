@@ -157,7 +157,7 @@ pub fn start_unified_epoch_monitor(
                                 );
 
                                 // Fetch blocks up to boundary from peers
-                                let go_block = client_arc.get_last_block_number().await.unwrap_or(0);
+                                let (go_block, _go_ready) = client_arc.get_last_block_number().await.unwrap_or((0, false));
                                 if go_block < data.boundary_block {
                                     // Fetch missing blocks
                                     match crate::network::peer_rpc::fetch_blocks_from_peer(
@@ -182,7 +182,7 @@ pub fn start_unified_epoch_monitor(
 
                                 // Advance Go epoch
                                 if current_go_epoch < target_epoch {
-                                    match client_arc.advance_epoch(target_epoch, data.timestamp_ms, data.boundary_block).await {
+                                    match client_arc.advance_epoch(target_epoch, data.timestamp_ms, data.boundary_block, data.boundary_gei).await {
                                         Ok(_) => {
                                             info!(
                                                 "✅ [EPOCH MONITOR] SyncOnly: advanced Go to epoch {} (boundary={})",
@@ -248,7 +248,7 @@ pub fn start_unified_epoch_monitor(
                 // Get boundary data from peer (authoritative) or local Go
                 let boundary_data = if local_go_epoch < target_epoch && !peer_rpc.is_empty() {
                     // LOCAL Go is behind — query PEER for authoritative timestamp
-                    let mut peer_data: Option<(u64, u64, u64)> = None;
+                    let mut peer_data: Option<(u64, u64, u64, u64)> = None;
                     for peer_addr in &peer_rpc {
                         match crate::network::peer_rpc::query_peer_epoch_boundary_data(
                             peer_addr,
@@ -259,7 +259,7 @@ pub fn start_unified_epoch_monitor(
                                     "✅ [EPOCH MONITOR] Got boundary from PEER {}: epoch={}, timestamp={}ms, boundary={}",
                                     peer_addr, data.epoch, data.timestamp_ms, data.boundary_block
                                 );
-                                peer_data = Some((data.epoch, data.timestamp_ms, data.boundary_block));
+                                peer_data = Some((data.epoch, data.timestamp_ms, data.boundary_block, data.boundary_gei));
                                 break;
                             }
                             Err(e) => {
@@ -277,17 +277,17 @@ pub fn start_unified_epoch_monitor(
                 } else {
                     // LOCAL Go has this epoch data
                     match local_executor_client.get_epoch_boundary_data(target_epoch).await {
-                        Ok((epoch, timestamp_ms, boundary_block, _validators, _)) => {
-                            (epoch, timestamp_ms, boundary_block)
+                        Ok((epoch, timestamp_ms, boundary_block, _validators, _, boundary_gei)) => {
+                            (epoch, timestamp_ms, boundary_block, boundary_gei)
                         }
                         Err(e) => {
                             info!("⏳ [EPOCH MONITOR] Local Go not ready for epoch {}: {}. Trying peer fallback...", target_epoch, e);
                             // Try peer fallback
-                            let mut peer_data: Option<(u64, u64, u64)> = None;
+                            let mut peer_data: Option<(u64, u64, u64, u64)> = None;
                             for peer_addr in &peer_rpc {
                                 match crate::network::peer_rpc::query_peer_epoch_boundary_data(peer_addr, target_epoch).await {
                                     Ok(data) => {
-                                        peer_data = Some((data.epoch, data.timestamp_ms, data.boundary_block));
+                                        peer_data = Some((data.epoch, data.timestamp_ms, data.boundary_block, data.boundary_gei));
                                         break;
                                     }
                                     Err(_) => {}
@@ -304,10 +304,10 @@ pub fn start_unified_epoch_monitor(
                     }
                 };
 
-                let (new_epoch, epoch_timestamp_ms, boundary_block) = boundary_data;
+                let (new_epoch, epoch_timestamp_ms, boundary_block, boundary_gei) = boundary_data;
 
                 // First ensure Go has enough blocks for this epoch
-                let go_block = client_arc.get_last_block_number().await.unwrap_or(0);
+                let (go_block, _go_ready) = client_arc.get_last_block_number().await.unwrap_or((0, false));
                 if go_block < boundary_block && !peer_rpc.is_empty() {
                     match crate::network::peer_rpc::fetch_blocks_from_peer(
                         &peer_rpc, go_block + 1, boundary_block,
@@ -326,7 +326,7 @@ pub fn start_unified_epoch_monitor(
                 // Advance Go epoch if needed
                 let current_go_epoch = client_arc.get_current_epoch().await.unwrap_or(0);
                 if current_go_epoch < target_epoch {
-                    if let Err(e) = client_arc.advance_epoch(target_epoch, epoch_timestamp_ms, boundary_block).await {
+                    if let Err(e) = client_arc.advance_epoch(target_epoch, epoch_timestamp_ms, boundary_block, boundary_gei).await {
                         warn!("⚠️ [EPOCH MONITOR] Failed to advance Go to epoch {}: {}", target_epoch, e);
                     } else {
                         info!("✅ [EPOCH MONITOR] Advanced Go to epoch {}", target_epoch);
@@ -350,7 +350,13 @@ pub fn start_unified_epoch_monitor(
 
                 if let Some(node_arc) = crate::node::get_transition_handler_node().await {
                     let mut node_guard = node_arc.lock().await;
-                    let synced_global_exec_index = boundary_block;
+
+                    let synced_global_exec_index = if boundary_gei > 0 {
+                        boundary_gei
+                    } else {
+                        let go_gei = client_arc.get_last_global_exec_index().await.unwrap_or(0);
+                        std::cmp::max(go_gei, boundary_block)
+                    };
 
                     match node_guard.transition_to_epoch_from_system_tx(
                         new_epoch,

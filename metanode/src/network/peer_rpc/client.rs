@@ -618,6 +618,7 @@ async fn fetch_block_batch(
 /// on the dataChan, ready to be sent via send_block_data().
 ///
 /// NO Go PebbleDB involved — pure Rust-to-Rust sync.
+#[allow(dead_code)]
 pub async fn fetch_executable_blocks_from_peer(
     peer_addresses: &[String],
     from_gei: u64,
@@ -688,6 +689,7 @@ pub async fn fetch_executable_blocks_from_peer(
 }
 
 /// Fetch a single batch of executable blocks from one peer via HTTP
+#[allow(dead_code)]
 async fn fetch_executable_block_batch(
     peer_addr: &str,
     from_gei: u64,

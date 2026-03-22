@@ -21,6 +21,7 @@ const BLOCKS_DIR: &str = "executable_blocks";
 
 /// Persist a single ExecutableBlock's protobuf bytes to disk.
 /// Called after successful send to Go Master.
+#[allow(dead_code)]
 pub async fn store_executable_block(
     storage_path: &Path,
     global_exec_index: u64,
@@ -79,6 +80,7 @@ pub async fn store_executable_blocks_batch(
 }
 
 /// Load a single ExecutableBlock's protobuf bytes from disk.
+#[allow(dead_code)]
 pub async fn load_executable_block(
     storage_path: &Path,
     global_exec_index: u64,
@@ -133,11 +135,13 @@ pub async fn load_executable_blocks_range(
 }
 
 /// Get the path to the executable blocks directory
+#[allow(dead_code)]
 pub fn blocks_dir(storage_path: &Path) -> PathBuf {
     storage_path.join(BLOCKS_DIR)
 }
 
 /// Get the highest GEI stored on disk (for sync peers to know what's available)
+#[allow(dead_code)]
 pub async fn get_max_stored_gei(storage_path: &Path) -> Result<Option<u64>> {
     let dir = storage_path.join(BLOCKS_DIR);
     if !dir.exists() {

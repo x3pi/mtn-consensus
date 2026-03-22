@@ -710,7 +710,7 @@ mod tests {
         #[values(5, 10)] gc_depth: u32,
     ) {
         // // telemetry_subscribers::init_for_testing();
-        let db_registry = Registry::new();
+        let _db_registry = Registry::new();
         // DBMetrics::init(RegistryService::new(db_registry));
 
         const NUM_OF_AUTHORITIES: usize = 4;
@@ -817,7 +817,7 @@ mod tests {
         #[values(1, 2, 3)] num_authorities: usize,
     ) {
         // // telemetry_subscribers::init_for_testing();
-        let db_registry = Registry::new();
+        let _db_registry = Registry::new();
         // DBMetrics::init(RegistryService::new(db_registry));
 
         let (committee, keypairs) = local_committee_and_keys(0, vec![1; num_authorities]);
@@ -916,7 +916,7 @@ mod tests {
     #[ignore]
     async fn test_amnesia_recovery_success(#[values(5, 10)] gc_depth: u32) {
         // // telemetry_subscribers::init_for_testing();
-        let db_registry = Registry::new();
+        let _db_registry = Registry::new();
         // DBMetrics::init(RegistryService::new(db_registry));
 
         const NUM_OF_AUTHORITIES: usize = 4;

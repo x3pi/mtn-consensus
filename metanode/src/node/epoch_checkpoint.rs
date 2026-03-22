@@ -23,6 +23,7 @@ pub enum TransitionState {
     AdvancedEpochToGo {
         epoch: u64,
         boundary_block: u64,
+        boundary_gei: u64,
         timestamp_ms: u64,
     },
 
@@ -192,12 +193,14 @@ impl CheckpointManager {
         &self,
         epoch: u64,
         boundary_block: u64,
+        boundary_gei: u64,
         timestamp_ms: u64,
     ) -> Result<()> {
         let checkpoint = TransitionCheckpoint::new(
             TransitionState::AdvancedEpochToGo {
                 epoch,
                 boundary_block,
+                boundary_gei,
                 timestamp_ms,
             },
             &self.node_id,
@@ -302,7 +305,7 @@ mod tests {
 
         // Save a checkpoint
         manager
-            .checkpoint_advance_epoch(5, 1000, 123456789)
+            .checkpoint_advance_epoch(5, 1000, 1000, 123456789)
             .await
             .unwrap();
 

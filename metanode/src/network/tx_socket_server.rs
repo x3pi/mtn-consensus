@@ -762,15 +762,158 @@ impl TxSocketServer {
                         });
                     }
                     Err(e) => {
-                        all_succeeded = false;
-                        last_error = e.to_string();
-                        error!(
-                            "❌ [TX FLOW] Sub-batch {} submission failed: {} TXs, error={}",
-                            chunk_idx + 1,
-                            chunk_len,
-                            e
-                        );
-                        // Don't break — try remaining sub-batches
+                        let err_str = e.to_string();
+                        // ═══════════════════════════════════════════════════════════════
+                        // FIX: Stale NoOpTransactionSubmitter after SyncOnly→Validator
+                        // transition. The TxSocketServer was created at startup with a
+                        // NoOp client (SyncOnly mode). After mode transition, the node
+                        // has a real TransactionClientProxy but TxSocketServer still
+                        // holds the old NoOp. Detect this and retry with the node's
+                        // current submitter.
+                        // ═══════════════════════════════════════════════════════════════
+                        if err_str.contains("SyncOnly node cannot submit") {
+                            let mut needs_forward = false;
+
+                            if let Some(ref node_arc) = node {
+                                if let Ok(node_guard) = tokio::time::timeout(
+                                    std::time::Duration::from_millis(500),
+                                    node_arc.lock(),
+                                ).await {
+                                    if let Some(real_submitter) = node_guard.transaction_submitter() {
+                                        drop(node_guard);
+                                        info!(
+                                            "🔄 [TX FLOW] Retrying sub-batch {} with live TransactionSubmitter (post SyncOnly→Validator transition)",
+                                            chunk_idx + 1
+                                        );
+                                        match real_submitter.submit(chunk_vec.clone()).await {
+                                            Ok((block_ref, _indices, status_receiver)) => {
+                                                total_submitted += chunk_len;
+                                                _last_block_ref = Some(format!("{:?}", block_ref));
+                                                info!(
+                                                    "✅ [TX FLOW] Sub-batch {} included (retry): {} TXs in block {:?} (progress: {}/{})",
+                                                    chunk_idx + 1, chunk_len, block_ref, total_submitted, total_tx_count
+                                                );
+                                                if let Some(ref recycler) = tx_recycler {
+                                                    recycler.track_submitted(&chunk_vec).await;
+                                                }
+                                                let target_peers = if let Some(ref addrs) = peer_discovery_addresses {
+                                                    addrs.read().await.clone()
+                                                } else {
+                                                    peer_rpc_addresses.clone()
+                                                };
+                                                if !target_peers.is_empty() {
+                                                    use crate::network::peer_rpc::broadcast_transaction_to_validators;
+                                                    let peers = target_peers.clone();
+                                                    let batch = chunk_vec.clone();
+                                                    tokio::spawn(async move {
+                                                        match broadcast_transaction_to_validators(&peers, &batch).await {
+                                                            Ok(success_count) => {
+                                                                if success_count > 0 {
+                                                                    info!("📡 [MEMPOOL] Broadcasted batch of {} TXs to {}/{} peers", batch.len(), success_count, peers.len());
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                warn!("⚠️ [MEMPOOL] Failed to broadcast TX batch: {}", e);
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                                tokio::spawn(async move {
+                                                    match status_receiver.await {
+                                                        Ok(consensus_core::BlockStatus::Sequenced(block)) => {
+                                                            info!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
+                                                        }
+                                                        Ok(consensus_core::BlockStatus::GarbageCollected(gc_block)) => {
+                                                            warn!("♻️ [TX STATUS] Block {:?} was Garbage Collected.", gc_block);
+                                                        }
+                                                        Err(e) => {
+                                                            warn!("⚠️ [TX STATUS] Failed to receive block status: {}", e);
+                                                        }
+                                                    }
+                                                });
+                                                continue; // Successfully retried, move to next chunk
+                                            }
+                                            Err(retry_err) => {
+                                                all_succeeded = false;
+                                                last_error = retry_err.to_string();
+                                                error!(
+                                                    "❌ [TX FLOW] Sub-batch {} retry also failed: {} TXs, error={}",
+                                                    chunk_idx + 1, chunk_len, retry_err
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        drop(node_guard);
+                                        needs_forward = true;
+                                    }
+                                } else {
+                                    needs_forward = true;
+                                }
+                            }
+
+                            if needs_forward {
+                                let target_peers = if let Some(ref addrs) = peer_discovery_addresses {
+                                    addrs.read().await.clone()
+                                } else {
+                                    peer_rpc_addresses.clone()
+                                };
+
+                                if !target_peers.is_empty() {
+                                    info!(
+                                        "🔄 [TX FORWARD] SyncOnly node forwarding sub-batch {} to {} validators (direct submit failed/timeout)",
+                                        chunk_idx + 1, target_peers.len()
+                                    );
+                                    use crate::network::peer_rpc::forward_transaction_to_validators;
+
+                                    let mut forward_success = true;
+                                    let mut forward_error = String::new();
+
+                                    match forward_transaction_to_validators(&target_peers, &chunk_vec).await {
+                                        Ok(resp) if resp.success => {
+                                            info!(
+                                                "✅ [TX FORWARD] Successfully forwarded sub-batch {} of {} TXs",
+                                                chunk_idx + 1, chunk_len
+                                            );
+                                            total_submitted += chunk_len;
+                                        }
+                                        Ok(resp) => {
+                                            forward_success = false;
+                                            forward_error = resp.error.unwrap_or_else(|| "Unknown error".to_string());
+                                        }
+                                        Err(e) => {
+                                            forward_success = false;
+                                            forward_error = e.to_string();
+                                        }
+                                    }
+
+                                    if forward_success {
+                                        continue; // Successful forward!
+                                    } else {
+                                        all_succeeded = false;
+                                        last_error = format!("Forward failed: {}", forward_error);
+                                        error!(
+                                            "❌ [TX FLOW] Sub-batch {} failed: {}",
+                                            chunk_idx + 1, last_error
+                                        );
+                                    }
+                                } else {
+                                    all_succeeded = false;
+                                    last_error = "SyncOnly node cannot submit (and no validators known)".to_string();
+                                    error!(
+                                        "❌ [TX FLOW] Sub-batch {} failed: SyncOnly node cannot submit and no validators known.",
+                                        chunk_idx + 1
+                                    );
+                                }
+                            }
+                        } else {
+                            all_succeeded = false;
+                            last_error = err_str;
+                            error!(
+                                "❌ [TX FLOW] Sub-batch {} submission failed: {} TXs, error={}",
+                                chunk_idx + 1, chunk_len, e
+                            );
+                            // Don't break — try remaining sub-batches
+                        }
                     }
                 }
             }

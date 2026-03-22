@@ -37,7 +37,7 @@ pub async fn start_sync_task(node: &mut ConsensusNode, _config: &NodeConfig) -> 
     // Load committee from Go - with PEER FALLBACK for slow/late starting nodes
     // If Go layer doesn't have epoch data yet (e.g., node started late or syncing slowly),
     // we fetch from peers to ensure the sync task can start
-    let (epoch, epoch_timestamp, _boundary_block, validators, _) = match executor_client
+    let (epoch, epoch_timestamp, _boundary_block, validators, _, _boundary_gei) = match executor_client
         .get_epoch_boundary_data(node.current_epoch)
         .await
     {
@@ -79,12 +79,12 @@ pub async fn start_sync_task(node: &mut ConsensusNode, _config: &NodeConfig) -> 
                     Ok(response) => {
                         if response.error.is_none() && !response.validators.is_empty() {
                             info!(
-                                "✅ [SYNC TASK] Got epoch {} data from peer {}: boundary_block={}, validators={}",
-                                response.epoch, peer_addr, response.boundary_block, response.validators.len()
+                                "✅ [SYNC TASK] Got epoch {} data from peer {}: boundary_block={}, validators={}, boundary_gei={}",
+                                response.epoch, peer_addr, response.boundary_block, response.validators.len(), response.boundary_gei
                             );
 
                             // Convert ValidatorInfoSimple to ValidatorInfo
-                            let validators: Vec<
+                            let converted_validators: Vec<
                                 crate::node::executor_client::proto::ValidatorInfo,
                             > = response
                                 .validators
@@ -110,8 +110,9 @@ pub async fn start_sync_task(node: &mut ConsensusNode, _config: &NodeConfig) -> 
                                 response.epoch,
                                 response.timestamp_ms,
                                 response.boundary_block,
-                                validators,
+                                converted_validators,
                                 900u64, // default epoch_duration_seconds for peer fallback
+                                response.boundary_gei,
                             ));
                             break;
                         } else {

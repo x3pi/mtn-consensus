@@ -422,7 +422,7 @@ impl ExecutorClient {
 
         // Phase 5: Go verification (unchanged — periodic check)
         if last_idx % GO_VERIFICATION_INTERVAL == 0 {
-            if let Ok(go_last_block) = self.get_last_block_number().await {
+            if let Ok((go_last_block, _)) = self.get_last_block_number().await {
                 let mut last_verified = self.last_verified_go_index.lock().await;
                 if go_last_block < *last_verified {
                     error!("🚨 [FORK DETECTED] Go's block number DECREASED! last_verified={}, go_now={}. CRITICAL: Possible fork or Go state corruption!",
@@ -487,6 +487,7 @@ impl ExecutorClient {
     ///
     /// IMPORTANT: This does NOT update next_expected_index or sent_indices.
     /// Go is responsible for handling ordering when receiving synced blocks.
+    #[allow(dead_code)]
     pub async fn send_committed_subdag_direct(
         &self,
         subdag: &CommittedSubDag,
@@ -524,6 +525,7 @@ impl ExecutorClient {
     }
 
     /// Send block data via UDS/TCP (internal helper)
+    #[allow(dead_code)]
     pub async fn send_block_data(
         &self,
         epoch_data_bytes: &[u8],

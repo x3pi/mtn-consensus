@@ -72,10 +72,25 @@ echo ""
 # STEP 1: STOP ALL
 # ==============================================================================
 echo -e "${BLUE}[1/5] 🛑 Stop all processes...${NC}"
+# Send SIGTERM first for graceful shutdown (PebbleDB FlushAll + Close)
 pkill -f "simple_chain" 2>/dev/null || true
 pkill -f "metanode start" 2>/dev/null || true
 pkill -f "metanode run" 2>/dev/null || true
-sleep 3
+
+# Smart wait: poll up to 15s for processes to exit gracefully
+# PebbleDB needs time to flush ~32 shard memtables to SST + fsync
+MAX_WAIT=15
+for i in $(seq 1 $MAX_WAIT); do
+    if ! pgrep -f "simple_chain" > /dev/null 2>&1 && ! pgrep -f "metanode start" > /dev/null 2>&1; then
+        echo -e "${GREEN}  ✅ All processes exited gracefully in ${i}s${NC}"
+        break
+    fi
+    if [ "$i" -eq "$MAX_WAIT" ]; then
+        echo -e "${YELLOW}  ⚠️ Processes still running after ${MAX_WAIT}s, sending SIGKILL...${NC}"
+    fi
+    sleep 1
+done
+
 for id in 0 1 2 3 4; do
     tmux kill-session -t "go-master-$id" 2>/dev/null || true
     tmux kill-session -t "go-sub-$id" 2>/dev/null || true
@@ -97,7 +112,7 @@ else
     # Rust
     echo "  🦀 Building Rust metanode..."
     export PATH="/home/abc/protoc3/bin:$PATH"
-    cd "$METANODE_ROOT" && cargo +nightly build --release --bin metanode 2>&1 | tail -3
+    cd "$METANODE_ROOT" && cargo +nightly build --release --bin metanode
     echo -e "${GREEN}  ✅ Rust binary ready${NC}"
     
     # C++ MVM

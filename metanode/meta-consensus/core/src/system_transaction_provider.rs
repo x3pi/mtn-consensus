@@ -40,6 +40,7 @@ pub struct DefaultSystemTransactionProvider {
     /// Updated by CommitProcessor after each flush_buffer() cycle.
     go_lag: Arc<AtomicU64>,
     /// Maximum lag threshold: EndOfEpoch is suppressed when go_lag >= this value
+    #[allow(dead_code)]
     go_lag_threshold: u64,
 }
 
@@ -93,28 +94,19 @@ impl DefaultSystemTransactionProvider {
             time_based_enabled
         );
 
-        // RESTART FIX: If epoch_start_timestamp is significantly in the past (elapsed >= duration),
-        // reset to now() to prevent immediate EndOfEpoch trigger on restart.
-        // Without this fix, restarting after downtime > epoch_duration causes:
-        // 1. Immediate EndOfEpoch system tx creation
-        // 2. A few blocks committed before Go catches up
-        // 3. Deferred transition deadlock (Go behind, no consensus to send blocks)
-        // This mirrors the same logic in update_epoch() (line 122-130).
-        let effective_epoch_start = if time_based_enabled
-            && elapsed_seconds >= epoch_duration_seconds
-        {
-            warn!(
+        // FIX 5: Do NOT reset the epoch start timestamp to now() even if it is old.
+        // It must remain consistent across the network and accurately reflect the boundary block timestamp.
+        let effective_epoch_start = epoch_start_timestamp_ms;
+        
+        if time_based_enabled && elapsed_seconds >= epoch_duration_seconds {
+            info!(
                 "⚠️  SystemTransactionProvider: Epoch start timestamp is {}s old (>= duration {}s). \
-                 RESETTING to now() to prevent immediate EndOfEpoch on restart. \
-                 Next epoch change will trigger after {}s from now.",
+                 Keeping original timestamp {}ms to ensure consistent epoch boundary blocks.",
                 elapsed_seconds,
                 epoch_duration_seconds,
-                epoch_duration_seconds
+                epoch_start_timestamp_ms
             );
-            now_ms
-        } else {
-            epoch_start_timestamp_ms
-        };
+        }
 
         Self {
             current_epoch: Arc::new(RwLock::new(current_epoch)),

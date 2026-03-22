@@ -284,7 +284,7 @@ impl ExecutorClient {
     /// CRITICAL: last_block_number counts only non-empty commits (actual blocks)
     ///           last_global_exec_index counts ALL commits (including empty ones)
     ///           Use last_global_exec_index for epoch transition SYNC WAIT comparison
-    pub async fn get_last_block_number(&self) -> Result<u64> {
+    pub async fn get_last_block_number(&self) -> Result<(u64, bool)> {
         if !self.is_enabled() {
             return Err(anyhow::anyhow!("Executor client is not enabled"));
         }
@@ -377,9 +377,10 @@ impl ExecutorClient {
                 Some(proto::response::Payload::LastBlockNumberResponse(res)) => {
                     let last_block_number = res.last_block_number;
                     let last_gei = res.last_global_exec_index;
+                    let is_ready = res.is_ready;
                     info!(
-                        "✅ [EXECUTOR-REQ] Received LastBlockNumberResponse: block={}, gei={}",
-                        last_block_number, last_gei
+                        "✅ [EXECUTOR-REQ] Received LastBlockNumberResponse: block={}, gei={}, is_ready={}",
+                        last_block_number, last_gei, is_ready
                     );
 
                     // Persist for crash recovery
@@ -394,7 +395,7 @@ impl ExecutorClient {
                         }
                     }
 
-                    return Ok(last_block_number);
+                    return Ok((last_block_number, is_ready));
                 }
                 Some(proto::response::Payload::Error(error_msg)) => {
                     return Err(anyhow::anyhow!("Go returned error: {}", error_msg));

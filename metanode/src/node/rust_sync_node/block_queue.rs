@@ -10,6 +10,7 @@ use tracing::{info, warn};
 
 /// Data stored in the queue for each commit
 #[derive(Clone)]
+#[allow(dead_code)]
 pub(crate) struct CommitData {
     pub commit: Commit,
     pub blocks: Vec<VerifiedBlock>,
@@ -24,6 +25,7 @@ pub(crate) struct BlockQueue {
     /// Next expected global_exec_index
     next_expected: u64,
     /// Last time we logged about a gap
+    #[allow(dead_code)]
     last_gap_log: Option<std::time::Instant>,
 }
 
@@ -39,6 +41,7 @@ impl BlockQueue {
     }
 
     /// Add a commit to the queue (will be deduplicated by index)
+    #[allow(dead_code)]
     pub fn push(&mut self, data: CommitData) {
         let index = data.commit.global_exec_index();
         // Only add if not already processed and not already pending
@@ -50,6 +53,7 @@ impl BlockQueue {
     /// Drain all commits that can be processed sequentially
     /// Returns commits in order, stopping at the first gap
     /// CRITICAL: If there's a large gap (e.g., after epoch transition), auto-adjust next_expected
+    #[allow(dead_code)]
     pub fn drain_ready(&mut self) -> Vec<CommitData> {
         let mut ready = Vec::new();
 

@@ -177,7 +177,7 @@ impl TxRecycler {
         stale_txs
     }
 
-    /// Get current stats
+// Get current stats
     pub async fn stats(&self) -> (usize, u64, u64, u64) {
         let pending = self.pending.lock().await;
         let submitted = *self.total_submitted.lock().await;
@@ -185,20 +185,78 @@ impl TxRecycler {
         let recycled = *self.total_recycled.lock().await;
         (pending.len(), submitted, confirmed, recycled)
     }
+
+    /// Load pending TXs from disk on startup
+    pub async fn load_from_disk(&self, storage_path: &str) {
+        let file_path = format!("{}/tx_recycler_pending.dat", storage_path);
+        if let Ok(data) = std::fs::read(&file_path) {
+            let mut pending = self.pending.lock().await;
+            let mut offset = 0;
+            let mut loaded_count = 0;
+            while offset + 32 < data.len() {
+                let mut hash = [0u8; 32];
+                hash.copy_from_slice(&data[offset..offset+32]);
+                offset += 32;
+                
+                if offset + 4 > data.len() { break; }
+                let tx_len = u32::from_le_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]) as usize;
+                offset += 4;
+                
+                if offset + tx_len > data.len() { break; }
+                let tx_data = data[offset..offset+tx_len].to_vec();
+                offset += tx_len;
+                
+                pending.insert(hash, PendingTx {
+                    data: tx_data,
+                    submitted_at: Instant::now(), // Reset timer on startup
+                    recycle_count: 0,
+                });
+                loaded_count += 1;
+            }
+            if loaded_count > 0 {
+                info!("💾 [TX RECYCLER] Hydrated {} pending transactions from disk", loaded_count);
+            }
+        }
+    }
+
+    /// Save pending TXs to disk
+    pub async fn save_to_disk(&self, storage_path: &str) {
+        let pending = self.pending.lock().await;
+        // Don't save if empty to save I/O
+        if pending.is_empty() { return; }
+        
+        let mut data = Vec::new();
+        for (hash, ptx) in pending.iter() {
+            data.extend_from_slice(hash);
+            data.extend_from_slice(&(ptx.data.len() as u32).to_le_bytes());
+            data.extend_from_slice(&ptx.data);
+        }
+        
+        let file_path = format!("{}/tx_recycler_pending.dat", storage_path);
+        let temp_path = format!("{}.tmp", file_path);
+        if std::fs::write(&temp_path, data).is_ok() {
+            let _ = std::fs::rename(temp_path, file_path);
+        }
+    }
 }
 
 /// Start background recycler task that periodically re-submits stale TXs
 pub async fn start_recycler_background(
     recycler: Arc<TxRecycler>,
     transaction_client: Arc<dyn crate::node::tx_submitter::TransactionSubmitter>,
+    storage_path: String,
 ) {
     info!(
         "♻️ [TX RECYCLER] Background recycler started (timeout={}s, max_retries=3)",
         RECYCLE_TIMEOUT.as_secs()
     );
 
+    // Hydrate state from disk on startup
+    recycler.load_from_disk(&storage_path).await;
+
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     let mut last_stats_log = Instant::now();
+    let mut last_save = Instant::now();
 
     loop {
         interval.tick().await;
@@ -228,6 +286,12 @@ pub async fn start_recycler_background(
                     );
                 }
             }
+        }
+
+        // Persist state to disk periodically (every 5s)
+        if last_save.elapsed() >= Duration::from_secs(5) {
+            recycler.save_to_disk(&storage_path).await;
+            last_save = Instant::now();
         }
 
         // Log stats periodically (every 60s)

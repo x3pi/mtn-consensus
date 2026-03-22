@@ -51,6 +51,8 @@ pub struct SyncStatus {
     pub block_gap: u64,
     /// Network max block height
     pub network_block_height: u64,
+    /// Network's current global commit index (global_exec_index)
+    pub network_commit: u64,
     /// Whether ready to join consensus
     pub ready: bool,
 }
@@ -85,6 +87,21 @@ impl CatchupManager {
         }
     }
 
+    /// Get peer RPC addresses (for external use in fallback sync loops)
+    pub fn peer_rpc_addresses(&self) -> Vec<String> {
+        self.peer_rpc_addresses.clone()
+    }
+
+    /// Convenience: sync blocks from peers if local Go is behind network block height.
+    /// Returns number of blocks synced.
+    pub async fn sync_blocks_from_peers_if_behind(&self, network_block: u64) -> Result<u64> {
+        let go_block = self.executor_client.get_last_block_number().await?.0;
+        if go_block >= network_block {
+            return Ok(0);
+        }
+        self.sync_blocks_from_peers(go_block, network_block).await
+    }
+
     /// Check sync status by querying Go Master and Peers
     pub async fn check_sync_status(
         &self,
@@ -101,7 +118,7 @@ impl CatchupManager {
         };
 
         let local_go_last_block = match self.executor_client.get_last_block_number().await {
-            Ok(block) => block,
+            Ok((block, _)) => block,
             Err(e) => {
                 error!("🚨 [CATCHUP] Failed to get last block from Go: {}", e);
                 return Err(anyhow::anyhow!("Failed to get last block from Go: {}", e));
@@ -180,6 +197,7 @@ impl CatchupManager {
             commit_gap,
             block_gap,
             network_block_height: network_block,
+            network_commit,
             ready,
         };
 
@@ -322,7 +340,7 @@ impl CatchupManager {
 
             // Get current Go block number
             let go_block = match self.executor_client.get_last_block_number().await {
-                Ok(b) => b,
+                Ok((b, _)) => b,
                 Err(e) => {
                     warn!("⚠️ [EPOCH-CATCHUP] Failed to get Go block: {}", e);
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;

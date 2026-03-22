@@ -20,6 +20,7 @@ use tokio_util::bytes::Bytes;
 use tracing::{debug, info, trace, warn};
 
 impl RustSyncNode {
+    #[allow(dead_code)]
     pub(super) async fn fetch_and_queue(
         &self,
         network_client: &Arc<TonicClient>,
@@ -490,6 +491,7 @@ impl RustSyncNode {
     /// Fetch commits using global execution index range (cross-epoch safe)
     /// This bypasses epoch-local coordinate conversion entirely.
     /// Uses PARALLEL peer racing for maximum throughput.
+    #[allow(dead_code)]
     pub(super) async fn fetch_and_queue_by_global_range(
         &self,
         network_client: &Arc<TonicClient>,
@@ -732,6 +734,7 @@ impl RustSyncNode {
     /// Fetch blocks from peer's Go layer using PeerGoClient
     /// This is used when network_client is None (SyncOnly) or as a fallback
     /// Returns the number of blocks successfully sent to local Go
+    #[allow(dead_code)]
         pub async fn fetch_blocks_from_peer_go(
         &self,
         peer_addresses: &[String],
@@ -773,7 +776,7 @@ impl RustSyncNode {
                             block_num, current_epoch, epoch
                         );
 
-                        if let Ok((_e, timestamp, boundary, _, _)) = self.executor_client.get_epoch_boundary_data(epoch).await {
+                        if let Ok((_e, timestamp, boundary, _, _, _)) = self.executor_client.get_epoch_boundary_data(epoch).await {
                             let _ = self.epoch_transition_sender.send((epoch, timestamp, boundary));
                             self.current_epoch.store(epoch, std::sync::atomic::Ordering::SeqCst);
                         }

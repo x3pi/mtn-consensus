@@ -25,6 +25,7 @@ impl ExecutorClient {
         new_epoch: u64,
         epoch_start_timestamp_ms: u64,
         boundary_block: u64,
+        boundary_gei: u64,
     ) -> Result<()> {
         if !self.is_enabled() {
             return Err(anyhow::anyhow!("Executor client is not enabled"));
@@ -36,7 +37,7 @@ impl ExecutorClient {
 
         while retry_count < max_retries {
             match self
-                .try_advance_epoch(new_epoch, epoch_start_timestamp_ms, boundary_block)
+                .try_advance_epoch(new_epoch, epoch_start_timestamp_ms, boundary_block, boundary_gei)
                 .await
             {
                 Ok(()) => return Ok(()),
@@ -69,6 +70,7 @@ impl ExecutorClient {
         new_epoch: u64,
         epoch_start_timestamp_ms: u64,
         boundary_block: u64,
+        boundary_gei: u64,
     ) -> Result<()> {
         // Connect to Go request socket if needed
         if let Err(e) = self.connect_request().await {
@@ -85,6 +87,7 @@ impl ExecutorClient {
                     new_epoch,
                     epoch_start_timestamp_ms,
                     boundary_block,
+                    boundary_gei,
                 },
             )),
         };

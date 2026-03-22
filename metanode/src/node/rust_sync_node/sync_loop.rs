@@ -43,7 +43,7 @@ impl RustSyncNode {
     /// STABILITY FIX: Tracks consecutive errors and resets connections after 5 failures
     async fn sync_loop(mut self, shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>) {
         let normal_interval = Duration::from_secs(self.config.fetch_interval_secs);
-        let turbo_interval = Duration::from_millis(self.config.turbo_fetch_interval_ms);
+        let _turbo_interval = Duration::from_millis(self.config.turbo_fetch_interval_ms);
         let mut is_turbo_mode = false;
 
         // STABILITY FIX: Track consecutive sync errors to detect stale connections
@@ -230,7 +230,7 @@ impl RustSyncNode {
             // Use Go's last block number as the sync cursor
             // HandleSyncBlocksRequest works with block numbers from block headers
             let go_block = match self.executor_client.get_last_block_number().await {
-                Ok(block_num) => block_num,
+                Ok((b, _)) => b,
                 Err(e) => {
                     warn!("[RUST-SYNC] Failed to get last block number: {}", e);
                     return Ok(0);
@@ -315,7 +315,7 @@ impl RustSyncNode {
 
         // Fetch new epoch boundary data from Go
         match self.executor_client.get_epoch_boundary_data(go_epoch).await {
-            Ok((_epoch, _ts, go_boundary_block, validators, _)) => {
+            Ok((_epoch, _ts, go_boundary_block, validators, _, _)) => {
                 let old_epoch_base = self.epoch_base_index.load(Ordering::SeqCst);
 
                 // CRITICAL FIX: Go returns boundary_block as a Go DB block number,
@@ -466,7 +466,7 @@ impl RustSyncNode {
 
         // Check if we need to refresh committee (e.g., new validator joined)
         match self.executor_client.get_epoch_boundary_data(go_epoch).await {
-            Ok((_epoch, _ts, _boundary, validators, _)) => {
+            Ok((_epoch, _ts, _boundary, validators, _, _)) => {
                 if !validators.is_empty() && validators.len() != current_committee_size {
                     info!(
                         "🔄 [COMMITTEE-REFRESH] Committee size mismatch! Current={}, Go has={}. Rebuilding for epoch {}...",
@@ -530,8 +530,8 @@ impl RustSyncNode {
             go_last_block, epoch_base, rust_epoch
         );
 
-        // Try to refetch epoch boundary from Go Master
-        if let Ok((_epoch, _timestamp, new_boundary, _validators, _)) = self
+        // Try to refetch epoch boundary from Go
+        if let Ok((_epoch, _timestamp, new_boundary, _validators, _, _)) = self
             .executor_client
             .get_epoch_boundary_data(rust_epoch)
             .await

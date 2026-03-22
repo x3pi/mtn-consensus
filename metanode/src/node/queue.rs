@@ -156,8 +156,29 @@ pub async fn submit_queued_transactions(node: &mut ConsensusNode) -> Result<usiz
 
     let mut successful_count = 0;
     let mut requeued_count = 0;
+    // DEADLOCK FIX: Total timeout prevents blocking epoch transitions for hours.
+    // Previously, exponential backoff (200 * 2^19 = 29 hours at max retry) would
+    // block transition_to_epoch_from_system_tx forever when consensus has no quorum
+    // (e.g., epoch mismatch after snapshot restore), keeping transition_in_progress=true
+    // and preventing the epoch monitor from ever advancing to the next epoch.
+    let total_start = std::time::Instant::now();
+    let total_timeout = std::time::Duration::from_secs(30);
+    let max_retries = 5u64;
+    let max_delay_ms: u64 = 5000; // Cap per-retry delay at 5s
 
     for tx_data in transactions {
+        // Check total timeout before each transaction
+        if total_start.elapsed() > total_timeout {
+            warn!(
+                "⏱️ [TX FLOW] Total timeout ({:?}) reached. Re-queuing remaining transactions.",
+                total_timeout
+            );
+            let mut q = node.pending_transactions_queue.lock().await;
+            q.push(tx_data);
+            requeued_count += 1;
+            continue;
+        }
+
         if SystemTransaction::from_bytes(&tx_data).is_ok()
             || !crate::types::tx_hash::verify_transaction_protobuf(&tx_data)
         {
@@ -172,14 +193,17 @@ pub async fn submit_queued_transactions(node: &mut ConsensusNode) -> Result<usiz
         }
 
         let mut retry = 0;
-        let max_retries = 20;
         let mut submitted = false;
 
         while retry < max_retries {
+            // Also check total timeout inside retry loop
+            if total_start.elapsed() > total_timeout {
+                break;
+            }
+
             let proxy = match node.transaction_client_proxy.as_ref() {
                 Some(p) => p,
                 None => {
-                    // Should not happen given the check at line 122, but guard anyway
                     let mut q = node.pending_transactions_queue.lock().await;
                     q.push(tx_data.clone());
                     requeued_count += 1;
@@ -190,18 +214,15 @@ pub async fn submit_queued_transactions(node: &mut ConsensusNode) -> Result<usiz
                 Ok(_) => {
                     successful_count += 1;
                     submitted = true;
-
-                    // NOTE: Hash tracking moved to commit processor
-                    // Queue submissions are just temporary - only commit processing truly commits transactions
-
                     break;
                 }
                 Err(e) => {
                     retry += 1;
-                    let delay = 200 * (1 << (retry - 1));
+                    // Cap delay to prevent exponential explosion
+                    let delay = std::cmp::min(200 * (1u64 << (retry - 1)), max_delay_ms);
                     warn!(
-                        "⚠️ Failed to submit (attempt {}): {}. Retry in {}ms",
-                        retry, e, delay
+                        "⚠️ Failed to submit (attempt {}/{}): {}. Retry in {}ms",
+                        retry, max_retries, e, delay
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                 }

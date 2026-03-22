@@ -29,6 +29,11 @@ pub struct CommitProcessor {
     global_exec_index_callback: Option<Arc<dyn Fn(u64) + Send + Sync>>,
     /// Current epoch (for deterministic global_exec_index calculation)
     current_epoch: u64,
+    /// Epoch base index: GEI at the START of current epoch (from Go epoch boundary).
+    /// CRITICAL: This must be the epoch boundary value, NOT the current shared_last_global_exec_index.
+    /// After cold start, shared_last_global_exec_index gets set to network commit (e.g., 4364)
+    /// but epoch_base_index for epoch 1 must be 0.
+    epoch_base_index_override: Option<u64>,
     /// Callback to get current last global execution index
     get_last_global_exec_index: Option<Arc<dyn Fn() -> u64 + Send + Sync>>,
     /// Shared last global exec index for direct updates
@@ -51,6 +56,13 @@ pub struct CommitProcessor {
     block_coordinator: Option<Arc<BlockCoordinator>>,
     /// TX recycler for confirming committed TXs
     tx_recycler: Option<Arc<TxRecycler>>,
+    /// Cold-start flag: set when DAG storage was empty at startup (snapshot restore).
+    /// When true, skip stale DAG replay commits and wait for live rounds.
+    cold_start: Arc<AtomicBool>,
+    /// GEI threshold for cold-start skip: skip ALL commits with GEI ≤ this value.
+    /// Set from synced_global_exec_index (Phase 1 peer sync state) during cold-start.
+    /// This prevents replayed commits from creating duplicate blocks in Go.
+    cold_start_skip_gei: u64,
 }
 
 impl CommitProcessor {
@@ -64,6 +76,7 @@ impl CommitProcessor {
             get_last_global_exec_index: None,
             shared_last_global_exec_index: None,
             current_epoch: 0,
+            epoch_base_index_override: None,
             executor_client: None,
             is_transitioning: None,
             pending_transactions_queue: None,
@@ -73,6 +86,8 @@ impl CommitProcessor {
             ),
             block_coordinator: None,
             tx_recycler: None,
+            cold_start: Arc::new(AtomicBool::new(false)),
+            cold_start_skip_gei: 0,
         }
     }
 
@@ -114,9 +129,12 @@ impl CommitProcessor {
     }
 
     /// Set epoch and last_global_exec_index for deterministic global_exec_index calculation
-    pub fn with_epoch_info(mut self, epoch: u64, _last_global_exec_index: u64) -> Self {
+    pub fn with_epoch_info(mut self, epoch: u64, last_global_exec_index: u64) -> Self {
         self.current_epoch = epoch;
-        // last_global_exec_index is now obtained from shared_last_global_exec_index, no need to store locally
+        // Store the epoch boundary GEI explicitly. This is the CORRECT value for GEI calculations.
+        // CRITICAL: Do NOT derive epoch_base_index from shared_last_global_exec_index at runtime,
+        // because cold-start updates it to the network commit (causing wrong GEI → hash divergence).
+        self.epoch_base_index_override = Some(last_global_exec_index);
         self
     }
 
@@ -189,6 +207,20 @@ impl CommitProcessor {
         self
     }
 
+    /// Set cold-start flag (true when DAG storage was empty at startup, e.g. snapshot restore).
+    /// When active, stale DAG replay commits are skipped to prevent fork.
+    pub fn with_cold_start(mut self, cold_start: Arc<AtomicBool>) -> Self {
+        self.cold_start = cold_start;
+        self
+    }
+
+    /// Set GEI threshold for cold-start skip. All commits with GEI ≤ this value
+    /// are skipped during cold-start to prevent duplicate blocks.
+    pub fn with_cold_start_skip_gei(mut self, gei: u64) -> Self {
+        self.cold_start_skip_gei = gei;
+        self
+    }
+
     /// Process commits in order
     pub async fn run(self) -> Result<()> {
         let mut receiver = self.receiver;
@@ -200,25 +232,27 @@ impl CommitProcessor {
         let pending_transactions_queue = self.pending_transactions_queue;
         let epoch_transition_callback = self.epoch_transition_callback;
 
-        // --- [FORK SAFETY FIX v2] ---
-        // CRITICAL: epoch_base_index is set ONCE at epoch start and never changes during epoch.
-        // This is the last_global_exec_index at the END of previous epoch (or 0 for epoch 0).
-        // All nodes receive this same value from Go via GetEpochBoundaryData API.
-        // Formula: global_exec_index = epoch_base_index + commit_index
-        // Since commit_index is consensus-agreed (from Mysticeti), all nodes compute same result.
-        let epoch_base_index = if let Some(ref shared_index) = self.shared_last_global_exec_index {
+        // --- [FORK SAFETY FIX v3] ---
+        // CRITICAL: epoch_base_index must be the GEI at the START of current epoch.
+        // USE the value passed via with_epoch_info(), NOT shared_last_global_exec_index.
+        // After cold-start restore, shared_last_global_exec_index gets updated to the
+        // network commit (e.g., 4364), but the epoch boundary for epoch 1 is 0.
+        // Using the wrong base causes: GEI = 4364 + commit_index (WRONG)
+        // instead of: GEI = 0 + commit_index (CORRECT) → hash divergence!
+        let epoch_base_index = if let Some(override_val) = self.epoch_base_index_override {
+            override_val
+        } else if let Some(ref shared_index) = self.shared_last_global_exec_index {
             let index_guard = shared_index.lock().await;
             *index_guard
         } else {
-            // Fallback: try callback if shared index not available
             if let Some(ref callback) = self.get_last_global_exec_index {
                 callback()
             } else {
                 0
             }
         };
-        info!("🚀 [COMMIT PROCESSOR] Started processing commits for epoch {} (epoch_base_index={}, next_expected_index={})",
-            current_epoch, epoch_base_index, next_expected_index);
+        info!("🚀 [COMMIT PROCESSOR] Started processing commits for epoch {} (epoch_base_index={}, next_expected_index={}, override={:?})",
+            current_epoch, epoch_base_index, next_expected_index, self.epoch_base_index_override);
 
         let mut last_heartbeat_commit = 0u32;
         let mut last_heartbeat_time = std::time::Instant::now();
@@ -298,6 +332,8 @@ impl CommitProcessor {
                             pending_transactions_queue.clone(),
                             self.shared_last_global_exec_index.clone(),
                             self.epoch_eth_addresses.clone(), // Multi-epoch committee cache
+                            self.cold_start.clone(),
+                            self.cold_start_skip_gei,
                         )
                         .await?;
 
@@ -386,6 +422,8 @@ impl CommitProcessor {
                                 pending_transactions_queue.clone(),
                                 self.shared_last_global_exec_index.clone(),
                                 self.epoch_eth_addresses.clone(), // Multi-epoch committee cache
+                                self.cold_start.clone(),
+                                self.cold_start_skip_gei,
                             )
                             .await?;
 
@@ -503,7 +541,9 @@ impl CommitProcessor {
         shared_last_global_exec_index: Option<Arc<tokio::sync::Mutex<u64>>>,
         validator_eth_addresses: Arc<
             tokio::sync::Mutex<std::collections::HashMap<u64, Vec<Vec<u8>>>>,
-        >, // Multi-epoch committee cache
+        >,
+        cold_start: Arc<AtomicBool>,
+        cold_start_skip_gei: u64,
     ) -> Result<()> {
         let commit_index = subdag.commit_ref.index;
         let mut total_transactions = 0;
@@ -630,7 +670,7 @@ impl CommitProcessor {
                     // Try to refresh epoch_eth_addresses from Go
                     if let Some(ref client) = executor_client {
                         match client.get_epoch_boundary_data(epoch).await {
-                            Ok((returned_epoch, _ts, _boundary, validators, _))
+                            Ok((returned_epoch, _ts, _boundary, validators, _, _))
                                 if returned_epoch == epoch =>
                             {
                                 // Sort validators same way as committee builder
@@ -662,7 +702,7 @@ impl CommitProcessor {
                                     epoch, sorted_validators.len(), cache.len()
                                 );
                             }
-                            Ok((returned_epoch, _, _, _, _)) => {
+                            Ok((returned_epoch, _, _, _, _, _)) => {
                                 warn!(
                                     "⚠️ [LEADER] Go returned epoch {} but requested epoch {}. Retrying...",
                                     returned_epoch, epoch
@@ -731,6 +771,108 @@ impl CommitProcessor {
                 "⏭️ [TX FLOW] Forwarding empty commit to Go Master (for sequence sync): global_exec_index={}, commit_index={}",
                 global_exec_index, commit_index
             );
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // COLD-START GUARD v3: Prevent block number divergence after snapshot
+        // restore. Two layers of protection:
+        //
+        // LAYER 1: Skip commits whose GEI is already covered by Go's state.
+        //   During cold_start: skip ALL commits (including EndOfEpoch) because
+        //   the replayed DAG creates fake EndOfEpoch that trigger spurious
+        //   epoch transitions → new epoch with wrong content → FORK.
+        //   During normal operation: allow EndOfEpoch through for safety.
+        //
+        // LAYER 2: When cold_start=true, also skip commits that somehow
+        //   get past LAYER 1 (e.g., GEI exceeds Go's GEI). Only clear
+        //   cold_start when a truly live commit is detected (recent timestamp
+        //   AND Go GEI < commit GEI, meaning the network hasn't yet produced
+        //   this block). This ensures only genuinely new commits get through.
+        //
+        // In normal operation neither layer triggers (Go is behind consensus).
+        // ═══════════════════════════════════════════════════════════════════
+        let is_cold_start = cold_start.load(std::sync::atomic::Ordering::Relaxed);
+        if let Some(ref client) = executor_client {
+            // LAYER 1: GEI-based skip
+            let go_gei = client.get_last_global_exec_index().await.unwrap_or(0);
+            if go_gei >= global_exec_index && global_exec_index > 0 {
+                let has_end_of_epoch = subdag.extract_end_of_epoch_transaction().is_some();
+                if is_cold_start {
+                    // During cold_start: skip ALL commits including EndOfEpoch
+                    // The replayed DAG creates fake EndOfEpoch from SystemTransactionProvider
+                    // that don't match the network's real epoch boundaries
+                    if has_end_of_epoch {
+                        info!(
+                            "⏭️ [COLD-START GUARD] Skipping EndOfEpoch commit #{}: Go GEI={} >= commit GEI={}. \
+                             Cold-start active — blocking fake epoch transition from replayed DAG.",
+                            commit_index, go_gei, global_exec_index
+                        );
+                    } else if commit_index % 500 == 0 || commit_index <= 5 {
+                        info!(
+                            "⏭️ [COLD-START GUARD] Skipping commit #{}: Go GEI={} >= commit GEI={}. \
+                             Go already has this state from peer sync.",
+                            commit_index, go_gei, global_exec_index
+                        );
+                    }
+                    return Ok(());
+                } else if !has_end_of_epoch {
+                    // Normal operation: skip non-EndOfEpoch commits
+                    info!(
+                        "⏭️ [COLD-START GUARD] Skipping commit #{}: Go GEI={} >= commit GEI={}. \
+                         Go already has this state from peer sync.",
+                        commit_index, go_gei, global_exec_index
+                    );
+                    return Ok(());
+                } else {
+                    // Normal operation: allow EndOfEpoch through for epoch transition safety
+                    info!(
+                        "⚠️ [COLD-START GUARD] Go GEI={} >= commit GEI={}, but commit #{} \
+                         contains EndOfEpoch — processing anyway for epoch transition safety.",
+                        go_gei, global_exec_index, commit_index
+                    );
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // LAYER 2: Timestamp-based cold-start clearing
+            // When cold_start is active and a commit passes LAYER 1
+            // (go_gei < commit_gei), verify it's TRULY live by checking
+            // the commit timestamp. DAG replay can produce commits with
+            // high GEI but old timestamps → these would fork if processed.
+            // Only clear cold_start and allow through when the commit is
+            // genuinely recent (within 30s of current time).
+            // ═══════════════════════════════════════════════════════════════
+            if is_cold_start {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let commit_ts_ms = subdag.timestamp_ms;
+                let age_s = if now_ms > commit_ts_ms { (now_ms - commit_ts_ms) / 1000 } else { 0 };
+
+                if age_s > 30 {
+                    // Stale commit from DAG replay — skip to prevent fork
+                    if commit_index % 500 == 0 || commit_index <= 5 {
+                        info!(
+                            "⏭️ [COLD-START L2] Skipping stale commit #{}: GEI={} > Go GEI={}, \
+                             but commit is {}s old (threshold: 30s). DAG replay — not yet live.",
+                            commit_index, global_exec_index, go_gei, age_s
+                        );
+                    }
+                    return Ok(());
+                } else {
+                    // Truly live commit — clear cold_start and allow through
+                    cold_start.store(false, std::sync::atomic::Ordering::Relaxed);
+                    info!(
+                        "✅ [COLD-START L2] Cleared cold_start at commit #{}: GEI={} > Go GEI={}, \
+                         commit age={}s. Now processing live commits normally.",
+                        commit_index, global_exec_index, go_gei, age_s
+                    );
+                }
+            }
+
+            // LAYER 1 handles the primary cold-start protection.
+            // Go's CommitBlockState sequential guard is the final defense.
         }
 
         if let Some(ref client) = executor_client {

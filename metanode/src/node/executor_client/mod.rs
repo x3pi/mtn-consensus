@@ -187,6 +187,7 @@ impl ExecutorClient {
     }
 
     /// Check if the TCP send circuit breaker is open
+    #[allow(dead_code)]
     pub async fn check_send_circuit_breaker(&self) -> Result<()> {
         let cb_guard = self.send_cb_open_until.read().await;
         if let Some(open_until) = *cb_guard {

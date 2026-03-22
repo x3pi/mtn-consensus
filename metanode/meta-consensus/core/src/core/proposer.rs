@@ -495,6 +495,12 @@ impl Core {
         let is_recovering = lag <= moderate_lag_threshold_with_hysteresis
             && lag_percentage <= moderate_lag_percentage_with_hysteresis;
 
+        // CRITICAL FORK-PREVENTION: The "Fresh DAG" rule was REMOVED.
+        // Previously, we blocked nodes with a fresh DAG from proposing to prevent forks
+        // caused by mismatched genesis blocks. However, the genesis timestamp is now
+        // unified and strictly matches the network's timestamp. Restored nodes will
+        // generate identical genesis hashes and can safely join consensus mid-epoch.
+
         if should_skip_consensus {
             if is_severe_lag {
                 // Severe lag: Skip consensus aggressively

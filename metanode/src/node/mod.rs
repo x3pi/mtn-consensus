@@ -27,6 +27,7 @@ use crate::node::tx_submitter::TransactionClientProxy;
 pub mod block_coordinator;
 pub mod catchup;
 pub mod committee;
+pub mod dual_stream;
 pub mod committee_source;
 pub mod epoch_checkpoint;
 pub mod epoch_monitor;
@@ -78,6 +79,7 @@ pub struct PendingEpochTransition {
     pub epoch: u64,
     pub timestamp_ms: u64,
     pub boundary_block: u64,
+    pub boundary_gei: u64,
 }
 
 // Global registry for transition handler to access node
@@ -182,6 +184,12 @@ pub struct ConsensusNode {
 
     /// TX recycler for tracking and re-submitting stale TXs
     pub(crate) tx_recycler: Option<Arc<crate::consensus::tx_recycler::TxRecycler>>,
+
+    /// Cold-start flag: set to true when DAG was wiped (snapshot restore).
+    /// When true, the node stays in SyncingUp mode and runs blocking Phase 1
+    /// peer sync first. After sync completes, ConsensusAuthority starts and
+    /// DualStreamController handles the overlap period (Phase 4).
+    pub(crate) cold_start: bool,
 }
 
 // ConsensusNode constructors are in consensus_node.rs

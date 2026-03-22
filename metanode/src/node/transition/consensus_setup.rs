@@ -30,13 +30,11 @@ pub(super) async fn setup_validator_consensus(
         node.epoch_transition_sender.clone(),
     );
 
-    // CRITICAL FIX (2026-02-13): Use node.last_global_exec_index instead of epoch_boundary_block
-    // for initial_next_expected. These values can diverge when get_epoch_boundary_data() overwrites
-    // epoch_boundary_block with a stale stored_boundary (e.g., 294007) while
-    // shared_last_global_exec_index was correctly updated to 294008 by stop_authority_and_poll_go().
-    // CommitProcessor derives epoch_base_index from shared_last_global_exec_index,
-    // so first commit produces global_exec_index = epoch_base_index + 1.
-    // The executor client MUST start at epoch_base_index + 1 to match.
+    // Use node.last_global_exec_index for epoch_base — this is the correct value for NORMAL startup.
+    // For epoch 1 genesis: last_global_exec_index = 0, so GEI = 0 + commit_index = commit_index.
+    // NOTE: Do NOT use epoch_boundary_block here — Go returns boundary_block=1 for epoch 1,
+    // which causes GEI = 1 + commit_index (off by one → fork).
+    // Cold-start restore uses mode_transition.rs which has its own fix.
     let actual_epoch_base = node.last_global_exec_index;
     let initial_next_expected = actual_epoch_base + 1;
     info!(
@@ -156,7 +154,8 @@ pub(super) async fn setup_synconly_sync(
         node.epoch_transition_sender.clone(),
     );
 
-    // CRITICAL FIX (2026-02-13): Same fix as Validator path - use node.last_global_exec_index
+    // Use node.last_global_exec_index for epoch_base — same as Validator path.
+    // Do NOT use epoch_boundary_block here (Go returns 1 for epoch 1, not 0).
     let actual_epoch_base = node.last_global_exec_index;
     let initial_next_expected = actual_epoch_base + 1;
     info!(

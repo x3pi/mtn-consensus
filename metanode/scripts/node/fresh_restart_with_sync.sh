@@ -102,7 +102,7 @@ else
     # Rust
     echo "  🦀 Building Rust metanode..."
     export PATH="/home/abc/protoc3/bin:$PATH"
-    cd "$METANODE_ROOT" && cargo +nightly build --release --bin metanode 2>&1 | tail -3
+    cd "$METANODE_ROOT" && cargo build --release --bin metanode 2>&1 | tail -3
     echo -e "${GREEN}  ✅ Rust binary ready${NC}"
     
     # C++ MVM
@@ -144,6 +144,10 @@ else
     rm -rf "$METANODE_ROOT/config/storage" 2>/dev/null || true
     rm -rf "$LOG_DIR" 2>/dev/null || true
     rm -f /tmp/epoch_data_backup*.json 2>/dev/null || true
+    # Also clean stale /tmp socket files to prevent connection issues on restart
+    rm -f /tmp/rust-go-node*.sock 2>/dev/null || true
+    rm -f /tmp/executor*.sock 2>/dev/null || true
+    rm -f /tmp/metanode-tx-*.sock 2>/dev/null || true
     
     # Recreate directories for ALL nodes (0-4)
     for i in "${!ALL_NODES[@]}"; do

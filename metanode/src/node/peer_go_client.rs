@@ -38,6 +38,7 @@ impl PeerGoClient {
     }
 
     /// Create from string address (e.g., "192.168.1.100:9001")
+    #[allow(dead_code)]
     pub fn from_str(addr: &str) -> Result<Self> {
         let peer_addr: SocketAddr = addr
             .parse()
@@ -54,6 +55,7 @@ impl PeerGoClient {
 
     /// Fetch blocks from peer's Go layer
     /// Returns blocks in the range [from_block, to_block] (inclusive)
+    #[allow(dead_code)]
     pub async fn get_blocks_range(&self, from_block: u64, to_block: u64) -> Result<Vec<BlockData>> {
         debug!(
             "📤 [PEER-GO] Requesting blocks {} to {} from peer {}",

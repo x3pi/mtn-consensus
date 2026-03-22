@@ -266,21 +266,37 @@ impl<C: NetworkClient> CommitSyncer<C> {
         // "Not enough votes (0)" because the committee from the stale epoch can't
         // validate vote blocks from the current epoch.
         // ═══════════════════════════════════════════════════════════════════════
-        if local_commit_index == 0 && self.synced_commit_index == 0 && quorum_commit_index > 200 {
-            // SNAPSHOT RESTORE: Skip ALL historical consensus commits.
-            // Go already has the complete blockchain state from the snapshot.
-            // Only keep a tiny window (5 commits) so the DAG can bootstrap from
-            // live block sync. Using a larger window (e.g., batch_size=200) causes
-            // the block_manager to hit the suspended blocks limit (4000) because
-            // DAG is missing predecessor blocks for those historical commits.
-            let small_window = 5u32;
-            let fast_forward_to = quorum_commit_index.saturating_sub(small_window);
-            warn!(
-                "🚀 [COLD-START] Fast-forwarding synced_commit_index: 0 → {} (quorum={}, window={}). \
-                 Go already has historical state from snapshot — skipping all historical consensus.",
-                fast_forward_to, quorum_commit_index, small_window
-            );
-            self.synced_commit_index = fast_forward_to;
+        if local_commit_index == 0 && quorum_commit_index > 200 {
+            // SNAPSHOT RESTORE: Continuously fast-forward until the DAG starts
+            // processing real commits (local_commit_index > 0).
+            //
+            // A cold-start node has a completely fresh DAG with no historical blocks,
+            // so verify_commits() will ALWAYS fail for ANY historical commit range
+            // ("Not enough votes (0)") because vote blocks reference digests from
+            // the original DAG that this node doesn't have.
+            //
+            // We must keep fast-forwarding to the CURRENT quorum so the node
+            // only processes NEW commits that happen after it fully joins.
+            let fast_forward_to = quorum_commit_index;
+            if self.synced_commit_index < fast_forward_to {
+                if self.synced_commit_index == 0 {
+                    warn!(
+                        "🚀 [COLD-START] Fast-forwarding synced_commit_index: 0 → {} (quorum={}). \
+                         Go already has historical state from snapshot — skipping ALL historical consensus.",
+                        fast_forward_to, quorum_commit_index
+                    );
+                } else {
+                    info!(
+                        "🚀 [COLD-START] Continuing fast-forward: {} → {} (quorum={}). \
+                         Still no local commits — DAG not synced yet.",
+                        self.synced_commit_index, fast_forward_to, quorum_commit_index
+                    );
+                }
+                self.synced_commit_index = fast_forward_to;
+                // Cancel any pending/scheduled fetches for historical ranges that will fail
+                self.pending_fetches.clear();
+                self.highest_scheduled_index = Some(fast_forward_to);
+            }
         }
 
         let unhandled_commits_threshold = self.unhandled_commits_threshold();

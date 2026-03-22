@@ -21,6 +21,7 @@ static GLOBAL_SYNC_METRICS: Lazy<SyncMetrics> =
 
 /// Prometheus metrics for the sync node
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct SyncMetrics {
     /// Total blocks received from peers
     pub blocks_received_total: Counter,
