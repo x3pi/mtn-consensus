@@ -94,7 +94,7 @@ prevent state divergence:
 |---|---|
 | **Leader manipulation** | Leader computed deterministically from committee + round |
 | **Epoch abuse** | Epoch transitions require Go executor notification + committee update |
-| **TX duplication** | TxRecycler tracks submitted TXs + committed_transaction_hashes dedup |
+| **TX duplication** | Broadcast/forward logic removed (v0.0.9); TxRecycler dedup; committed_transaction_hashes dedup |
 | **DAG equivocation** | Handled by Mysticeti core consensus protocol |
 | **Block replay** | Block numbers monotonically increasing, verified by Go executor |
 | **Mempool flooding** | Backpressure at 8M TX pool size; lock-free queuing during transitions |

@@ -118,45 +118,35 @@ tail -3 ~/chain-n/mtn-consensus/metanode/logs/node_2/rust.log | grep "round"
 
 ---
 
-## Script tự động (1 lệnh)
+## Script tự động (khuyến nghị)
+
+Sử dụng script `restore_node.sh` có sẵn — đã được kiểm chứng qua nhiều lần restore thực tế:
 
 ```bash
-#!/bin/bash
-# restore_node.sh <node_id> [snapshot_name]
-# Ví dụ: ./restore_node.sh 2 snap_epoch_1_block_50
+cd ~/chain-n/mtn-consensus/metanode/scripts/node
 
-NODE_ID="${1:?Usage: $0 <node_id> [snapshot_name]}"
-SNAP_NAME="${2:-$(curl -sf http://localhost:8700/api/snapshots | python3 -c "import sys,json; snaps=json.load(sys.stdin); print(snaps[-1]['snapshot_name'])" 2>/dev/null)}"
+# Tự tìm snapshot mới nhất
+./restore_node.sh <node_id>
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SNAP_DIR=~/chain-n/mtn-simple-2025/cmd/simple_chain/snapshot_data_node0/$SNAP_NAME
-NODE_DATA=~/chain-n/mtn-simple-2025/cmd/simple_chain/sample/node$NODE_ID
-
-echo "🛑 Stop Node $NODE_ID..."
-"$SCRIPT_DIR/stop_node.sh" "$NODE_ID" 2>/dev/null || true
-sleep 3
-
-echo "🗑️  Xóa data Node $NODE_ID..."
-rm -rf "$NODE_DATA/data" "$NODE_DATA/data-write" "$NODE_DATA/back_up" "$NODE_DATA/back_up_write"
-
-echo "📸 Restore từ $SNAP_NAME..."
-cp -rl "$SNAP_DIR" "$NODE_DATA/data/data"
-mkdir -p "$NODE_DATA/data/data/xapian_node" "$NODE_DATA/data-write/data/xapian_node"
-mkdir -p "$NODE_DATA/back_up" "$NODE_DATA/back_up_write"
-
-echo "🚀 Khởi động Node $NODE_ID..."
-"$SCRIPT_DIR/resume_node.sh" "$NODE_ID"
-
-echo "✅ Node $NODE_ID đã restore và khởi động!"
-echo "   Kiểm tra: tail -f ~/chain-n/mtn-consensus/metanode/logs/node_$NODE_ID/rust.log"
+# Hoặc chỉ định snapshot cụ thể
+./restore_node.sh <node_id> snap_epoch_5_block_4220
 ```
+
+Script tự động thực hiện **7 bước** tuần tự và fork-safe:
+
+1. **Stop Node** — Dừng Go Master + Go Sub + Rust Metanode
+2. **Xóa data** — Go data + Rust DAG storage (bao gồm cả logs cũ)
+3. **Restore snapshot** — Copy LevelDB, PebbleDB, epoch data. Tạo RESET_GEI markers
+4. **Validate** — Kiểm tra JSON hợp lệ, LevelDB dirs, PebbleDB, Rust storage sạch
+5. **Sequential startup** — Go Master → chờ socket → Go Sub → Rust Metanode
+6. **Sync monitoring (90s)** — Giám sát block tăng tuần tự, cảnh báo nếu stuck
+7. **Hash divergence check** — So sánh hash với node tham chiếu, phát hiện fork
 
 ---
 
 ## Lưu ý quan trọng
 
-> ⚠️ **Không khôi phục Node 0** — Node 0 là nguồn snapshot và xử lý TX chính. Nếu cần restore Node 0, phải chọn node khác có snapshot.
+> ⚠️ **Sau restore**, Rust Metanode sẽ mất ~3 phút replay commits. Trong thời gian này node **KHÔNG tham gia consensus** nhưng cluster vẫn hoạt động bình thường (chỉ cần 3/4 validators).
 
-> ⚠️ **Sau restore**, Rust Metanode sẽ mất ~3 phút replay commits. Trong thời gian này node **KHÔNG tham gia consensus** nhưng cluster vẫn hoạt động bình thường (chỉ cần 3/4 nodes).
+> 💡 **Snapshot HTTP ports** (cấu hình trong Go config `snapshot_server_port`): kiểm tra bằng `curl http://localhost:<port>/api/snapshots`.
 
-> 💡 Port snapshot HTTP mỗi node: Node 0 = `8700`, Node 1 = `8747`, Node 2 = `8749`, Node 3 = `8727`.
