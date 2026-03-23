@@ -635,8 +635,17 @@ impl TxSocketServer {
             let mut _last_block_ref = None;
             let mut last_error = String::new();
 
-            for (chunk_idx, chunk) in transactions_to_submit.chunks(MAX_BUNDLE_SIZE).enumerate() {
-                let chunk_vec: Vec<Vec<u8>> = chunk.to_vec();
+            // PERF: Fast path for single chunk (common case: ≤200K TXs)
+            // Avoids chunks().to_vec() clone by consuming transactions_to_submit directly
+            let chunks_list: Vec<Vec<Vec<u8>>> = if total_tx_count <= MAX_BUNDLE_SIZE {
+                vec![transactions_to_submit]
+            } else {
+                transactions_to_submit.chunks(MAX_BUNDLE_SIZE)
+                    .map(|c| c.to_vec())
+                    .collect()
+            };
+
+            for (chunk_idx, chunk_vec) in chunks_list.into_iter().enumerate() {
                 let chunk_len = chunk_vec.len();
 
                 debug!(
