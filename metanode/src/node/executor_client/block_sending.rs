@@ -252,6 +252,21 @@ impl ExecutorClient {
                                     after_clear
                                 );
                             }
+                        } else {
+                            // Go is BEHIND — likely after restore + SyncOnly→Validator transition.
+                            // The buffer has consensus blocks far ahead of Go. The empty GEIs
+                            // between Go and the buffer are consensus rounds that were never
+                            // captured (sync stopped before consensus started).
+                            // SAFE: advance next_expected to min_buffered so flush_buffer
+                            // can start sending. Go will receive blocks in sequential GEI
+                            // order from flush_buffer (BTreeMap + sequential iteration).
+                            let buffer = self.send_buffer.lock().await;
+                            let min_buf = *buffer.keys().next().unwrap_or(&0);
+                            if min_buf > *next_expected_guard {
+                                warn!("🚀 [RESTORE-GAP-BRIDGE] Go is behind (gei={}), buffer starts at {}. Advancing next_expected {} → {} to bridge transition gap",
+                                    go_last_gei, min_buf, *next_expected_guard, min_buf);
+                                *next_expected_guard = min_buf;
+                            }
                         }
                     } else {
                         warn!("⚠️  [SEQUENTIAL-BUFFER] get_last_global_exec_index timed out or failed. Continuing buffered sender...");

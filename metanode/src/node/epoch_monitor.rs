@@ -114,7 +114,99 @@ pub fn start_unified_epoch_monitor(
             // 4. Check if transition needed (NETWORK epoch ahead of Rust)
             // Use network_epoch instead of local_go_epoch!
             if network_epoch <= rust_epoch {
-                // No transition needed - epochs are in sync with network
+                // ═══════════════════════════════════════════════════════════
+                // SAME-EPOCH PROMOTION: SyncOnly → Validator without epoch change
+                //
+                // When a node is restored from snapshot and starts in SyncOnly,
+                // it needs to be promoted to Validator WITHIN the same epoch
+                // once Go has caught up. Without this, the node would stay
+                // SyncOnly until the next epoch transition — which could be
+                // minutes or hours away.
+                //
+                // This makes snapshot restore behave like a node restart:
+                // sync up → join consensus immediately.
+                // ═══════════════════════════════════════════════════════════
+                if matches!(_current_mode, crate::node::NodeMode::SyncOnly) {
+                    // Check if this node should be a Validator
+                    let own_protocol_pubkey = {
+                        if let Some(node_arc) = crate::node::get_transition_handler_node().await {
+                            let node_guard = node_arc.lock().await;
+                            node_guard.protocol_keypair.public().clone()
+                        } else {
+                            continue;
+                        }
+                    };
+
+                    let role = match crate::node::transition::demotion::determine_role_for_epoch(
+                        rust_epoch, &own_protocol_pubkey, &config_clone,
+                    ).await {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+
+                    if matches!(role, crate::node::NodeMode::Validator) {
+                        // Node IS in committee — check if Go has caught up
+                        let (go_block, _) = client_arc.get_last_block_number().await.unwrap_or((0, false));
+
+                        // Query network block height
+                        let net_block = {
+                            let peer_rpc = config_clone.peer_rpc_addresses.clone();
+                            if !peer_rpc.is_empty() {
+                                match crate::network::peer_rpc::query_peer_epochs_network(&peer_rpc).await {
+                                    Ok((_ep, blk, _peer, _gei)) => blk,
+                                    Err(_) => go_block, // assume caught up if can't query
+                                }
+                            } else {
+                                go_block
+                            }
+                        };
+
+                        let gap = net_block.saturating_sub(go_block);
+                        if gap <= 5 {
+                            info!(
+                                "🚀 [EPOCH MONITOR] Same-epoch promotion! SyncOnly → Validator in epoch {} (Go block={}, network={})",
+                                rust_epoch, go_block, net_block
+                            );
+
+                            // Get synced_global_exec_index from Go
+                            let synced_gei = client_arc.get_last_global_exec_index().await.unwrap_or(go_block);
+
+                            if let Some(node_arc) = crate::node::get_transition_handler_node().await {
+                                let mut node_guard = node_arc.lock().await;
+                                // Update epoch/GEI state before transition
+                                node_guard.current_epoch = rust_epoch;
+                                node_guard.last_global_exec_index = synced_gei;
+
+                                match crate::node::transition::mode_transition::transition_mode_only(
+                                    &mut *node_guard,
+                                    rust_epoch,
+                                    0, // boundary_block unused
+                                    synced_gei,
+                                    &config_clone,
+                                ).await {
+                                    Ok(()) => {
+                                        info!(
+                                            "✅ [EPOCH MONITOR] Same-epoch promotion complete! Node is now Validator at epoch {} (GEI={})",
+                                            rust_epoch, synced_gei
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "❌ [EPOCH MONITOR] Same-epoch promotion failed: {}. Will retry next cycle.",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        } else {
+                            debug!(
+                                "⏳ [EPOCH MONITOR] SyncOnly node in committee but Go still catching up: gap={} blocks (Go={}, network={})",
+                                gap, go_block, net_block
+                            );
+                        }
+                    }
+                }
+
                 continue;
             }
 
