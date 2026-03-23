@@ -355,6 +355,7 @@ impl StateTransitionManager {
     /// Returns true if a stale transition was cleared.
     /// This is a safety mechanism for the epoch monitor to recover from
     /// stuck transitions (e.g., when consensus can't form quorum after restore).
+    #[allow(dead_code)]
     pub async fn force_clear_stale_transition(&self, max_age: Duration) -> bool {
         if !self.transition_in_progress.load(Ordering::SeqCst) {
             return false;

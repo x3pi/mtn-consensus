@@ -18,7 +18,6 @@ use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 use crate::node::executor_client::ExecutorClient;
-use crate::node::tx_submitter::TransactionSubmitter;
 
 use super::types::*;
 

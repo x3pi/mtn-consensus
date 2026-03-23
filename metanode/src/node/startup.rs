@@ -88,7 +88,7 @@ impl InitializedNode {
         // Get transaction submitter for servers
         let tx_client = { node.lock().await.transaction_submitter() };
 
-        let mut rpc_server_handle = None;
+        let rpc_server_handle;
         let uds_server_handle;
         let mut peer_rpc_server_handle = None;
 

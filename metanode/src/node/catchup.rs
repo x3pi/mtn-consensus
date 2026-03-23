@@ -88,12 +88,14 @@ impl CatchupManager {
     }
 
     /// Get peer RPC addresses (for external use in fallback sync loops)
+    #[allow(dead_code)]
     pub fn peer_rpc_addresses(&self) -> Vec<String> {
         self.peer_rpc_addresses.clone()
     }
 
     /// Convenience: sync blocks from peers if local Go is behind network block height.
     /// Returns number of blocks synced.
+    #[allow(dead_code)]
     pub async fn sync_blocks_from_peers_if_behind(&self, network_block: u64) -> Result<u64> {
         let go_block = self.executor_client.get_last_block_number().await?.0;
         if go_block >= network_block {

@@ -1,7 +1,7 @@
 // Copyright (c) MetaNode Team
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::node::tx_submitter::TransactionSubmitter;
+
 use crate::types::tx_hash::calculate_transaction_hash_hex;
 use anyhow::Result;
 use std::sync::Arc;

@@ -80,9 +80,8 @@ impl TxSocketServer {
         let listener = UnixListener::bind(&self.socket_path)?;
         info!("🔌 Transaction UDS server started on {}", self.socket_path);
 
-        // DEBUG: Log that we're waiting for connections
         info!(
-            "🔌 [DEBUG] UDS server waiting for connections on {}",
+            "🔌 UDS server waiting for connections on {}",
             self.socket_path
         );
 
@@ -95,8 +94,7 @@ impl TxSocketServer {
         }
 
         loop {
-            // DEBUG: Log before accepting
-            debug!("🔌 [DEBUG] UDS server waiting for connections...");
+            debug!("🔌 UDS server waiting for connections...");
 
             match listener.accept().await {
                 Ok((stream, addr)) => {
@@ -115,7 +113,7 @@ impl TxSocketServer {
                     let tx_recycler = self.tx_recycler.clone();
 
                     tokio::spawn(async move {
-                        debug!("🔌 [DEBUG] Spawned handler for UDS connection");
+                        debug!("🔌 Spawned handler for UDS connection");
                         if let Err(e) = Self::handle_connection(
                             stream,
                             client,

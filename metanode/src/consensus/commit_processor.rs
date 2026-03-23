@@ -543,7 +543,7 @@ impl CommitProcessor {
             tokio::sync::Mutex<std::collections::HashMap<u64, Vec<Vec<u8>>>>,
         >,
         cold_start: Arc<AtomicBool>,
-        cold_start_skip_gei: u64,
+        _cold_start_skip_gei: u64,
     ) -> Result<()> {
         let commit_index = subdag.commit_ref.index;
         let mut total_transactions = 0;

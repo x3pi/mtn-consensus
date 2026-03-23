@@ -64,6 +64,7 @@ struct ConsensusSetup {
     /// When false, CommitProcessor uses timestamp-based guard to skip stale replay commits.
     dag_has_history: bool,
     /// Cold-start flag shared with CommitProcessor for timestamp-based stale commit filtering
+    #[allow(dead_code)]
     cold_start: Arc<std::sync::atomic::AtomicBool>,
     commit_consumer_holder: Option<CommitConsumerArgs>,
     transaction_client_proxy: Option<Arc<TransactionClientProxy>>,
