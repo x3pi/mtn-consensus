@@ -96,11 +96,11 @@ impl TxSocketServer {
 
         loop {
             // DEBUG: Log before accepting
-            info!("🔌 [DEBUG] UDS server waiting for connections...");
+            debug!("🔌 [DEBUG] UDS server waiting for connections...");
 
             match listener.accept().await {
                 Ok((stream, addr)) => {
-                    info!(
+                    debug!(
                         "🔌 [TX FLOW] ✅ ACCEPTED new UDS connection from client: {:?}",
                         addr
                     );
@@ -115,7 +115,7 @@ impl TxSocketServer {
                     let tx_recycler = self.tx_recycler.clone();
 
                     tokio::spawn(async move {
-                        info!("🔌 [DEBUG] Spawned handler for UDS connection");
+                        debug!("🔌 [DEBUG] Spawned handler for UDS connection");
                         if let Err(e) = Self::handle_connection(
                             stream,
                             client,
@@ -192,7 +192,7 @@ impl TxSocketServer {
             let data_len = tx_data.len();
 
             // Batch-level logging only (per-TX hash logging removed for performance)
-            info!(
+            debug!(
                 "📥 [TX FLOW] Received transaction batch via UDS: size={} bytes",
                 data_len
             );
@@ -317,7 +317,7 @@ impl TxSocketServer {
                 continue;
             }
 
-            info!(
+            debug!(
                 "✅ [TX FLOW] Zero-copy extracted {} individual transactions via UDS",
                 individual_txs.len()
             );
@@ -404,7 +404,7 @@ impl TxSocketServer {
             }
 
             // Check if node is ready (lock-free fast path already passed)
-            info!(
+            debug!(
                 "🔍 [TX FLOW] Checking transaction acceptance for {} TXs",
                 transactions_to_submit.len()
             );
@@ -569,7 +569,7 @@ impl TxSocketServer {
 
                         // NORMAL OPERATION: Lock timeout is fine — consensus is just busy
                         // producing blocks. Proceed directly to submission.
-                        info!("⚡ [TX FLOW] Lock timeout (200ms) - consensus busy, proceeding with direct submission of {} TXs.",
+                        debug!("⚡ [TX FLOW] Lock timeout (200ms) - consensus busy, proceeding with direct submission of {} TXs.",
                             transactions_to_submit.len());
                         // Fall through to submission code below
                     }
@@ -577,7 +577,7 @@ impl TxSocketServer {
             }
 
             // Submit transactions to consensus
-            info!(
+            debug!(
                 "📤 [TX FLOW] Submitting {} transaction(s) to consensus via UDS",
                 transactions_to_submit.len()
             );
@@ -641,7 +641,7 @@ impl TxSocketServer {
                 let chunk_vec: Vec<Vec<u8>> = chunk.to_vec();
                 let chunk_len = chunk_vec.len();
 
-                info!(
+                debug!(
                     "🚀 [TX FLOW] Submitting sub-batch {}: {} TXs (total progress: {}/{})",
                     chunk_idx + 1,
                     chunk_len,
@@ -653,7 +653,7 @@ impl TxSocketServer {
                     Ok((block_ref, _indices, status_receiver)) => {
                         total_submitted += chunk_len;
                         _last_block_ref = Some(format!("{:?}", block_ref));
-                        info!(
+                        debug!(
                             "✅ [TX FLOW] Sub-batch {} included: {} TXs in block {:?} (progress: {}/{})",
                             chunk_idx + 1, chunk_len, block_ref, total_submitted, total_tx_count
                         );

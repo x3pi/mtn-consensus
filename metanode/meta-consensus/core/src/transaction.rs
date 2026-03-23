@@ -17,7 +17,7 @@ use tracing::{error, warn};
 use crate::{block::Transaction, context::Context};
 
 /// The maximum number of transactions pending to the queue to be pulled for block proposal
-const MAX_PENDING_TRANSACTIONS: usize = 50_000;
+const MAX_PENDING_TRANSACTIONS: usize = 200_000;
 
 /// The guard acts as an acknowledgment mechanism for the inclusion of the transactions to a block.
 /// When its last transaction is included to a block then `included_in_block_ack` will be signalled.
