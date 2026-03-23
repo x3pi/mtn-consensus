@@ -464,76 +464,29 @@ impl TxSocketServer {
                             };
 
                             if is_sync_only && !target_peers.is_empty() {
-                                // SyncOnly mode: Forward transactions to validators
-                                for tx_data in &transactions_to_submit {
-                                    let tx_hash =
-                                        crate::types::tx_hash::calculate_transaction_hash_hex(
-                                            tx_data,
-                                        );
-                                    info!(
-                                        "🔄 [TX FORWARD] SyncOnly node forwarding transaction: hash={}, {} validator addresses available",
-                                        tx_hash, target_peers.len()
-                                    );
-                                }
+                                // FIX: Do NOT forward transactions to validators.
+                                // During fresh restart, ALL validator nodes temporarily enter
+                                // "Node is still initializing" state, triggering this SyncOnly
+                                // forwarding path. This caused each node to forward ALL received
+                                // TXs to ALL other validators, creating massive TX duplication
+                                // (e.g., 280K TXs in blocks when only 100K were sent).
+                                //
+                                // The Go TX pool will retry sending TXs via UDS once the node
+                                // finishes initializing. The consensus DAG propagates committed
+                                // blocks to all validators, so explicit TX forwarding is not needed.
+                                warn!(
+                                    "⏳ [TX FLOW] Node is still initializing, rejecting {} TXs (Go TX pool will retry)",
+                                    transactions_to_submit.len()
+                                );
                                 drop(node_guard);
 
-                                // Collect all TX data into single bytes (Transactions protobuf)
-                                // Forward to validators using peer_rpc
-                                use crate::network::peer_rpc::forward_transaction_to_validators;
-
-                                // Forward the entire batch to validators in chunks
-                                let mut forward_success = true;
-                                let mut forward_error = String::new();
-
-                                for chunk in transactions_to_submit.chunks(5000) {
-                                    match forward_transaction_to_validators(
-                                        &peer_rpc_addresses,
-                                        chunk,
-                                    )
-                                    .await
-                                    {
-                                        Ok(resp) if resp.success => {
-                                            info!(
-                                                "✅ [TX FORWARD] Successfully forwarded chunk of {} TXs to validator",
-                                                chunk.len()
-                                            );
-                                        }
-                                        Ok(resp) => {
-                                            forward_success = false;
-                                            forward_error = resp
-                                                .error
-                                                .unwrap_or_else(|| "Unknown error".to_string());
-                                            break;
-                                        }
-                                        Err(e) => {
-                                            forward_success = false;
-                                            forward_error = e.to_string();
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                if forward_success {
-                                    let success_response = r#"{"success":true,"forwarded":true,"message":"Transaction forwarded to validator"}"#;
-                                    if let Err(e) =
-                                        Self::send_response_string(&mut stream, success_response)
-                                            .await
-                                    {
-                                        error!("❌ [TX FLOW] Failed to send forward success response: {}", e);
-                                        return Err(e.into());
-                                    }
-                                } else {
-                                    let error_response = format!(
-                                        r#"{{"success":false,"error":"Forward failed: {}"}}"#,
-                                        forward_error.replace('"', "\\\"")
-                                    );
-                                    if let Err(e) =
-                                        Self::send_response_string(&mut stream, &error_response)
-                                            .await
-                                    {
-                                        error!("❌ [TX FLOW] Failed to send forward error response: {}", e);
-                                        return Err(e.into());
-                                    }
+                                let reject_response = r#"{"success":false,"error":"Node is still initializing, please retry"}"#;
+                                if let Err(e) =
+                                    Self::send_response_string(&mut stream, reject_response)
+                                        .await
+                                {
+                                    error!("❌ [TX FLOW] Failed to send reject response: {}", e);
+                                    return Err(e.into());
                                 }
                                 continue; // Continue to next request
                             }
@@ -710,32 +663,10 @@ impl TxSocketServer {
                             recycler.track_submitted(&chunk_vec).await;
                         }
 
-                        // Broadcast to other validators (Pillar 32: Mempool Broadcast)
-                        let target_peers = if let Some(ref addrs) = peer_discovery_addresses {
-                            addrs.read().await.clone()
-                        } else {
-                            peer_rpc_addresses.clone()
-                        };
-
-                        if !target_peers.is_empty() {
-                            use crate::network::peer_rpc::broadcast_transaction_to_validators;
-                            let peers = target_peers.clone();
-                            let batch = chunk_vec.clone();
-
-                            tokio::spawn(async move {
-                                match broadcast_transaction_to_validators(&peers, &batch).await {
-                                    Ok(success_count) => {
-                                        if success_count > 0 {
-                                            info!("📡 [MEMPOOL] Broadcasted batch of {} TXs to {}/{} peers", 
-                                                batch.len(), success_count, peers.len());
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!("⚠️ [MEMPOOL] Failed to broadcast TX batch: {}", e);
-                                    }
-                                }
-                            });
-                        }
+                        // NOTE: Mempool broadcast REMOVED — it caused TX duplication.
+                        // Each broadcast made peers re-submit the same TXs to consensus,
+                        // resulting in each TX appearing up to 4× in blocks.
+                        // Consensus DAG (Mysticeti) already propagates committed blocks.
 
                         // NOTE: epoch_pending_transactions tracking removed (memory leak fix).
                         // At 10K TPS this Vec grew ~3.6GB/hour by cloning every TX.
@@ -796,28 +727,7 @@ impl TxSocketServer {
                                                 if let Some(ref recycler) = tx_recycler {
                                                     recycler.track_submitted(&chunk_vec).await;
                                                 }
-                                                let target_peers = if let Some(ref addrs) = peer_discovery_addresses {
-                                                    addrs.read().await.clone()
-                                                } else {
-                                                    peer_rpc_addresses.clone()
-                                                };
-                                                if !target_peers.is_empty() {
-                                                    use crate::network::peer_rpc::broadcast_transaction_to_validators;
-                                                    let peers = target_peers.clone();
-                                                    let batch = chunk_vec.clone();
-                                                    tokio::spawn(async move {
-                                                        match broadcast_transaction_to_validators(&peers, &batch).await {
-                                                            Ok(success_count) => {
-                                                                if success_count > 0 {
-                                                                    info!("📡 [MEMPOOL] Broadcasted batch of {} TXs to {}/{} peers", batch.len(), success_count, peers.len());
-                                                                }
-                                                            }
-                                                            Err(e) => {
-                                                                warn!("⚠️ [MEMPOOL] Failed to broadcast TX batch: {}", e);
-                                                            }
-                                                        }
-                                                    });
-                                                }
+                                                // NOTE: Mempool broadcast REMOVED (same as primary path above).
                                                 tokio::spawn(async move {
                                                     match status_receiver.await {
                                                         Ok(consensus_core::BlockStatus::Sequenced(block)) => {
@@ -852,58 +762,17 @@ impl TxSocketServer {
                             }
 
                             if needs_forward {
-                                let target_peers = if let Some(ref addrs) = peer_discovery_addresses {
-                                    addrs.read().await.clone()
-                                } else {
-                                    peer_rpc_addresses.clone()
-                                };
-
-                                if !target_peers.is_empty() {
-                                    info!(
-                                        "🔄 [TX FORWARD] SyncOnly node forwarding sub-batch {} to {} validators (direct submit failed/timeout)",
-                                        chunk_idx + 1, target_peers.len()
-                                    );
-                                    use crate::network::peer_rpc::forward_transaction_to_validators;
-
-                                    let mut forward_success = true;
-                                    let mut forward_error = String::new();
-
-                                    match forward_transaction_to_validators(&target_peers, &chunk_vec).await {
-                                        Ok(resp) if resp.success => {
-                                            info!(
-                                                "✅ [TX FORWARD] Successfully forwarded sub-batch {} of {} TXs",
-                                                chunk_idx + 1, chunk_len
-                                            );
-                                            total_submitted += chunk_len;
-                                        }
-                                        Ok(resp) => {
-                                            forward_success = false;
-                                            forward_error = resp.error.unwrap_or_else(|| "Unknown error".to_string());
-                                        }
-                                        Err(e) => {
-                                            forward_success = false;
-                                            forward_error = e.to_string();
-                                        }
-                                    }
-
-                                    if forward_success {
-                                        continue; // Successful forward!
-                                    } else {
-                                        all_succeeded = false;
-                                        last_error = format!("Forward failed: {}", forward_error);
-                                        error!(
-                                            "❌ [TX FLOW] Sub-batch {} failed: {}",
-                                            chunk_idx + 1, last_error
-                                        );
-                                    }
-                                } else {
-                                    all_succeeded = false;
-                                    last_error = "SyncOnly node cannot submit (and no validators known)".to_string();
-                                    error!(
-                                        "❌ [TX FLOW] Sub-batch {} failed: SyncOnly node cannot submit and no validators known.",
-                                        chunk_idx + 1
-                                    );
-                                }
+                                // FIX: Do NOT forward transactions to validators.
+                                // This forward path was triggering during node initialization,
+                                // causing transaction duplication across all validators.
+                                // The Go TX pool will retry sending TXs via UDS once the
+                                // node finishes initializing and joins consensus.
+                                all_succeeded = false;
+                                last_error = "Node is initializing, TX forwarding disabled to prevent duplication".to_string();
+                                warn!(
+                                    "⏳ [TX FLOW] Sub-batch {} not forwarded: node initializing ({} TXs will be retried by Go TX pool)",
+                                    chunk_idx + 1, chunk_len
+                                );
                             }
                         } else if err_str.contains("shutting down") || err_str.contains("channel closed") {
                             // CRITICAL FIX: Epoch transition closed the consensus channel.
