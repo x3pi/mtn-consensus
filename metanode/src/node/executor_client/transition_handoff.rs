@@ -25,11 +25,53 @@ impl ExecutorClient {
         new_epoch: u64,
         epoch_start_timestamp_ms: u64,
         boundary_block: u64,
+        boundary_gei: u64,
     ) -> Result<()> {
         if !self.is_enabled() {
             return Err(anyhow::anyhow!("Executor client is not enabled"));
         }
 
+        let max_retries = 3;
+        let mut retry_count = 0;
+        let mut last_err = anyhow::anyhow!("Unknown error");
+
+        while retry_count < max_retries {
+            match self
+                .try_advance_epoch(new_epoch, epoch_start_timestamp_ms, boundary_block, boundary_gei)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    tracing::warn!(
+                        "⚠️ [EXECUTOR-REQ] Failed to advance epoch to {} (attempt {}/{}): {}",
+                        new_epoch,
+                        retry_count + 1,
+                        max_retries,
+                        e
+                    );
+                    last_err = e;
+                    retry_count += 1;
+                    if retry_count < max_retries {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                    }
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "Failed to advance epoch after {} retries. Last error: {}",
+            max_retries,
+            last_err
+        ))
+    }
+
+    async fn try_advance_epoch(
+        &self,
+        new_epoch: u64,
+        epoch_start_timestamp_ms: u64,
+        boundary_block: u64,
+        boundary_gei: u64,
+    ) -> Result<()> {
         // Connect to Go request socket if needed
         if let Err(e) = self.connect_request().await {
             return Err(anyhow::anyhow!(
@@ -45,6 +87,7 @@ impl ExecutorClient {
                     new_epoch,
                     epoch_start_timestamp_ms,
                     boundary_block,
+                    boundary_gei,
                 },
             )),
         };

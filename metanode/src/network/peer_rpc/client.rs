@@ -231,207 +231,6 @@ pub async fn query_peer_epoch_boundary_data(
     Ok(response)
 }
 
-/// Forward transaction to all validator peers. Returns number of successful peers.
-pub async fn broadcast_transaction_to_validators(
-    peer_addresses: &[String],
-    tx_batch: &[Vec<u8>],
-) -> Result<usize> {
-    use futures::future::join_all;
-    use tokio::io::AsyncReadExt;
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpStream;
-
-    if peer_addresses.is_empty() {
-        return Ok(0);
-    }
-
-    let tx_hexes: Vec<String> = tx_batch.iter().map(|t| hex::encode(t)).collect();
-    let request_body = serde_json::to_string(&SubmitTransactionRequest {
-        transactions_hex: tx_hexes,
-    })?;
-
-    let mut tasks = Vec::new();
-    let body_len = request_body.len();
-
-    for peer_addr in peer_addresses {
-        let addr = peer_addr.clone();
-        let body = request_body.clone();
-
-        let task = tokio::spawn(async move {
-            let stream_result =
-                tokio::time::timeout(std::time::Duration::from_secs(3), TcpStream::connect(&addr))
-                    .await;
-
-            let mut stream = match stream_result {
-                Ok(Ok(s)) => s,
-                _ => return false,
-            };
-
-            let http_request = format!(
-                "POST /submit_transaction HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                addr,
-                body_len,
-                body
-            );
-
-            if stream.write_all(http_request.as_bytes()).await.is_err() {
-                return false;
-            }
-
-            let mut buffer = [0u8; 1024];
-            let read_result =
-                tokio::time::timeout(std::time::Duration::from_secs(3), stream.read(&mut buffer))
-                    .await;
-
-            if let Ok(Ok(n)) = read_result {
-                let response_str = String::from_utf8_lossy(&buffer[..n]);
-                // Simplified fast check: "200 OK"
-                response_str.contains("200 OK")
-            } else {
-                false
-            }
-        });
-        tasks.push(task);
-    }
-
-    let results = join_all(tasks).await;
-    let success_count = results
-        .into_iter()
-        .filter(|r| matches!(r, Ok(true)))
-        .count();
-    Ok(success_count)
-}
-
-/// Forward transaction to validator nodes via HTTP POST
-/// This is used by SyncOnly nodes to forward transactions to validators for consensus
-/// Uses round-robin retry logic for fault tolerance
-pub async fn forward_transaction_to_validators(
-    peer_addresses: &[String],
-    tx_batch: &[Vec<u8>],
-) -> Result<SubmitTransactionResponse> {
-    use tokio::io::AsyncReadExt;
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpStream;
-
-    if peer_addresses.is_empty() {
-        return Err(anyhow::anyhow!(
-            "No peer addresses configured for forwarding"
-        ));
-    }
-
-    let tx_hexes: Vec<String> = tx_batch.iter().map(|t| hex::encode(t)).collect();
-    let request_body = serde_json::to_string(&SubmitTransactionRequest {
-        transactions_hex: tx_hexes,
-    })?;
-
-    // Round-robin through peers until one succeeds
-    for peer_addr in peer_addresses {
-        info!(
-            "🔄 [TX FORWARD] Attempting to forward transaction to validator: {}",
-            peer_addr
-        );
-
-        // Connect with timeout
-        let stream_result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            TcpStream::connect(peer_addr),
-        )
-        .await;
-
-        let mut stream = match stream_result {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                warn!("🔄 [TX FORWARD] Failed to connect to {}: {}", peer_addr, e);
-                continue;
-            }
-            Err(_) => {
-                warn!("🔄 [TX FORWARD] Timeout connecting to {}", peer_addr);
-                continue;
-            }
-        };
-
-        // Build HTTP POST request
-        let http_request = format!(
-            "POST /submit_transaction HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            peer_addr,
-            request_body.len(),
-            request_body
-        );
-
-        // Send request
-        if let Err(e) = stream.write_all(http_request.as_bytes()).await {
-            warn!(
-                "🔄 [TX FORWARD] Failed to send request to {}: {}",
-                peer_addr, e
-            );
-            continue;
-        }
-
-        // Read response with timeout
-        let mut buffer = [0u8; 4096];
-        let read_result =
-            tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buffer))
-                .await;
-
-        let n = match read_result {
-            Ok(Ok(n)) => n,
-            Ok(Err(e)) => {
-                warn!(
-                    "🔄 [TX FORWARD] Failed to read response from {}: {}",
-                    peer_addr, e
-                );
-                continue;
-            }
-            Err(_) => {
-                warn!(
-                    "🔄 [TX FORWARD] Timeout reading response from {}",
-                    peer_addr
-                );
-                continue;
-            }
-        };
-
-        let response_str = String::from_utf8_lossy(&buffer[..n]);
-
-        // Parse JSON body from HTTP response
-        let body_start = response_str
-            .find("\r\n\r\n")
-            .map(|i| i + 4)
-            .or_else(|| response_str.find("\n\n").map(|i| i + 2))
-            .unwrap_or(0);
-
-        let body = &response_str[body_start..];
-
-        match serde_json::from_str::<SubmitTransactionResponse>(body.trim()) {
-            Ok(resp) => {
-                if resp.success {
-                    info!(
-                        "✅ [TX FORWARD] Successfully forwarded transaction to {}",
-                        peer_addr
-                    );
-                    return Ok(resp);
-                } else {
-                    warn!(
-                        "🔄 [TX FORWARD] Validator {} rejected transaction: {:?}",
-                        peer_addr, resp.error
-                    );
-                    continue;
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "🔄 [TX FORWARD] Failed to parse response from {}: {}",
-                    peer_addr, e
-                );
-                continue;
-            }
-        }
-    }
-
-    Err(anyhow::anyhow!(
-        "Failed to forward transaction to any validator"
-    ))
-}
 
 /// Fetch blocks from a peer node via HTTP /get_blocks endpoint.
 /// Batches requests by 100 blocks (server-side limit).
@@ -458,17 +257,25 @@ pub async fn fetch_blocks_from_peer(
     );
 
     let mut all_blocks = Vec::new();
-    let batch_size = 5u64; // Smaller batches to avoid 1GB+ JSON payloads
+    let batch_size = 100u64; // Each block is ~67 bytes, 100 blocks ≈ 7KB
     let mut current_from = from_block;
 
     while current_from <= to_block {
         let current_to = std::cmp::min(current_from + batch_size - 1, to_block);
         let mut batch_fetched = false;
+        let mut max_block_fetched = 0;
 
         // Try each peer until one succeeds for this batch
         for peer_addr in peer_addresses {
             match fetch_block_batch(peer_addr, current_from, current_to).await {
                 Ok(blocks) => {
+                    if blocks.is_empty() {
+                        info!(
+                            "✅ [BLOCK-FETCH] Got 0 blocks ({}-{}) from peer {}",
+                            current_from, current_to, peer_addr
+                        );
+                        continue; // Try next peer
+                    }
                     info!(
                         "✅ [BLOCK-FETCH] Got {} blocks ({}-{}) from peer {}",
                         blocks.len(),
@@ -476,8 +283,11 @@ pub async fn fetch_blocks_from_peer(
                         current_to,
                         peer_addr
                     );
-                    all_blocks.extend(blocks);
                     batch_fetched = true;
+                    if let Some(max_block) = blocks.iter().map(|b| b.block_number).max() {
+                        max_block_fetched = max_block;
+                    }
+                    all_blocks.extend(blocks);
                     break;
                 }
                 Err(e) => {
@@ -498,7 +308,10 @@ pub async fn fetch_blocks_from_peer(
             break;
         }
 
-        current_from = current_to + 1;
+        // Yield execution to allow other async tasks (like socket listeners) to run
+        tokio::task::yield_now().await;
+        
+        current_from = std::cmp::max(current_from + 1, max_block_fetched + 1);
     }
 
     info!(
@@ -596,5 +409,154 @@ async fn fetch_block_batch(
     // Sort blocks by block_number for sequential processing
     blocks.sort_by_key(|b| b.block_number);
 
+    Ok(blocks)
+}
+
+/// Fetch ExecutableBlock protobuf bytes from peer Rust's /get_executable_blocks endpoint.
+/// Returns Vec<(global_exec_index, raw_protobuf_bytes)> — these are EXACTLY what Go expects
+/// on the dataChan, ready to be sent via send_block_data().
+///
+/// NO Go PebbleDB involved — pure Rust-to-Rust sync.
+#[allow(dead_code)]
+pub async fn fetch_executable_blocks_from_peer(
+    peer_addresses: &[String],
+    from_gei: u64,
+    to_gei: u64,
+) -> Result<Vec<(u64, Vec<u8>)>> {
+    if peer_addresses.is_empty() {
+        return Err(anyhow::anyhow!("No peer addresses configured"));
+    }
+
+    let total = to_gei.saturating_sub(from_gei) + 1;
+    info!(
+        "🔄 [EXEC-BLOCK-FETCH] Fetching {} executable blocks (GEI {} to {}) from {} peer(s)",
+        total, from_gei, to_gei, peer_addresses.len()
+    );
+
+    let mut all_blocks = Vec::new();
+    let batch_size = 100u64;
+    let mut current_from = from_gei;
+
+    while current_from <= to_gei {
+        let current_to = std::cmp::min(current_from + batch_size - 1, to_gei);
+        let mut batch_fetched = false;
+
+        for peer_addr in peer_addresses {
+            match fetch_executable_block_batch(peer_addr, current_from, current_to).await {
+                Ok(blocks) => {
+                    if blocks.is_empty() {
+                        continue;
+                    }
+                    info!(
+                        "✅ [EXEC-BLOCK-FETCH] Got {} executable blocks (GEI {}-{}) from peer {}",
+                        blocks.len(), current_from, current_to, peer_addr
+                    );
+                    batch_fetched = true;
+                    all_blocks.extend(blocks);
+                    break;
+                }
+                Err(e) => {
+                    warn!(
+                        "⚠️ [EXEC-BLOCK-FETCH] Peer {} failed for GEI {}-{}: {}",
+                        peer_addr, current_from, current_to, e
+                    );
+                    continue;
+                }
+            }
+        }
+
+        if !batch_fetched {
+            warn!(
+                "⚠️ [EXEC-BLOCK-FETCH] All peers failed for batch GEI {}-{}. Returning {} blocks so far.",
+                current_from, current_to, all_blocks.len()
+            );
+            break;
+        }
+
+        tokio::task::yield_now().await;
+        current_from = current_to + 1;
+    }
+
+    // Sort by GEI for sequential execution
+    all_blocks.sort_by_key(|(gei, _)| *gei);
+
+    info!(
+        "📦 [EXEC-BLOCK-FETCH] Total: {} executable blocks fetched",
+        all_blocks.len()
+    );
+    Ok(all_blocks)
+}
+
+/// Fetch a single batch of executable blocks from one peer via HTTP
+#[allow(dead_code)]
+async fn fetch_executable_block_batch(
+    peer_addr: &str,
+    from_gei: u64,
+    to_gei: u64,
+) -> Result<Vec<(u64, Vec<u8>)>> {
+    use tokio::net::TcpStream;
+
+    let mut stream = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        TcpStream::connect(peer_addr),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Connection timeout to {}", peer_addr))?
+    .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {}", peer_addr, e))?;
+
+    // Use /get_executable_blocks — reads from Rust file store, NOT Go PebbleDB
+    let request = format!(
+        "GET /get_executable_blocks?from={}&to={} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        from_gei, to_gei, peer_addr
+    );
+    stream.write_all(request.as_bytes()).await?;
+
+    let mut buffer = Vec::new();
+    let mut temp = [0u8; 65536];
+    let read_result = tokio::time::timeout(std::time::Duration::from_secs(300), async {
+        loop {
+            match stream.read(&mut temp).await {
+                Ok(0) => break,
+                Ok(n) => buffer.extend_from_slice(&temp[..n]),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    })
+    .await;
+
+    match read_result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to read response: {}", e)),
+        Err(_) => return Err(anyhow::anyhow!("Timeout reading from {}", peer_addr)),
+    }
+
+    // Parse HTTP response
+    let response_str = String::from_utf8_lossy(&buffer);
+    let body_start = response_str
+        .find("\r\n\r\n")
+        .map(|i| i + 4)
+        .or_else(|| response_str.find("\n\n").map(|i| i + 2))
+        .unwrap_or(0);
+
+    let body = &response_str[body_start..];
+
+    // Parse response — same GetBlocksResponse format but blocks contain raw ExecutableBlock bytes
+    let response: GetBlocksResponse = serde_json::from_str(body.trim())
+        .map_err(|e| anyhow::anyhow!("Failed to parse response JSON: {}", e))?;
+
+    if let Some(error) = &response.error {
+        return Err(anyhow::anyhow!("Peer returned error: {}", error));
+    }
+
+    // Decode hex → raw ExecutableBlock protobuf bytes (NOT proto::BlockData!)
+    let mut blocks = Vec::with_capacity(response.blocks.len());
+    for (gei, hex_data) in &response.blocks {
+        let data = hex::decode(hex_data)
+            .map_err(|e| anyhow::anyhow!("Failed to decode hex for GEI {}: {}", gei, e))?;
+        blocks.push((*gei, data));
+    }
+
+    blocks.sort_by_key(|(gei, _)| *gei);
     Ok(blocks)
 }

@@ -5,11 +5,7 @@ use tracing::trace;
 use consensus_types::block::BlockRef;
 use mysten_metrics::monitored_scope;
 
-use crate::{
-    block::VerifiedBlock,
-    core::Core,
-    error::ConsensusResult,
-};
+use crate::{block::VerifiedBlock, core::Core, error::ConsensusResult};
 
 impl Core {
     /// Processes the provided blocks and accepts them if possible when their causal history exists.

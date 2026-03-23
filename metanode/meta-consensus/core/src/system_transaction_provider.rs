@@ -3,6 +3,7 @@
 
 use crate::system_transaction::SystemTransaction;
 use consensus_config::Epoch;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::{info, warn};
 
@@ -34,6 +35,13 @@ pub struct DefaultSystemTransactionProvider {
     /// OPTIMIZED: Default reduced to 50 commits for faster epoch transitions (was 100)
     /// With commit rate 200 commits/s, 50 commits = 250ms (faster than 100 commits = 500ms)
     commit_index_buffer: u32,
+    /// BACKPRESSURE: Go executor lag (in blocks). When Go is lagging behind Rust,
+    /// EndOfEpoch emission is suppressed to prevent epoch desynchronization.
+    /// Updated by CommitProcessor after each flush_buffer() cycle.
+    go_lag: Arc<AtomicU64>,
+    /// Maximum lag threshold: EndOfEpoch is suppressed when go_lag >= this value
+    #[allow(dead_code)]
+    go_lag_threshold: u64,
 }
 
 impl DefaultSystemTransactionProvider {
@@ -86,28 +94,19 @@ impl DefaultSystemTransactionProvider {
             time_based_enabled
         );
 
-        // RESTART FIX: If epoch_start_timestamp is significantly in the past (elapsed >= duration),
-        // reset to now() to prevent immediate EndOfEpoch trigger on restart.
-        // Without this fix, restarting after downtime > epoch_duration causes:
-        // 1. Immediate EndOfEpoch system tx creation
-        // 2. A few blocks committed before Go catches up
-        // 3. Deferred transition deadlock (Go behind, no consensus to send blocks)
-        // This mirrors the same logic in update_epoch() (line 122-130).
-        let effective_epoch_start = if time_based_enabled
-            && elapsed_seconds >= epoch_duration_seconds
-        {
-            warn!(
+        // FIX 5: Do NOT reset the epoch start timestamp to now() even if it is old.
+        // It must remain consistent across the network and accurately reflect the boundary block timestamp.
+        let effective_epoch_start = epoch_start_timestamp_ms;
+        
+        if time_based_enabled && elapsed_seconds >= epoch_duration_seconds {
+            info!(
                 "⚠️  SystemTransactionProvider: Epoch start timestamp is {}s old (>= duration {}s). \
-                 RESETTING to now() to prevent immediate EndOfEpoch on restart. \
-                 Next epoch change will trigger after {}s from now.",
+                 Keeping original timestamp {}ms to ensure consistent epoch boundary blocks.",
                 elapsed_seconds,
                 epoch_duration_seconds,
-                epoch_duration_seconds
+                epoch_start_timestamp_ms
             );
-            now_ms
-        } else {
-            epoch_start_timestamp_ms
-        };
+        }
 
         Self {
             current_epoch: Arc::new(RwLock::new(current_epoch)),
@@ -116,6 +115,8 @@ impl DefaultSystemTransactionProvider {
             time_based_enabled,
             last_checked_commit_index: Arc::new(RwLock::new(0)),
             commit_index_buffer,
+            go_lag: Arc::new(AtomicU64::new(0)),
+            go_lag_threshold: 50, // Suppress EndOfEpoch when Go is >= 50 blocks behind
         }
     }
 
@@ -168,6 +169,16 @@ impl DefaultSystemTransactionProvider {
         );
     }
 
+    /// Get a clone of the go_lag Arc for sharing with CommitProcessor
+    pub fn go_lag_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.go_lag)
+    }
+
+    /// Update the Go lag value (called by CommitProcessor after flush_buffer)
+    pub fn set_go_lag(&self, lag: u64) {
+        self.go_lag.store(lag, Ordering::Relaxed);
+    }
+
     /// Check if epoch transition should be triggered
     fn should_trigger_epoch_change(&self, current_commit_index: u32) -> bool {
         if !self.time_based_enabled {
@@ -211,42 +222,49 @@ impl DefaultSystemTransactionProvider {
             self.epoch_duration_seconds.saturating_sub(elapsed_seconds)
         );
 
-        let should_trigger = elapsed_seconds >= self.epoch_duration_seconds;
+        let time_elapsed = elapsed_seconds >= self.epoch_duration_seconds;
 
-        // Log every check (throttled by commit index check above)
+        // ═══════════════════════════════════════════════════════════════════════
+        // BACKPRESSURE REMOVED (2026-03-19)
+        //
+        // PROBLEM: The old backpressure mechanism delayed EndOfEpoch when Go lagged
+        // behind (go_lag >= 50 blocks). This caused a FATAL DEADLOCK:
+        //   1. Node X delays EndOfEpoch due to backpressure
+        //   2. Other nodes (no backpressure) emit EndOfEpoch → transition to epoch N+1
+        //   3. Consensus halts for node X (epoch mismatch rejects all blocks)
+        //   4. No new commits → should_trigger_epoch_change() never called again
+        //   5. Force timeout (checked per-commit) NEVER FIRES → node X stuck FOREVER
+        //
+        // SOLUTION: Emit EndOfEpoch purely based on time elapsed. All nodes emit at
+        // roughly the same time → consensus agrees on a single EndOfEpoch commit.
+        // Go lag is already handled by stop_authority_and_poll_go() during the actual
+        // epoch transition, which waits up to 5 minutes for Go to catch up.
+        // ═══════════════════════════════════════════════════════════════════════
+        let should_trigger = time_elapsed;
+
         if should_trigger {
+            let current_go_lag = self.go_lag.load(Ordering::Relaxed);
             info!(
-                "⏰ SystemTransactionProvider: Epoch change triggered - epoch={}, elapsed={}s, duration={}s, commit_index={}",
+                "⏰ SystemTransactionProvider: Epoch change triggered - epoch={}, elapsed={}s, duration={}s, commit_index={}, go_lag={} (backpressure disabled — Go lag handled during transition)",
                 *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
                 elapsed_seconds,
                 self.epoch_duration_seconds,
-                current_commit_index
+                current_commit_index,
+                current_go_lag
             );
         } else {
-            // Log periodically when close to threshold (every 10 seconds of elapsed time) or when past threshold
+            // Log periodically when close to threshold
             if elapsed_seconds % 10 == 0
                 || elapsed_seconds >= self.epoch_duration_seconds.saturating_sub(30)
             {
-                // Use info level when past threshold to make it more visible
-                if elapsed_seconds >= self.epoch_duration_seconds {
-                    tracing::info!(
-                        "⏰ SystemTransactionProvider: Epoch change check - epoch={}, elapsed={}s, duration={}s, remaining={}s, commit_index={} (PAST THRESHOLD!)",
-                        *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
-                        elapsed_seconds,
-                        self.epoch_duration_seconds,
-                        self.epoch_duration_seconds.saturating_sub(elapsed_seconds),
-                        current_commit_index
-                    );
-                } else {
-                    tracing::debug!(
-                        "⏰ SystemTransactionProvider: Epoch change check - epoch={}, elapsed={}s, duration={}s, remaining={}s, commit_index={}",
-                        *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
-                        elapsed_seconds,
-                        self.epoch_duration_seconds,
-                        self.epoch_duration_seconds.saturating_sub(elapsed_seconds),
-                        current_commit_index
-                    );
-                }
+                tracing::debug!(
+                    "⏰ SystemTransactionProvider: Epoch change check - epoch={}, elapsed={}s, duration={}s, remaining={}s, commit_index={}",
+                    *self.current_epoch.read().unwrap_or_else(|p| p.into_inner()),
+                    elapsed_seconds,
+                    self.epoch_duration_seconds,
+                    self.epoch_duration_seconds.saturating_sub(elapsed_seconds),
+                    current_commit_index
+                );
             }
         }
 

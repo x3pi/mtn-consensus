@@ -158,13 +158,15 @@ sequenceDiagram
 Ngay trước transition, thực hiện kiểm tra cuối:
 
 ```rust
-// epoch_monitor.rs
+// epoch_monitor.rs (Unified Epoch Monitor)
 let fresh_source = CommitteeSource::discover(&config).await?;
+// Monitor fetches blocks from peers and advances Go epoch
 if local_go_block < fresh_source.last_block {
-    warn!("⚠️ Go Master still behind peer! Aborting transition.");
-    return false; // Retry next poll (3s)
+    // Fetch missing blocks from TCP peers
+    fetch_blocks_from_peer(&peer_rpc, go_block + 1, boundary_block).await?
+    client.sync_blocks(blocks).await?;
 }
-// Proceed with transition
+// Gọi advance_epoch rồi transition_to_epoch_from_system_tx
 ```
 
 ---
@@ -305,7 +307,7 @@ Tất cả nodes trong cùng epoch PHẢI có log giống nhau:
 
 | # | Pillar | Mechanism | Component |
 |:---|:---|:---|:---|
-| 1 | **Deterministic Indexing** | `Base + Offset` height calculation | `Linearizer.rs` |
+| 1 | **Deterministic Indexing** | `Base + Offset` height calculation | `CommitProcessor` |
 | 2 | **Mandatory Mirroring** | Consensus timestamps → Go headers | `block_processor_utils.go` |
 | 3 | **Fatal Consistency** | Panic on 0-timestamp | `block_processor_utils.go` |
 | 4 | **Final Sync Barrier** | Peer verify before promote | `epoch_monitor.rs` |

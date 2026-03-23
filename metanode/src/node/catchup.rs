@@ -51,6 +51,8 @@ pub struct SyncStatus {
     pub block_gap: u64,
     /// Network max block height
     pub network_block_height: u64,
+    /// Network's current global commit index (global_exec_index)
+    pub network_commit: u64,
     /// Whether ready to join consensus
     pub ready: bool,
 }
@@ -85,6 +87,23 @@ impl CatchupManager {
         }
     }
 
+    /// Get peer RPC addresses (for external use in fallback sync loops)
+    #[allow(dead_code)]
+    pub fn peer_rpc_addresses(&self) -> Vec<String> {
+        self.peer_rpc_addresses.clone()
+    }
+
+    /// Convenience: sync blocks from peers if local Go is behind network block height.
+    /// Returns number of blocks synced.
+    #[allow(dead_code)]
+    pub async fn sync_blocks_from_peers_if_behind(&self, network_block: u64) -> Result<u64> {
+        let go_block = self.executor_client.get_last_block_number().await?.0;
+        if go_block >= network_block {
+            return Ok(0);
+        }
+        self.sync_blocks_from_peers(go_block, network_block).await
+    }
+
     /// Check sync status by querying Go Master and Peers
     pub async fn check_sync_status(
         &self,
@@ -101,7 +120,7 @@ impl CatchupManager {
         };
 
         let local_go_last_block = match self.executor_client.get_last_block_number().await {
-            Ok(block) => block,
+            Ok((block, _)) => block,
             Err(e) => {
                 error!("🚨 [CATCHUP] Failed to get last block from Go: {}", e);
                 return Err(anyhow::anyhow!("Failed to get last block from Go: {}", e));
@@ -109,7 +128,10 @@ impl CatchupManager {
         };
 
         // 2. Get Network State from Peers (TCP-based only)
-        let (network_epoch, network_block, _best_peer, network_commit) = if !self.peer_rpc_addresses.is_empty() {
+        let (network_epoch, network_block, _best_peer, network_commit) = if !self
+            .peer_rpc_addresses
+            .is_empty()
+        {
             info!(
                 "🌐 [CATCHUP] Using WAN peer discovery ({} peers configured)",
                 self.peer_rpc_addresses.len()
@@ -127,12 +149,22 @@ impl CatchupManager {
                         "⚠️ [CATCHUP] WAN peer query failed ({}), using local state",
                         e
                     );
-                    (local_go_epoch, local_go_last_block, "local".to_string(), local_last_commit)
+                    (
+                        local_go_epoch,
+                        local_go_last_block,
+                        "local".to_string(),
+                        local_last_commit,
+                    )
                 }
             }
         } else {
             // No peers configured (single node?), assume we are the network
-            (local_go_epoch, local_go_last_block, "local".to_string(), local_last_commit)
+            (
+                local_go_epoch,
+                local_go_last_block,
+                "local".to_string(),
+                local_last_commit,
+            )
         };
 
         // 3. Compare States
@@ -167,6 +199,7 @@ impl CatchupManager {
             commit_gap,
             block_gap,
             network_block_height: network_block,
+            network_commit,
             ready,
         };
 
@@ -262,6 +295,99 @@ impl CatchupManager {
             Err(e) => {
                 warn!("⚠️ [CATCHUP SYNC] Failed to fetch blocks from peers: {}", e);
                 Err(anyhow::anyhow!("Failed to fetch from peers: {}", e))
+            }
+        }
+    }
+
+    /// Sync Go Master to the current network epoch by fetching blocks from peers.
+    ///
+    /// This is used during snapshot restore: Go starts at an old epoch (from snapshot)
+    /// and needs to catch up to the current network epoch before Rust consensus can start.
+    /// Blocks are fetched from peer Go nodes via peer_rpc and written to local Go.
+    ///
+    /// Returns total number of blocks synced.
+    pub async fn sync_go_to_current_epoch(&self, network_epoch: u64) -> Result<u64> {
+        if self.peer_rpc_addresses.is_empty() {
+            return Err(anyhow::anyhow!("No peer_rpc_addresses configured for epoch catchup"));
+        }
+
+        let mut synced_total: u64 = 0;
+        let mut consecutive_empty: u32 = 0;
+        let max_consecutive_empty: u32 = 20; // Give up after 20 empty fetches
+        let batch_size: u64 = 500;
+
+        info!(
+            "🚀 [EPOCH-CATCHUP] Starting Go block sync to reach epoch {} from peers ({} configured)",
+            network_epoch, self.peer_rpc_addresses.len()
+        );
+
+        loop {
+            // Check if Go has reached the target epoch
+            let go_epoch = match self.executor_client.get_current_epoch().await {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!("⚠️ [EPOCH-CATCHUP] Failed to get Go epoch: {}", e);
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+
+            if go_epoch >= network_epoch {
+                info!(
+                    "✅ [EPOCH-CATCHUP] Go reached epoch {} (target={}). Synced {} blocks total.",
+                    go_epoch, network_epoch, synced_total
+                );
+                return Ok(synced_total);
+            }
+
+            // Get current Go block number
+            let go_block = match self.executor_client.get_last_block_number().await {
+                Ok((b, _)) => b,
+                Err(e) => {
+                    warn!("⚠️ [EPOCH-CATCHUP] Failed to get Go block: {}", e);
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+
+            // Fetch a batch of blocks from peers
+            let fetch_to = go_block + batch_size;
+            match self.sync_blocks_from_peers(go_block, fetch_to).await {
+                Ok(synced) if synced > 0 => {
+                    synced_total += synced;
+                    consecutive_empty = 0;
+
+                    if synced_total % 1000 < batch_size {
+                        info!(
+                            "🔄 [EPOCH-CATCHUP] Progress: synced {} blocks total, Go epoch={}, block={}, target_epoch={}",
+                            synced_total, go_epoch, go_block + synced, network_epoch
+                        );
+                    }
+                }
+                Ok(_) => {
+                    consecutive_empty += 1;
+                    if consecutive_empty >= max_consecutive_empty {
+                        warn!(
+                            "⚠️ [EPOCH-CATCHUP] {} consecutive empty fetches. Go epoch={}, target={}. Giving up.",
+                            consecutive_empty, go_epoch, network_epoch
+                        );
+                        return Ok(synced_total);
+                    }
+                    // Brief delay before retry when no blocks available
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => {
+                    consecutive_empty += 1;
+                    warn!("⚠️ [EPOCH-CATCHUP] Fetch error #{}: {}", consecutive_empty, e);
+                    if consecutive_empty >= max_consecutive_empty {
+                        warn!(
+                            "⚠️ [EPOCH-CATCHUP] Too many errors. Go epoch={}, target={}. Giving up.",
+                            go_epoch, network_epoch
+                        );
+                        return Ok(synced_total);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
             }
         }
     }

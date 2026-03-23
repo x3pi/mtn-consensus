@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Unix Domain Socket server for transaction submission
 /// Faster than HTTP for local IPC communication
@@ -80,9 +80,8 @@ impl TxSocketServer {
         let listener = UnixListener::bind(&self.socket_path)?;
         info!("🔌 Transaction UDS server started on {}", self.socket_path);
 
-        // DEBUG: Log that we're waiting for connections
         info!(
-            "🔌 [DEBUG] UDS server waiting for connections on {}",
+            "🔌 UDS server waiting for connections on {}",
             self.socket_path
         );
 
@@ -95,12 +94,11 @@ impl TxSocketServer {
         }
 
         loop {
-            // DEBUG: Log before accepting
-            info!("🔌 [DEBUG] UDS server waiting for connections...");
+            debug!("🔌 UDS server waiting for connections...");
 
             match listener.accept().await {
                 Ok((stream, addr)) => {
-                    info!(
+                    debug!(
                         "🔌 [TX FLOW] ✅ ACCEPTED new UDS connection from client: {:?}",
                         addr
                     );
@@ -115,7 +113,7 @@ impl TxSocketServer {
                     let tx_recycler = self.tx_recycler.clone();
 
                     tokio::spawn(async move {
-                        info!("🔌 [DEBUG] Spawned handler for UDS connection");
+                        debug!("🔌 Spawned handler for UDS connection");
                         if let Err(e) = Self::handle_connection(
                             stream,
                             client,
@@ -192,7 +190,7 @@ impl TxSocketServer {
             let data_len = tx_data.len();
 
             // Batch-level logging only (per-TX hash logging removed for performance)
-            info!(
+            debug!(
                 "📥 [TX FLOW] Received transaction batch via UDS: size={} bytes",
                 data_len
             );
@@ -317,7 +315,7 @@ impl TxSocketServer {
                 continue;
             }
 
-            info!(
+            debug!(
                 "✅ [TX FLOW] Zero-copy extracted {} individual transactions via UDS",
                 individual_txs.len()
             );
@@ -404,17 +402,19 @@ impl TxSocketServer {
             }
 
             // Check if node is ready (lock-free fast path already passed)
-            info!(
+            debug!(
                 "🔍 [TX FLOW] Checking transaction acceptance for {} TXs",
                 transactions_to_submit.len()
             );
             if let Some(ref node) = node {
-                // Lock-free check passed, now try to acquire lock
-                // Use short timeout as safety net (should rarely trigger since we checked flag)
-                // 🛠 FIX: Epoch transitions (wait_for_commit_processor wait) can block for 10s.
-                // 30s prevents early rejection.
+                // FIX: Use SHORT timeout (200ms) instead of 30s.
+                // During normal block production, the ConsensusNode Mutex is held
+                // by the consensus engine continuously. The old 30s timeout meant
+                // ALL TX submissions were rejected during high block production.
+                // With 200ms timeout: if lock fails and we're NOT transitioning,
+                // skip the check and submit directly (TransactionSubmitter is thread-safe).
                 let lock_result =
-                    tokio::time::timeout(std::time::Duration::from_secs(30), node.lock()).await;
+                    tokio::time::timeout(std::time::Duration::from_millis(200), node.lock()).await;
 
                 match lock_result {
                     Ok(node_guard) => {
@@ -462,76 +462,29 @@ impl TxSocketServer {
                             };
 
                             if is_sync_only && !target_peers.is_empty() {
-                                // SyncOnly mode: Forward transactions to validators
-                                for tx_data in &transactions_to_submit {
-                                    let tx_hash =
-                                        crate::types::tx_hash::calculate_transaction_hash_hex(
-                                            tx_data,
-                                        );
-                                    info!(
-                                        "🔄 [TX FORWARD] SyncOnly node forwarding transaction: hash={}, {} validator addresses available",
-                                        tx_hash, target_peers.len()
-                                    );
-                                }
+                                // FIX: Do NOT forward transactions to validators.
+                                // During fresh restart, ALL validator nodes temporarily enter
+                                // "Node is still initializing" state, triggering this SyncOnly
+                                // forwarding path. This caused each node to forward ALL received
+                                // TXs to ALL other validators, creating massive TX duplication
+                                // (e.g., 280K TXs in blocks when only 100K were sent).
+                                //
+                                // The Go TX pool will retry sending TXs via UDS once the node
+                                // finishes initializing. The consensus DAG propagates committed
+                                // blocks to all validators, so explicit TX forwarding is not needed.
+                                warn!(
+                                    "⏳ [TX FLOW] Node is still initializing, rejecting {} TXs (Go TX pool will retry)",
+                                    transactions_to_submit.len()
+                                );
                                 drop(node_guard);
 
-                                // Collect all TX data into single bytes (Transactions protobuf)
-                                // Forward to validators using peer_rpc
-                                use crate::network::peer_rpc::forward_transaction_to_validators;
-
-                                // Forward the entire batch to validators in chunks
-                                let mut forward_success = true;
-                                let mut forward_error = String::new();
-
-                                for chunk in transactions_to_submit.chunks(5000) {
-                                    match forward_transaction_to_validators(
-                                        &peer_rpc_addresses,
-                                        chunk,
-                                    )
-                                    .await
-                                    {
-                                        Ok(resp) if resp.success => {
-                                            info!(
-                                                "✅ [TX FORWARD] Successfully forwarded chunk of {} TXs to validator",
-                                                chunk.len()
-                                            );
-                                        }
-                                        Ok(resp) => {
-                                            forward_success = false;
-                                            forward_error = resp
-                                                .error
-                                                .unwrap_or_else(|| "Unknown error".to_string());
-                                            break;
-                                        }
-                                        Err(e) => {
-                                            forward_success = false;
-                                            forward_error = e.to_string();
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                if forward_success {
-                                    let success_response = r#"{"success":true,"forwarded":true,"message":"Transaction forwarded to validator"}"#;
-                                    if let Err(e) =
-                                        Self::send_response_string(&mut stream, success_response)
-                                            .await
-                                    {
-                                        error!("❌ [TX FLOW] Failed to send forward success response: {}", e);
-                                        return Err(e.into());
-                                    }
-                                } else {
-                                    let error_response = format!(
-                                        r#"{{"success":false,"error":"Forward failed: {}"}}"#,
-                                        forward_error.replace('"', "\\\"")
-                                    );
-                                    if let Err(e) =
-                                        Self::send_response_string(&mut stream, &error_response)
-                                            .await
-                                    {
-                                        error!("❌ [TX FLOW] Failed to send forward error response: {}", e);
-                                        return Err(e.into());
-                                    }
+                                let reject_response = r#"{"success":false,"error":"Node is still initializing, please retry"}"#;
+                                if let Err(e) =
+                                    Self::send_response_string(&mut stream, reject_response)
+                                        .await
+                                {
+                                    error!("❌ [TX FLOW] Failed to send reject response: {}", e);
+                                    return Err(e.into());
                                 }
                                 continue; // Continue to next request
                             }
@@ -559,105 +512,117 @@ impl TxSocketServer {
                         drop(node_guard);
                     }
                     Err(_) => {
-                        // Lock acquisition timeout - node is busy processing other transactions
-                        warn!("⏳ [TX FLOW] Lock timeout (30s) - node busy. Asking client to retry {} transactions.", 
-                        transactions_to_submit.len());
+                        // FIX: Lock timeout (200ms) - node is busy with consensus.
+                        // During NORMAL operation (not transitioning), this is expected
+                        // and safe to proceed with direct submission.
+                        // TransactionSubmitter.submit() is thread-safe and doesn't need the node lock.
+                        let is_epoch_transition = is_transitioning
+                            .as_ref()
+                            .map_or(false, |flag| flag.load(Ordering::SeqCst));
 
-                        // Return a retry-able error that does NOT contain "epoch transition"
-                        // to avoid Go channel workers treating this as permanent rejection
-                        let error_response = r#"{"success":false,"error":"Node busy processing requests, please retry"}"#;
-                        if let Err(e) =
-                            Self::send_response_string(&mut stream, error_response).await
-                        {
-                            error!("❌ [TX FLOW] Failed to send timeout response: {}", e);
-                            return Err(e.into());
+                        if is_epoch_transition {
+                            // During epoch transition, we must NOT submit directly
+                            warn!("⏳ [TX FLOW] Lock timeout (200ms) during epoch transition. Queueing {} transactions.",
+                                transactions_to_submit.len());
+
+                            // Try to queue via pending_transactions_queue (lock-free path)
+                            if let (Some(ref queue), Some(ref path)) =
+                                (&pending_transactions_queue, &storage_path)
+                            {
+                                for tx_data in &transactions_to_submit {
+                                    if let Err(e) = crate::node::queue::queue_transaction(
+                                        queue,
+                                        path,
+                                        tx_data.clone(),
+                                    )
+                                    .await
+                                    {
+                                        error!(
+                                            "❌ [TX FLOW] Failed to queue TX during transition: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                                let success_response = format!(
+                                    r#"{{"success":true,"queued":true,"message":"Queued {} TXs during epoch transition (lock-free)"}}"#,
+                                    transactions_to_submit.len()
+                                );
+                                if let Err(e) =
+                                    Self::send_response_string(&mut stream, &success_response).await
+                                {
+                                    error!("❌ [TX FLOW] Failed to send queue response: {}", e);
+                                    return Err(e.into());
+                                }
+                            } else {
+                                let error_response = r#"{"success":false,"error":"Node busy (epoch transition), please retry"}"#;
+                                if let Err(e) =
+                                    Self::send_response_string(&mut stream, error_response).await
+                                {
+                                    error!("❌ [TX FLOW] Failed to send timeout response: {}", e);
+                                    return Err(e.into());
+                                }
+                            }
+                            continue;
                         }
-                        continue; // Tiếp tục xử lý request tiếp theo
+
+                        // NORMAL OPERATION: Lock timeout is fine — consensus is just busy
+                        // producing blocks. Proceed directly to submission.
+                        debug!("⚡ [TX FLOW] Lock timeout (200ms) - consensus busy, proceeding with direct submission of {} TXs.",
+                            transactions_to_submit.len());
+                        // Fall through to submission code below
                     }
                 }
             }
 
             // Submit transactions to consensus
-            info!(
+            debug!(
                 "📤 [TX FLOW] Submitting {} transaction(s) to consensus via UDS",
                 transactions_to_submit.len()
             );
 
-            // CRITICAL: Double-check transaction acceptance RIGHT BEFORE submitting to consensus
-            // This prevents race condition where epoch transition starts between initial check and submission
-            // Also use timeout to prevent blocking during epoch transition
-            let should_queue_final = if let Some(ref node) = node {
-                let lock_result =
-                    tokio::time::timeout(std::time::Duration::from_secs(1), node.lock()).await;
-
-                match lock_result {
-                    Ok(node_guard) => {
-                        let (should_accept_final, should_queue_final, reason_final) =
-                            node_guard.check_transaction_acceptance().await;
-                        if should_queue_final {
-                            // Epoch transition started between initial check and submission - queue transaction instead
-                            warn!("⚠️ [RACE CONDITION] Epoch transition started between initial check and submission - queueing transaction instead: {}", reason_final);
-                            // Queue all transactions (node_guard is still held)
-                            if let Err(e) = node_guard
-                                .queue_transactions_for_next_epoch(transactions_to_submit.clone())
-                                .await
-                            {
-                                error!("❌ [TX FLOW] Failed to queue transactions after race condition detection: {}", e);
-                            }
-                            drop(node_guard);
-                            // Send success response (transaction is queued)
-                            let success_response = format!(
-                                r#"{{"success":true,"queued":true,"message":"Transaction queued due to epoch transition: {}"}}"#,
-                                reason_final.replace('"', "\\\"")
-                            );
+            // FIX: Removed redundant double-check lock acquisition.
+            // The old code tried to acquire the ConsensusNode Mutex AGAIN (with 1s timeout)
+            // right before submission, causing ANOTHER timeout during normal operation.
+            // The is_transitioning atomic flag + initial check are sufficient.
+            // During epoch transition, TXs are already queued in the initial check above.
+            // Race condition is handled by the lock-free is_transitioning flag.
+            if let Some(ref transitioning) = is_transitioning {
+                if transitioning.load(Ordering::SeqCst) {
+                    // Epoch transition started between initial check and now
+                    warn!("⚠️ [RACE CONDITION] Epoch transition detected via atomic flag before submission. Queueing {} TXs.",
+                        transactions_to_submit.len());
+                    if let (Some(ref queue), Some(ref path)) =
+                        (&pending_transactions_queue, &storage_path)
+                    {
+                        for tx_data in &transactions_to_submit {
                             if let Err(e) =
-                                Self::send_response_string(&mut stream, &success_response).await
+                                crate::node::queue::queue_transaction(queue, path, tx_data.clone())
+                                    .await
                             {
-                                error!("❌ [TX FLOW] Failed to send queue response: {}", e);
-                                return Err(e.into());
+                                error!("❌ [TX FLOW] Failed to queue TX: {}", e);
                             }
-                            continue; // Don't submit to consensus
                         }
-
-                        if !should_accept_final {
-                            // Node is not ready - reject transaction
-                            warn!("🚫 [RACE CONDITION] Node became not ready between initial check and submission - rejecting: {}", reason_final);
-                            drop(node_guard);
-                            let error_response = format!(
-                                r#"{{"success":false,"error":"Node not ready: {}"}}"#,
-                                reason_final.replace('"', "\\\"")
-                            );
-                            if let Err(e) =
-                                Self::send_response_string(&mut stream, &error_response).await
-                            {
-                                error!("❌ [TX FLOW] Failed to send error response: {}", e);
-                                return Err(e.into());
-                            }
-                            continue; // Don't submit to consensus
+                        let success_response = format!(
+                            r#"{{"success":true,"queued":true,"message":"Queued {} TXs (transition detected before submission)"}}"#,
+                            transactions_to_submit.len()
+                        );
+                        if let Err(e) =
+                            Self::send_response_string(&mut stream, &success_response).await
+                        {
+                            error!("❌ [TX FLOW] Failed to send queue response: {}", e);
+                            return Err(e.into());
                         }
-
-                        drop(node_guard);
-                        false // Continue with submission
-                    }
-                    Err(_) => {
-                        // Lock acquisition timeout on final check
-                        warn!("⏳ [TX FLOW] Final lock timeout (1s) - epoch transition likely in progress");
-                        let error_response = r#"{"success":false,"error":"Node busy (epoch transition in progress), please retry"}"#;
+                    } else {
+                        let error_response = r#"{"success":false,"error":"Epoch transition in progress, please retry"}"#;
                         if let Err(e) =
                             Self::send_response_string(&mut stream, error_response).await
                         {
-                            error!("❌ [TX FLOW] Failed to send timeout response: {}", e);
+                            error!("❌ [TX FLOW] Failed to send error response: {}", e);
                             return Err(e.into());
                         }
-                        continue; // Don't submit to consensus
                     }
+                    continue;
                 }
-            } else {
-                false // No node reference, continue with submission
-            };
-
-            if should_queue_final {
-                return Ok(()); // Already handled above
             }
 
             // Submit transactions to consensus in sub-batches
@@ -674,7 +639,7 @@ impl TxSocketServer {
                 let chunk_vec: Vec<Vec<u8>> = chunk.to_vec();
                 let chunk_len = chunk_vec.len();
 
-                info!(
+                debug!(
                     "🚀 [TX FLOW] Submitting sub-batch {}: {} TXs (total progress: {}/{})",
                     chunk_idx + 1,
                     chunk_len,
@@ -686,7 +651,7 @@ impl TxSocketServer {
                     Ok((block_ref, _indices, status_receiver)) => {
                         total_submitted += chunk_len;
                         _last_block_ref = Some(format!("{:?}", block_ref));
-                        info!(
+                        debug!(
                             "✅ [TX FLOW] Sub-batch {} included: {} TXs in block {:?} (progress: {}/{})",
                             chunk_idx + 1, chunk_len, block_ref, total_submitted, total_tx_count
                         );
@@ -696,32 +661,10 @@ impl TxSocketServer {
                             recycler.track_submitted(&chunk_vec).await;
                         }
 
-                        // Broadcast to other validators (Pillar 32: Mempool Broadcast)
-                        let target_peers = if let Some(ref addrs) = peer_discovery_addresses {
-                            addrs.read().await.clone()
-                        } else {
-                            peer_rpc_addresses.clone()
-                        };
-
-                        if !target_peers.is_empty() {
-                            use crate::network::peer_rpc::broadcast_transaction_to_validators;
-                            let peers = target_peers.clone();
-                            let batch = chunk_vec.clone();
-
-                            tokio::spawn(async move {
-                                match broadcast_transaction_to_validators(&peers, &batch).await {
-                                    Ok(success_count) => {
-                                        if success_count > 0 {
-                                            info!("📡 [MEMPOOL] Broadcasted batch of {} TXs to {}/{} peers", 
-                                                batch.len(), success_count, peers.len());
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!("⚠️ [MEMPOOL] Failed to broadcast TX batch: {}", e);
-                                    }
-                                }
-                            });
-                        }
+                        // NOTE: Mempool broadcast REMOVED — it caused TX duplication.
+                        // Each broadcast made peers re-submit the same TXs to consensus,
+                        // resulting in each TX appearing up to 4× in blocks.
+                        // Consensus DAG (Mysticeti) already propagates committed blocks.
 
                         // NOTE: epoch_pending_transactions tracking removed (memory leak fix).
                         // At 10K TPS this Vec grew ~3.6GB/hour by cloning every TX.
@@ -748,15 +691,135 @@ impl TxSocketServer {
                         });
                     }
                     Err(e) => {
-                        all_succeeded = false;
-                        last_error = e.to_string();
-                        error!(
-                            "❌ [TX FLOW] Sub-batch {} submission failed: {} TXs, error={}",
-                            chunk_idx + 1,
-                            chunk_len,
-                            e
-                        );
-                        // Don't break — try remaining sub-batches
+                        let err_str = e.to_string();
+                        // ═══════════════════════════════════════════════════════════════
+                        // FIX: Stale NoOpTransactionSubmitter after SyncOnly→Validator
+                        // transition. The TxSocketServer was created at startup with a
+                        // NoOp client (SyncOnly mode). After mode transition, the node
+                        // has a real TransactionClientProxy but TxSocketServer still
+                        // holds the old NoOp. Detect this and retry with the node's
+                        // current submitter.
+                        // ═══════════════════════════════════════════════════════════════
+                        if err_str.contains("SyncOnly node cannot submit") {
+                            let mut needs_forward = false;
+
+                            if let Some(ref node_arc) = node {
+                                if let Ok(node_guard) = tokio::time::timeout(
+                                    std::time::Duration::from_millis(500),
+                                    node_arc.lock(),
+                                ).await {
+                                    if let Some(real_submitter) = node_guard.transaction_submitter() {
+                                        drop(node_guard);
+                                        info!(
+                                            "🔄 [TX FLOW] Retrying sub-batch {} with live TransactionSubmitter (post SyncOnly→Validator transition)",
+                                            chunk_idx + 1
+                                        );
+                                        match real_submitter.submit(chunk_vec.clone()).await {
+                                            Ok((block_ref, _indices, status_receiver)) => {
+                                                total_submitted += chunk_len;
+                                                _last_block_ref = Some(format!("{:?}", block_ref));
+                                                info!(
+                                                    "✅ [TX FLOW] Sub-batch {} included (retry): {} TXs in block {:?} (progress: {}/{})",
+                                                    chunk_idx + 1, chunk_len, block_ref, total_submitted, total_tx_count
+                                                );
+                                                if let Some(ref recycler) = tx_recycler {
+                                                    recycler.track_submitted(&chunk_vec).await;
+                                                }
+                                                // NOTE: Mempool broadcast REMOVED (same as primary path above).
+                                                tokio::spawn(async move {
+                                                    match status_receiver.await {
+                                                        Ok(consensus_core::BlockStatus::Sequenced(block)) => {
+                                                            info!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
+                                                        }
+                                                        Ok(consensus_core::BlockStatus::GarbageCollected(gc_block)) => {
+                                                            warn!("♻️ [TX STATUS] Block {:?} was Garbage Collected.", gc_block);
+                                                        }
+                                                        Err(e) => {
+                                                            warn!("⚠️ [TX STATUS] Failed to receive block status: {}", e);
+                                                        }
+                                                    }
+                                                });
+                                                continue; // Successfully retried, move to next chunk
+                                            }
+                                            Err(retry_err) => {
+                                                all_succeeded = false;
+                                                last_error = retry_err.to_string();
+                                                error!(
+                                                    "❌ [TX FLOW] Sub-batch {} retry also failed: {} TXs, error={}",
+                                                    chunk_idx + 1, chunk_len, retry_err
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        drop(node_guard);
+                                        needs_forward = true;
+                                    }
+                                } else {
+                                    needs_forward = true;
+                                }
+                            }
+
+                            if needs_forward {
+                                // FIX: Do NOT forward transactions to validators.
+                                // This forward path was triggering during node initialization,
+                                // causing transaction duplication across all validators.
+                                // The Go TX pool will retry sending TXs via UDS once the
+                                // node finishes initializing and joins consensus.
+                                all_succeeded = false;
+                                last_error = "Node is initializing, TX forwarding disabled to prevent duplication".to_string();
+                                warn!(
+                                    "⏳ [TX FLOW] Sub-batch {} not forwarded: node initializing ({} TXs will be retried by Go TX pool)",
+                                    chunk_idx + 1, chunk_len
+                                );
+                            }
+                        } else if err_str.contains("shutting down") || err_str.contains("channel closed") {
+                            // CRITICAL FIX: Epoch transition closed the consensus channel.
+                            // Queue TXs for next epoch instead of dropping them permanently.
+                            warn!(
+                                "♻️ [TX FLOW] Consensus shutting down during sub-batch {} submission. Queueing {} TXs for next epoch.",
+                                chunk_idx + 1, chunk_len
+                            );
+                            if let (Some(ref queue), Some(ref path)) =
+                                (&pending_transactions_queue, &storage_path)
+                            {
+                                let mut queued_count = 0usize;
+                                for tx_data in &chunk_vec {
+                                    match crate::node::queue::queue_transaction(
+                                        queue, path, tx_data.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(_) => queued_count += 1,
+                                        Err(e) => {
+                                            error!("❌ [TX FLOW] Failed to queue TX during epoch transition: {}", e);
+                                        }
+                                    }
+                                }
+                                info!(
+                                    "♻️ [TX FLOW] Queued {}/{} TXs from sub-batch {} for next epoch",
+                                    queued_count, chunk_len, chunk_idx + 1
+                                );
+                            } else {
+                                error!(
+                                    "❌ [TX FLOW] Cannot queue TXs — no pending_transactions_queue available. {} TXs LOST.",
+                                    chunk_len
+                                );
+                            }
+                            all_succeeded = false;
+                            last_error = format!(
+                                "Epoch transition: queued {} TXs for next epoch",
+                                chunk_len
+                            );
+                            // Don't break — try remaining sub-batches (they'll likely also need queuing)
+                        } else {
+                            all_succeeded = false;
+                            last_error = err_str;
+                            error!(
+                                "❌ [TX FLOW] Sub-batch {} submission failed: {} TXs, error={}",
+                                chunk_idx + 1, chunk_len, e
+                            );
+                            // Don't break — try remaining sub-batches
+                        }
                     }
                 }
             }

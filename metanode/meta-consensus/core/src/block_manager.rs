@@ -39,7 +39,7 @@ impl SuspendedBlock {
 /// across all authorities exceeds `MAX_SUSPENDED_BLOCKS_PER_AUTHORITY * committee_size`,
 /// new blocks will be skipped to prevent OOM from Byzantine validators sending blocks
 /// without valid causal history.
-const MAX_SUSPENDED_BLOCKS_PER_AUTHORITY: usize = 1000;
+const MAX_SUSPENDED_BLOCKS_PER_AUTHORITY: usize = 10000;
 
 /// Block manager suspends incoming blocks until they are connected to the existing graph,
 /// returning newly connected blocks.

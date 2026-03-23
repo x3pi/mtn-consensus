@@ -20,6 +20,7 @@ use tokio_util::bytes::Bytes;
 use tracing::{debug, info, trace, warn};
 
 impl RustSyncNode {
+    #[allow(dead_code)]
     pub(super) async fn fetch_and_queue(
         &self,
         network_client: &Arc<TonicClient>,
@@ -465,7 +466,10 @@ impl RustSyncNode {
             if let Some(store) = &self.store {
                 if !write_batch.commits.is_empty() || !write_batch.blocks.is_empty() {
                     if let Err(e) = store.write(write_batch) {
-                        warn!("⚠️ [RUST-SYNC] Failed to persist fetched blocks/commits to Store: {}", e);
+                        warn!(
+                            "⚠️ [RUST-SYNC] Failed to persist fetched blocks/commits to Store: {}",
+                            e
+                        );
                     } else {
                         debug!("💾 [RUST-SYNC] Persisted synced commits and blocks to Store");
                     }
@@ -485,7 +489,9 @@ impl RustSyncNode {
     }
 
     /// Fetch commits using global execution index range (cross-epoch safe)
-    /// This bypasses epoch-local coordinate conversion entirely
+    /// This bypasses epoch-local coordinate conversion entirely.
+    /// Uses PARALLEL peer racing for maximum throughput.
+    #[allow(dead_code)]
     pub(super) async fn fetch_and_queue_by_global_range(
         &self,
         network_client: &Arc<TonicClient>,
@@ -494,219 +500,247 @@ impl RustSyncNode {
         end_global_index: u64,
     ) -> Result<usize> {
         let timeout = Duration::from_secs(self.config.fetch_timeout_secs);
-        let _current_epoch = self.current_epoch.load(Ordering::SeqCst);
 
         info!(
-            "🌐 [GLOBAL-SYNC] Fetching commits by global range [{}, {}]",
+            "🌐 [GLOBAL-SYNC] Fetching global range [{}, {}]",
             start_global_index, end_global_index
         );
 
-        // Try each validator in turn until we succeed (skip unhealthy peers)
-        for (authority_idx, _authority) in committee.authorities() {
-            // Circuit breaker: skip unhealthy peers
-            {
-                let health = self.peer_health.lock().await;
-                if !health.is_healthy(authority_idx.value() as u32) {
-                    debug!("🛡️ [GLOBAL-SYNC] Skipping unhealthy peer {}", authority_idx);
-                    continue;
+        // =====================================================================
+        // PARALLEL FETCH: Race all healthy validators simultaneously
+        // =====================================================================
+        let authorities: Vec<_> = committee
+            .authorities()
+            .filter(|(_, auth)| {
+                if let Some(keypair) = &self.network_keypair {
+                    auth.network_key != keypair.public()
+                } else {
+                    true
                 }
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+
+        let healthy_authorities: Vec<_> = {
+            let health = self.peer_health.lock().await;
+            authorities
+                .iter()
+                .filter(|&&idx| health.is_healthy(idx.value() as u32))
+                .copied()
+                .collect()
+        };
+
+        let active_authorities = if healthy_authorities.is_empty() {
+            if !authorities.is_empty() {
+                warn!("⚠️ [GLOBAL-SYNC] All peers in backoff! Using all as fallback.");
             }
-            match network_client
-                .fetch_commits_by_global_range(
-                    authority_idx,
-                    start_global_index,
-                    end_global_index,
-                    timeout,
-                )
-                .await
-            {
-                Ok(global_commits) => {
-                    if global_commits.is_empty() {
-                        debug!(
-                            "[GLOBAL-SYNC] Peer {} returned empty commits for range [{}, {}]",
-                            authority_idx, start_global_index, end_global_index
-                        );
-                        continue;
-                    }
+            &authorities
+        } else {
+            &healthy_authorities
+        };
 
+        if active_authorities.is_empty() {
+            warn!("⚠️ [GLOBAL-SYNC] No peers available.");
+            return Ok(0);
+        }
+
+        // Race all peers simultaneously
+        let mut fetch_futures = FuturesUnordered::new();
+
+        for &peer_idx in active_authorities.iter() {
+            let client = network_client.clone();
+            let start = start_global_index;
+            let end = end_global_index;
+            let t = timeout;
+            fetch_futures.push(async move {
+                match client
+                    .fetch_commits_by_global_range(peer_idx, start, end, t)
+                    .await
+                {
+                    Ok(commits) if !commits.is_empty() => Ok((peer_idx, commits)),
+                    Ok(_) => Err(anyhow::anyhow!("Empty response from {}", peer_idx)),
+                    Err(e) => Err(anyhow::anyhow!("Peer {} failed: {:?}", peer_idx, e)),
+                }
+            });
+        }
+
+        let mut global_commits = Vec::new();
+        let mut winning_peer = None;
+
+        while let Some(result) = fetch_futures.next().await {
+            match result {
+                Ok((peer_idx, commits)) => {
                     info!(
-                        "📥 [GLOBAL-SYNC] Got {} commits from peer {} for global range [{}, {}]",
-                        global_commits.len(),
-                        authority_idx,
-                        start_global_index,
-                        end_global_index
+                        "✅ [GLOBAL-SYNC] Peer {} won with {} commits",
+                        peer_idx,
+                        commits.len()
                     );
-
-                    // Collect block refs from all commits
-                    let mut all_block_refs: Vec<consensus_types::block::BlockRef> = Vec::new();
-                    let mut temp_commits: Vec<(GlobalCommitInfo, Commit)> = Vec::new();
-
-                    for global_info in global_commits {
-                        // Deserialize the commit
-                        match bcs::from_bytes::<Commit>(&global_info.commit_data) {
-                            Ok(commit) => {
-                                // Collect block refs
-                                for block_ref in commit.blocks() {
-                                    all_block_refs.push(block_ref.clone());
-                                }
-                                temp_commits.push((global_info, commit));
-                            }
-                            Err(e) => {
-                                warn!("[GLOBAL-SYNC] Failed to deserialize commit: {}", e);
-                            }
-                        }
-                    }
-
-                    // Fetch actual blocks
-                    let mut block_map = std::collections::HashMap::new();
-                    if !all_block_refs.is_empty() {
-                        all_block_refs.sort();
-                        all_block_refs.dedup();
-
-                        // Convert CommitRef to BlockRef for fetch_blocks
-                        let block_refs_for_fetch: Vec<_> = all_block_refs
-                            .iter()
-                            .filter_map(|cr| {
-                                // CommitRef is actually BlockRef in this context
-                                Some(cr.clone())
-                            })
-                            .collect();
-
-                        match network_client
-                            .fetch_blocks(
-                                authority_idx,
-                                block_refs_for_fetch,
-                                vec![],
-                                false,
-                                timeout,
-                            )
-                            .await
-                        {
-                            Ok(serialized_blocks) => {
-                                for serialized in &serialized_blocks {
-                                    match bcs::from_bytes::<SignedBlock>(serialized) {
-                                        Ok(signed_block) => {
-                                            let verified = VerifiedBlock::new_verified(
-                                                signed_block,
-                                                serialized.clone(),
-                                            );
-                                            block_map.insert(verified.reference(), verified);
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                "[GLOBAL-SYNC] Failed to deserialize block: {}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("[GLOBAL-SYNC] Failed to fetch blocks: {:?}", e);
-                            }
-                        }
-                    }
-
-                    // Push commits with their blocks to queue
-                    let mut pushed = 0;
-                    let mut chunk_write_batch = consensus_core::storage::WriteBatch::default();
-                    {
-                        let mut queue = self.block_queue.lock().await;
-
-                        for (global_info, commit) in temp_commits {
-                            let mut commit_blocks = Vec::new();
-                            for block_ref in commit.blocks() {
-                                if let Some(block) = block_map.get(block_ref) {
-                                    commit_blocks.push(block.clone());
-                                }
-                            }
-
-                            let epoch_from_peer = global_info.epoch;
-                            let global_idx = global_info.global_exec_index;
-
-                            let will_add = global_idx >= queue.next_expected() && !queue.pending.contains_key(&global_idx);
-
-                            if will_add {
-                                chunk_write_batch.blocks.extend(commit_blocks.clone());
-                                let trusted_commit = consensus_core::TrustedCommit::new_trusted(
-                                    commit.clone(),
-                                    global_info.commit_data.clone(),
-                                );
-                                chunk_write_batch.commits.push(trusted_commit);
-                            }
-
-                            info!(
-                                "📋 [GLOBAL-SYNC] Commit: global_exec_index={}, epoch={}, local_commit={}, blocks={}",
-                                global_idx, epoch_from_peer, global_info.local_commit_index, commit_blocks.len()
-                            );
-
-                            queue.push(CommitData {
-                                commit,
-                                blocks: commit_blocks,
-                                epoch: epoch_from_peer,
-                            });
-                            pushed += 1;
-                        }
-                    }
-
-                    // Persist to store if configured
-                    if pushed > 0 {
-                        if let Some(store) = &self.store {
-                            if !chunk_write_batch.commits.is_empty() || !chunk_write_batch.blocks.is_empty() {
-                                if let Err(e) = store.write(chunk_write_batch) {
-                                    warn!("⚠️ [GLOBAL-SYNC] Failed to persist blocks/commits to Store: {}", e);
-                                } else {
-                                    debug!("💾 [GLOBAL-SYNC] Persisted synced commits and blocks to Store");
-                                }
-                            }
-                        }
-                    }
-
-                    self.metrics.blocks_received_total.inc_by(pushed as f64);
-
-                    info!(
-                        "✅ [GLOBAL-SYNC] Pushed {} commits via global range RPC",
-                        pushed
-                    );
-
-                    // Record successful peer interaction
                     {
                         let mut health = self.peer_health.lock().await;
-                        health.record_success(authority_idx.value() as u32);
+                        health.record_success(peer_idx.value() as u32);
                     }
-
-                    return Ok(pushed);
+                    global_commits = commits;
+                    winning_peer = Some(peer_idx);
+                    break;
                 }
                 Err(e) => {
-                    // Record failed peer interaction
-                    {
-                        let mut health = self.peer_health.lock().await;
-                        health.record_failure(authority_idx.value() as u32);
-                    }
-                    debug!("[GLOBAL-SYNC] Peer {} fetch failed: {:?}", authority_idx, e);
-                    continue;
+                    trace!("Global-sync peer error: {}", e);
                 }
             }
         }
 
-        warn!(
-            "[GLOBAL-SYNC] All peers failed for global range [{}, {}]",
-            start_global_index, end_global_index
+        if global_commits.is_empty() {
+            warn!(
+                "[GLOBAL-SYNC] All peers failed for range [{}, {}]",
+                start_global_index, end_global_index
+            );
+            return Ok(0);
+        }
+
+        let authority_idx = winning_peer
+            .ok_or_else(|| anyhow::anyhow!("winning_peer is None despite non-empty commits"))?;
+
+        // Collect block refs from all commits
+        let mut all_block_refs: Vec<consensus_types::block::BlockRef> = Vec::new();
+        let mut temp_commits: Vec<(GlobalCommitInfo, Commit)> = Vec::new();
+
+        for global_info in global_commits {
+            match bcs::from_bytes::<Commit>(&global_info.commit_data) {
+                Ok(commit) => {
+                    for block_ref in commit.blocks() {
+                        all_block_refs.push(block_ref.clone());
+                    }
+                    temp_commits.push((global_info, commit));
+                }
+                Err(e) => {
+                    warn!("[GLOBAL-SYNC] Failed to deserialize commit: {}", e);
+                }
+            }
+        }
+
+        // Fetch actual blocks
+        let mut block_map = std::collections::HashMap::new();
+        if !all_block_refs.is_empty() {
+            all_block_refs.sort();
+            all_block_refs.dedup();
+
+            let block_refs_for_fetch: Vec<_> = all_block_refs
+                .iter()
+                .map(|cr| cr.clone())
+                .collect();
+
+            match network_client
+                .fetch_blocks(
+                    authority_idx,
+                    block_refs_for_fetch,
+                    vec![],
+                    false,
+                    timeout,
+                )
+                .await
+            {
+                Ok(serialized_blocks) => {
+                    for serialized in &serialized_blocks {
+                        match bcs::from_bytes::<SignedBlock>(serialized) {
+                            Ok(signed_block) => {
+                                let verified = VerifiedBlock::new_verified(
+                                    signed_block,
+                                    serialized.clone(),
+                                );
+                                block_map.insert(verified.reference(), verified);
+                            }
+                            Err(e) => {
+                                warn!("[GLOBAL-SYNC] Failed to deserialize block: {}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("[GLOBAL-SYNC] Failed to fetch blocks: {:?}", e);
+                }
+            }
+        }
+
+        // Push commits with their blocks to queue
+        let mut pushed = 0;
+        let mut chunk_write_batch = consensus_core::storage::WriteBatch::default();
+        {
+            let mut queue = self.block_queue.lock().await;
+
+            for (global_info, commit) in temp_commits {
+                let mut commit_blocks = Vec::new();
+                for block_ref in commit.blocks() {
+                    if let Some(block) = block_map.get(block_ref) {
+                        commit_blocks.push(block.clone());
+                    }
+                }
+
+                let epoch_from_peer = global_info.epoch;
+                let global_idx = global_info.global_exec_index;
+
+                let will_add = global_idx >= queue.next_expected()
+                    && !queue.pending.contains_key(&global_idx);
+
+                if will_add {
+                    chunk_write_batch.blocks.extend(commit_blocks.clone());
+                    let trusted_commit = consensus_core::TrustedCommit::new_trusted(
+                        commit.clone(),
+                        global_info.commit_data.clone(),
+                    );
+                    chunk_write_batch.commits.push(trusted_commit);
+                }
+
+                // Only log first 5 commits at INFO to reduce I/O overhead
+                if pushed < 5 {
+                    info!(
+                        "📋 [GLOBAL-SYNC] Commit: gei={}, epoch={}, blocks={}",
+                        global_idx, epoch_from_peer, commit_blocks.len()
+                    );
+                }
+
+                queue.push(CommitData {
+                    commit,
+                    blocks: commit_blocks,
+                    epoch: epoch_from_peer,
+                });
+                pushed += 1;
+            }
+        }
+
+        // Persist to store if configured
+        if pushed > 0 {
+            if let Some(store) = &self.store {
+                if !chunk_write_batch.commits.is_empty()
+                    || !chunk_write_batch.blocks.is_empty()
+                {
+                    if let Err(e) = store.write(chunk_write_batch) {
+                        warn!("⚠️ [GLOBAL-SYNC] Failed to persist: {}", e);
+                    }
+                }
+            }
+        }
+
+        self.metrics.blocks_received_total.inc_by(pushed as f64);
+
+        info!(
+            "✅ [GLOBAL-SYNC] Pushed {} commits with {} blocks",
+            pushed,
+            block_map.len()
         );
-        Ok(0)
+
+        Ok(pushed)
     }
 
     /// Fetch blocks from peer's Go layer using PeerGoClient
     /// This is used when network_client is None (SyncOnly) or as a fallback
     /// Returns the number of blocks successfully sent to local Go
-    pub async fn fetch_blocks_from_peer_go(
+    #[allow(dead_code)]
+        pub async fn fetch_blocks_from_peer_go(
         &self,
         peer_addresses: &[String],
         from_block: u64,
         batch_size: u64,
     ) -> Result<usize> {
-        use crate::node::peer_go_client::PeerGoClient;
-
         if peer_addresses.is_empty() {
             return Err(anyhow::anyhow!("No peer addresses configured"));
         }
@@ -714,134 +748,57 @@ impl RustSyncNode {
         let to_block = from_block + batch_size - 1;
 
         info!(
-            "🌐 [PEER-GO-SYNC] Fetching blocks {} to {} from peer Go layers",
+            "🌐 [PEER-GO-SYNC] Fetching blocks {} to {} from peer RPC layers",
             from_block, to_block
         );
 
-        // Try each peer until one succeeds
-        for (peer_index, peer_addr) in peer_addresses.iter().enumerate() {
-            // Circuit breaker: skip unhealthy peers (use address index as peer_id)
-            {
-                let health = self.peer_health.lock().await;
-                if !health.is_healthy(peer_index as u32) {
-                    debug!(
-                        "🛡️ [PEER-GO-SYNC] Skipping unhealthy peer {} ({})",
-                        peer_index, peer_addr
-                    );
-                    continue;
+        match crate::network::peer_rpc::fetch_blocks_from_peer(peer_addresses, from_block, to_block).await {
+            Ok(blocks) => {
+                if blocks.is_empty() {
+                    debug!("[PEER-GO-SYNC] Peers returned 0 blocks");
+                    return Ok(0);
+                }
+
+                info!(
+                    "✅ [PEER-GO-SYNC] Got {} blocks from peers, sending to local Go",
+                    blocks.len()
+                );
+
+                // Send blocks to local Go via ExecutorClient
+                for block in &blocks {
+                    let block_num = block.block_number;
+                    let epoch = block.epoch;
+
+                    let current_epoch = self.current_epoch.load(std::sync::atomic::Ordering::SeqCst);
+                    if epoch > current_epoch {
+                        info!(
+                            "🎯 [PEER-GO-SYNC] Epoch transition detected in block {}: {} -> {}",
+                            block_num, current_epoch, epoch
+                        );
+
+                        if let Ok((_e, timestamp, boundary, _, _, _)) = self.executor_client.get_epoch_boundary_data(epoch).await {
+                            let _ = self.epoch_transition_sender.send((epoch, timestamp, boundary));
+                            self.current_epoch.store(epoch, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                }
+
+                match self.executor_client.sync_blocks(blocks).await {
+                    Ok((synced, last_block)) => {
+                        self.metrics.blocks_received_total.inc_by(synced as f64);
+                        info!("✅ [PEER-GO-SYNC] Synced {} blocks to local Go (last: {})", synced, last_block);
+                        return Ok(synced as usize);
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [PEER-GO-SYNC] Failed to sync blocks to local Go: {}", e);
+                        return Err(e);
+                    }
                 }
             }
-            let client = match PeerGoClient::from_str(peer_addr) {
-                Ok(c) => c,
-                Err(e) => {
-                    debug!(
-                        "⚠️ [PEER-GO-SYNC] Invalid peer address {}: {}",
-                        peer_addr, e
-                    );
-                    continue;
-                }
-            };
-
-            match client.get_blocks_range(from_block, to_block).await {
-                Ok(blocks) => {
-                    if blocks.is_empty() {
-                        debug!("[PEER-GO-SYNC] Peer {} returned 0 blocks", peer_addr);
-                        continue;
-                    }
-
-                    info!(
-                        "✅ [PEER-GO-SYNC] Got {} blocks from peer {}, sending to local Go",
-                        blocks.len(),
-                        peer_addr
-                    );
-
-                    // Send blocks to local Go via ExecutorClient
-                    for block in &blocks {
-                        let block_num = block.block_number;
-                        let epoch = block.epoch;
-
-                        // Check epoch transition
-                        let current_epoch =
-                            self.current_epoch.load(std::sync::atomic::Ordering::SeqCst);
-                        if epoch > current_epoch {
-                            info!(
-                                "🎯 [PEER-GO-SYNC] Epoch transition detected in block {}: {} -> {}",
-                                block_num, current_epoch, epoch
-                            );
-
-                            // Trigger epoch transition
-                            if let Ok((_e, timestamp, boundary, _)) =
-                                self.executor_client.get_epoch_boundary_data(epoch).await
-                            {
-                                let _ = self
-                                    .epoch_transition_sender
-                                    .send((epoch, timestamp, boundary));
-                                self.current_epoch
-                                    .store(epoch, std::sync::atomic::Ordering::SeqCst);
-                            }
-                        }
-                    }
-
-                    // Use sync_blocks to write all blocks at once
-                    match self.executor_client.sync_blocks(blocks).await {
-                        Ok((synced, last_block)) => {
-                            self.metrics.blocks_received_total.inc_by(synced as f64);
-                            // Record successful peer interaction
-                            {
-                                let mut health = self.peer_health.lock().await;
-                                health.record_success(peer_index as u32);
-                            }
-                            info!(
-                                "✅ [PEER-GO-SYNC] Synced {} blocks to local Go (last: {})",
-                                synced, last_block
-                            );
-                            return Ok(synced as usize);
-                        }
-                        Err(e) => {
-                            // Record failed peer interaction
-                            {
-                                let mut health = self.peer_health.lock().await;
-                                health.record_failure(peer_index as u32);
-                            }
-                            warn!("⚠️ [PEER-GO-SYNC] Failed to sync blocks to local Go: {}", e);
-                            return Err(e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Record failed peer interaction
-                    {
-                        let mut health = self.peer_health.lock().await;
-                        health.record_failure(peer_index as u32);
-                    }
-                    debug!("[PEER-GO-SYNC] Peer {} fetch failed: {}", peer_addr, e);
-                    continue;
-                }
+            Err(e) => {
+                debug!("[PEER-GO-SYNC] Peer fetch failed: {}", e);
+                return Err(e);
             }
-        }
-
-        Err(anyhow::anyhow!("All peers failed to provide blocks"))
-    }
-
-    /// Get peer Go addresses from committee (if available) or config
-    pub fn get_peer_go_addresses(&self) -> Vec<String> {
-        let committee_guard = self.committee.read().expect("committee lock poisoned");
-        if let Some(ref committee) = *committee_guard {
-            committee
-                .authorities()
-                .filter_map(|(_, auth)| {
-                    let addr_str = auth.address.to_string();
-                    // Extract host from /dns/hostname/tcp/port format
-                    if let Some(host) = addr_str.split('/').nth(2) {
-                        // Use peer_rpc_port (8000 base)
-                        Some(format!("{}:8000", host))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
         }
     }
 }

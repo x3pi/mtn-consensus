@@ -7,10 +7,10 @@ Tài liệu mô tả chi tiết quá trình chuyển đổi một Full Node (Syn
 ### 1.1. SyncOnly Mode (Full Node)
 - **Vai trò**: Đồng bộ dữ liệu từ Execution Layer (Go) mà không tham gia consensus
 - **Hành vi**: 
-  - Query Go Master định kỳ (5 giây/lần) để lấy `last_block_number`
+  - Unified EpochMonitor query Go Master + TCP peers định kỳ (cấu hình, mặc định 10s)
   - Cập nhật `shared_last_global_exec_index` local
   - **KHÔNG** bind P2P ports (9000-9004) → Connection refused khi kiểm tra
-- **Task chính**: `SyncTask` chạy nền
+- **Task chính**: `RustSyncNode` chạy nền (thay thế SyncTask cũ)
 
 ### 1.2. Validator Mode
 - **Vai trò**: Tham gia consensus, propose và certify blocks
@@ -50,13 +50,13 @@ Tài liệu mô tả chi tiết quá trình chuyển đổi một Full Node (Syn
 
 ```mermaid
 flowchart TD
-    A[SyncOnly Node] --> B{Poll Go Master mỗi 3s}
-    B --> C[Lấy go_epoch & validators]
-    C --> D{go_epoch > current_epoch?}
+    A[SyncOnly Node] --> B{Unified EpochMonitor mỗi 10s}
+    B --> C[Lấy local go_epoch & network_epoch via TCP peers]
+    C --> D{network_epoch > current_epoch?}
     D -->|No| B
     D -->|Yes| E{protocol_key trong committee?}
-    E -->|No| F[Tiếp tục SyncOnly]
-    E -->|Yes| G[Bắt đầu Promotion Flow]
+    E -->|No| F[Advance Go epoch, tiếp tục SyncOnly]
+    E -->|Yes| G[Bắt đầu Promotion Flow via EpochTransitionManager]
 ```
 
 **Code liên quan**: `src/node/epoch_monitor.rs`
@@ -105,7 +105,7 @@ sequenceDiagram
 ```rust
 // Thứ tự thực hiện QUAN TRỌNG
 1. self.node_mode = NodeMode::Validator;     // Cập nhật state TRƯỚC
-2. self.sync_task.stop();                    // Dừng SyncTask
+2. self.rust_sync_node.stop();               // Dừng RustSyncNode
 3. self.epoch_monitor_handle.take();         // Take (KHÔNG abort!)
 4. ConsensusAuthority::start();              // Khởi động consensus
 ```
@@ -156,10 +156,10 @@ global_exec_index = epoch_base_index + commit_index
 
 **Nguyên nhân**: `CommitConsumer` bị drop khi ở SyncOnly mode
 
-**Fix**: Persist `CommitConsumer` trong `ConsensusNode`:
+**Fix**: Persist `CommitConsumerArgs` trong `ConsensusNode`:
 ```rust
 pub struct ConsensusNode {
-    pub(crate) commit_consumer: Option<CommitConsumer>, // Keeper
+    pub(crate) commit_consumer_holder: Option<CommitConsumerArgs>, // Keeper
 }
 ```
 

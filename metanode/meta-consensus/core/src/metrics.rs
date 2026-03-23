@@ -25,11 +25,17 @@ fn register_or_replace_int_gauge_vec(
     match register_int_gauge_vec_with_registry!(name, help, labels, registry) {
         Ok(metric) => metric,
         Err(PrometheusError::AlreadyReg) => {
-            // Metric already exists - this should not happen if each epoch uses a fresh registry
-            tracing::error!("Metric '{}' already registered in registry. This indicates a bug: each epoch should use a fresh Registry instance.", name);
-            panic!("Metric '{}' already registered. Ensure each epoch uses a fresh Registry::new() instance.", name);
+            tracing::error!("🚨 [FATAL] Metric '{}' already registered. Each epoch MUST use a fresh Registry. Shutting down.", name);
+            std::process::exit(1);
         }
-        Err(e) => panic!("Failed to register metric '{}': {}", name, e),
+        Err(e) => {
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -37,10 +43,17 @@ fn register_or_replace_int_gauge(name: &str, help: &str, registry: &Registry) ->
     match register_int_gauge_with_registry!(name, help, registry) {
         Ok(metric) => metric,
         Err(PrometheusError::AlreadyReg) => {
-            tracing::error!("Metric '{}' already registered in registry. This indicates a bug: each epoch should use a fresh Registry instance.", name);
-            panic!("Metric '{}' already registered. Ensure each epoch uses a fresh Registry::new() instance.", name);
+            tracing::error!("🚨 [FATAL] Metric '{}' already registered. Each epoch MUST use a fresh Registry. Shutting down.", name);
+            std::process::exit(1);
         }
-        Err(e) => panic!("Failed to register metric '{}': {}", name, e),
+        Err(e) => {
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -48,10 +61,17 @@ fn register_or_replace_gauge(name: &str, help: &str, registry: &Registry) -> Gau
     match register_gauge_with_registry!(name, help, registry) {
         Ok(metric) => metric,
         Err(PrometheusError::AlreadyReg) => {
-            tracing::error!("Metric '{}' already registered in registry. This indicates a bug: each epoch should use a fresh Registry instance.", name);
-            panic!("Metric '{}' already registered. Ensure each epoch uses a fresh Registry::new() instance.", name);
+            tracing::error!("🚨 [FATAL] Metric '{}' already registered. Each epoch MUST use a fresh Registry. Shutting down.", name);
+            std::process::exit(1);
         }
-        Err(e) => panic!("Failed to register metric '{}': {}", name, e),
+        Err(e) => {
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -64,10 +84,17 @@ fn register_or_replace_histogram(
     match register_histogram_with_registry!(name, help, buckets, registry) {
         Ok(metric) => metric,
         Err(PrometheusError::AlreadyReg) => {
-            tracing::error!("Metric '{}' already registered in registry. This indicates a bug: each epoch should use a fresh Registry instance.", name);
-            panic!("Metric '{}' already registered. Ensure each epoch uses a fresh Registry::new() instance.", name);
+            tracing::error!("🚨 [FATAL] Metric '{}' already registered. Each epoch MUST use a fresh Registry. Shutting down.", name);
+            std::process::exit(1);
         }
-        Err(e) => panic!("Failed to register metric '{}': {}", name, e),
+        Err(e) => {
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -81,10 +108,17 @@ fn register_or_replace_histogram_vec(
     match register_histogram_vec_with_registry!(name, help, labels, buckets, registry) {
         Ok(metric) => metric,
         Err(PrometheusError::AlreadyReg) => {
-            tracing::error!("Metric '{}' already registered in registry. This indicates a bug: each epoch should use a fresh Registry instance.", name);
-            panic!("Metric '{}' already registered. Ensure each epoch uses a fresh Registry::new() instance.", name);
+            tracing::error!("🚨 [FATAL] Metric '{}' already registered. Each epoch MUST use a fresh Registry. Shutting down.", name);
+            std::process::exit(1);
         }
-        Err(e) => panic!("Failed to register metric '{}': {}", name, e),
+        Err(e) => {
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -97,10 +131,17 @@ fn register_or_replace_int_counter_vec(
     match register_int_counter_vec_with_registry!(name, help, labels, registry) {
         Ok(metric) => metric,
         Err(PrometheusError::AlreadyReg) => {
-            tracing::error!("Metric '{}' already registered in registry. This indicates a bug: each epoch should use a fresh Registry instance.", name);
-            panic!("Metric '{}' already registered. Ensure each epoch uses a fresh Registry::new() instance.", name);
+            tracing::error!("🚨 [FATAL] Metric '{}' already registered. Each epoch MUST use a fresh Registry. Shutting down.", name);
+            std::process::exit(1);
         }
-        Err(e) => panic!("Failed to register metric '{}': {}", name, e),
+        Err(e) => {
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -108,10 +149,17 @@ fn register_or_replace_int_counter(name: &str, help: &str, registry: &Registry) 
     match register_int_counter_with_registry!(name, help, registry) {
         Ok(metric) => metric,
         Err(PrometheusError::AlreadyReg) => {
-            tracing::error!("Metric '{}' already registered in registry. This indicates a bug: each epoch should use a fresh Registry instance.", name);
-            panic!("Metric '{}' already registered. Ensure each epoch uses a fresh Registry::new() instance.", name);
+            tracing::error!("🚨 [FATAL] Metric '{}' already registered. Each epoch MUST use a fresh Registry. Shutting down.", name);
+            std::process::exit(1);
         }
-        Err(e) => panic!("Failed to register metric '{}': {}", name, e),
+        Err(e) => {
+            tracing::error!(
+                "🚨 [FATAL] Failed to register metric '{}': {}. Shutting down.",
+                name,
+                e
+            );
+            std::process::exit(1);
+        }
     }
 }
 

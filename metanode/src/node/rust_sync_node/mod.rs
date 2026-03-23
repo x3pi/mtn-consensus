@@ -72,6 +72,7 @@ pub struct RustSyncConfig {
     pub turbo_fetch_interval_ms: u64, // Faster interval when catching up
     pub fetch_batch_size: u32,
     pub turbo_batch_size: u32, // Larger batch when catching up
+    #[allow(dead_code)]
     pub fetch_timeout_secs: u64,
     /// Peer RPC addresses for fallback epoch boundary data fetch
     pub peer_rpc_addresses: Vec<String>,
@@ -104,6 +105,7 @@ pub struct RustSyncNode {
     /// Base global_exec_index for current epoch (commits in this epoch are indexed from 1)
     pub(crate) epoch_base_index: Arc<AtomicU64>,
     /// Multi-epoch cache: epoch -> sorted list of validator ETH addresses
+    #[allow(dead_code)]
     pub(crate) epoch_eth_addresses: Arc<Mutex<HashMap<u64, Vec<Vec<u8>>>>>,
     // Stored to allow rebuilding TonicClient on committee change
     pub(crate) context: Option<Arc<Context>>,

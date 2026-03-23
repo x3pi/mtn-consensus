@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -243,6 +246,9 @@ pub(crate) struct Synchronizer<C: NetworkClient, V: BlockVerifier, D: CoreThread
     transaction_certifier: TransactionCertifier,
     inflight_blocks_map: Arc<InflightBlocksMap>,
     commands_sender: Sender<Command>,
+    /// Tracks consecutive periodic sync failures for exponential backoff.
+    /// Resets to 0 when any periodic sync succeeds.
+    consecutive_sync_failures: Arc<AtomicU32>,
 }
 
 impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C, V, D> {
@@ -309,6 +315,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
                 inflight_blocks_map,
                 commands_sender: commands_sender_clone,
                 dag_state,
+                consecutive_sync_failures: Arc::new(AtomicU32::new(0)),
             };
             s.run().await;
         }));
@@ -321,8 +328,10 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
 
     // The main loop to listen for the submitted commands.
     async fn run(&mut self) {
-        // We want the synchronizer to run periodically every 200ms to fetch any missing blocks.
+        // Base interval for periodic sync. Actual interval may be scaled up
+        // by exponential backoff when sync consistently fails (e.g., epoch mismatch).
         const PERIODIC_FETCH_INTERVAL: Duration = Duration::from_millis(200);
+        const MAX_BACKOFF_INTERVAL: Duration = Duration::from_secs(10);
         let scheduler_timeout = sleep_until(Instant::now() + PERIODIC_FETCH_INTERVAL);
 
         tokio::pin!(scheduler_timeout);
@@ -432,9 +441,19 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
                             return;
                         }
 
+                        // Apply exponential backoff when sync keeps failing (e.g., lagging node
+                        // fetching blocks from peers in a different epoch). This prevents a
+                        // spam loop of ~5 futile requests/second per peer.
+                        let failures = self.consecutive_sync_failures.load(Ordering::Relaxed);
+                        let next_interval = if failures > 0 {
+                            let backoff = PERIODIC_FETCH_INTERVAL * 2u32.saturating_pow(failures.min(6));
+                            backoff.min(MAX_BACKOFF_INTERVAL)
+                        } else {
+                            PERIODIC_FETCH_INTERVAL
+                        };
                         scheduler_timeout
                             .as_mut()
-                            .reset(Instant::now() + PERIODIC_FETCH_INTERVAL);
+                            .reset(Instant::now() + next_interval);
                     }
                 },
             }
@@ -921,6 +940,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
         let blocks_to_fetch = self.inflight_blocks_map.clone();
         let commands_sender = self.commands_sender.clone();
         let dag_state = self.dag_state.clone();
+        let consecutive_sync_failures = self.consecutive_sync_failures.clone();
 
         // If we are commit lagging, then we don't want to enable the scheduler. As the node is sycnhronizing via the commit syncer, the certified commits
         // will bring all the necessary blocks to run the commits. As the commits are certified, we are guaranteed that all the necessary causal history is present.
@@ -959,6 +979,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
 
                 // Now process the returned results
                 let mut total_fetched = 0;
+                let mut any_success = false;
                 for (blocks_guard, fetched_blocks, peer) in results {
                     total_fetched += fetched_blocks.len();
 
@@ -989,6 +1010,24 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
                                 "periodic",
                             ])
                             .inc();
+                    } else {
+                        any_success = true;
+                    }
+                }
+
+                // Track consecutive failures for exponential backoff.
+                // When all syncs fail (e.g., lagging node fetching wrong-epoch blocks),
+                // increase backoff to avoid spamming peers.
+                if any_success {
+                    consecutive_sync_failures.store(0, Ordering::Relaxed);
+                } else {
+                    let prev = consecutive_sync_failures.fetch_add(1, Ordering::Relaxed);
+                    if prev < 5 {
+                        info!(
+                            "Periodic sync: all peers returned errors ({} consecutive failures). \
+                             Backing off to reduce load.",
+                            prev + 1
+                        );
                     }
                 }
 

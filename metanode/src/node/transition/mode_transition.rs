@@ -123,6 +123,30 @@ pub async fn transition_mode_only(
         epoch, go_authoritative_timestamp
     );
 
+    // CRITICAL FIX (2026-03-22): Query Go for the correct epoch boundary GEI.
+    // This is needed for CommitProcessor's epoch_base_index calculation.
+    // synced_global_exec_index is WRONG because it points to the tip of synced state,
+    // not the ACTUAL base GEI of the epoch.
+    let epoch_base_gei_from_go = {
+        let boundary_client = committee_source.create_executor_client(&config.executor_send_socket_path);
+        match boundary_client.get_epoch_boundary_data(epoch).await {
+            Ok((_, _, _, _, _, boundary_gei)) => {
+                info!(
+                    "📊 [MODE TRANSITION] Got epoch boundary from Go: epoch={}, boundary_gei={}, synced_global_exec_index={}",
+                    epoch, boundary_gei, synced_global_exec_index
+                );
+                boundary_gei
+            }
+            Err(e) => {
+                warn!(
+                    "⚠️ [MODE TRANSITION] Failed to get epoch boundary from Go: {}. Falling back to synced_global_exec_index={}",
+                    e, synced_global_exec_index
+                );
+                synced_global_exec_index
+            }
+        }
+    };
+
     // Update node mode (this also handles Go handoff)
     node.check_and_update_node_mode(&committee, config, true)
         .await?;
@@ -168,6 +192,10 @@ pub async fn transition_mode_only(
     // Update epoch state
     node.current_epoch = epoch;
     node.last_global_exec_index = synced_global_exec_index;
+    {
+        let mut g = node.shared_last_global_exec_index.lock().await;
+        *g = synced_global_exec_index;
+    }
     // Note: shared_last_global_exec_index is Arc<Mutex<u64>>, updated via commit_processor
     node.current_commit_index.store(0, Ordering::SeqCst);
 
@@ -232,11 +260,21 @@ pub async fn transition_mode_only(
             ),
         )
         .with_shared_last_global_exec_index(node.shared_last_global_exec_index.clone())
-        .with_epoch_info(epoch, synced_global_exec_index)
+        .with_epoch_info(epoch, epoch_base_gei_from_go)
         .with_is_transitioning(node.is_transitioning.clone())
         .with_pending_transactions_queue(node.pending_transactions_queue.clone())
         .with_epoch_transition_callback(epoch_cb)
         .with_block_coordinator(coordinator.clone()); // Connect to BlockCoordinator
+
+    // When cold_start, set the GEI threshold so commit_processor skips ALL
+    // replayed commits with GEI ≤ synced_global_exec_index (Phase 1 peer sync state).
+    if node.cold_start {
+        processor = processor.with_cold_start_skip_gei(synced_global_exec_index);
+        info!(
+            "🛡️ [MODE TRANSITION] Cold-start: set cold_start_skip_gei={} to prevent replayed commits from creating duplicate blocks",
+            synced_global_exec_index
+        );
+    }
 
     // Share epoch_eth_addresses HashMap reference for leader address lookup
     processor = processor.with_epoch_eth_addresses(node.epoch_eth_addresses.clone());
@@ -262,9 +300,36 @@ pub async fn transition_mode_only(
     // Start Authority
     let mut params = node.parameters.clone();
     params.db_path = db_path;
-    node.boot_counter += 1;
 
-    info!("🚀 [MODE TRANSITION] Starting ConsensusAuthority for Validator mode");
+    // ═══════════════════════════════════════════════════════════════════════
+    // COLD-START AMNESIA RECOVERY: When a node is restored from snapshot,
+    // its DAG is empty (cold_start=true). If we pass boot_counter > 0,
+    // the Synchronizer's FetchOwnLastBlock mechanism is DISABLED, and Core
+    // will immediately propose a new B1 block with a different timestamp
+    // than the original — causing an equivocation panic.
+    //
+    // Fix: Pass boot_counter=0 for cold-start nodes so the existing amnesia
+    // recovery mechanism kicks in:
+    //   1. Core sets last_known_proposed_round = None (blocks ALL proposals)
+    //   2. Synchronizer fetches our last own block from peers
+    //   3. Adds it to DAG, sets last_known_proposed_round = highest_round
+    //   4. Core can now safely propose from highest_round + 1
+    //
+    // This allows the node to JOIN CONSENSUS MID-EPOCH after snapshot restore
+    // without waiting for the next epoch!
+    // ═══════════════════════════════════════════════════════════════════════
+    let boot_counter_for_authority = if node.cold_start {
+        info!(
+            "🔄 [MODE TRANSITION] Cold-start detected! Using boot_counter=0 to enable amnesia recovery (FetchOwnLastBlock). \
+             This will block proposals until our last block is synced from peers."
+        );
+        0u64
+    } else {
+        node.boot_counter += 1;
+        node.boot_counter
+    };
+
+    info!("🚀 [MODE TRANSITION] Starting ConsensusAuthority for Validator mode (boot_counter={})", boot_counter_for_authority);
     node.authority = Some(
         ConsensusAuthority::start(
             NetworkType::Tonic,
@@ -280,14 +345,36 @@ pub async fn transition_mode_only(
             node.transaction_verifier.clone(),
             commit_consumer,
             Registry::new(),
-            node.boot_counter,
+            boot_counter_for_authority,
             Some(node.system_transaction_provider.clone() as Arc<dyn SystemTransactionProvider>),
             Some(node.legacy_store_manager.clone()), // Pass legacy store manager to avoid RocksDB lock conflicts
         )
         .await,
     );
 
-    // Note: proxy update is handled by check_and_update_node_mode
+    // CRITICAL FIX: Create/update TransactionClientProxy AFTER authority is started.
+    // Previously this code was missing — the comment said "handled by check_and_update_node_mode"
+    // but that runs BEFORE the authority exists. Without this, TxSocketServer's
+    // NoOpTransactionSubmitter is never replaced, causing ALL TX submissions to fail
+    // with "SyncOnly node cannot submit to consensus directly".
+    if let Some(auth) = &node.authority {
+        if let Some(proxy) = &node.transaction_client_proxy {
+            proxy.set_client(auth.transaction_client()).await;
+            info!("✅ [MODE TRANSITION] Updated existing TransactionClientProxy with new authority");
+        } else {
+            node.transaction_client_proxy = Some(Arc::new(
+                crate::node::tx_submitter::TransactionClientProxy::new(auth.transaction_client()),
+            ));
+            info!("✅ [MODE TRANSITION] Created NEW TransactionClientProxy for Validator mode");
+        }
+    }
+
+    // Reset cold_start flag after successful authority start.
+    // The amnesia recovery mechanism in the Synchronizer will handle the rest.
+    if node.cold_start {
+        node.cold_start = false;
+        info!("✅ [MODE TRANSITION] Cold-start complete. Amnesia recovery will sync last own block from peers before proposing.");
+    }
 
     info!(
         "✅ [MODE TRANSITION] Successfully transitioned to Validator mode for epoch {}",
@@ -348,7 +435,7 @@ pub(super) async fn handle_synconly_upgrade_wait(
         }
 
         let go_current_block = match fresh_executor_client.get_last_block_number().await {
-            Ok(block) => block,
+            Ok((b, _)) => b,
             Err(e) => {
                 if attempt % 20 == 0 {
                     warn!(
@@ -377,6 +464,20 @@ pub(super) async fn handle_synconly_upgrade_wait(
         }
 
         if attempt % 20 == 0 {
+            if !node.peer_rpc_addresses.is_empty() {
+                let fetch_from = go_current_block + 1;
+                info!("🔄 [MODE TRANSITION] Fetching blocks {} to {} from peers", fetch_from, synced_global_exec_index);
+                if let Ok(blocks) = crate::network::peer_rpc::fetch_blocks_from_peer(
+                    &node.peer_rpc_addresses,
+                    fetch_from,
+                    synced_global_exec_index,
+                ).await {
+                    if !blocks.is_empty() {
+                        info!("✅ [MODE TRANSITION] Fetched {} blocks from peers! Syncing...", blocks.len());
+                        let _ = fresh_executor_client.sync_blocks(blocks).await;
+                    }
+                }
+            }
             info!(
                 "⏳ [MODE TRANSITION] Waiting for Go sync: block {} / {} ({}% complete, epoch={}, waiting {}s)",
                 go_current_block,

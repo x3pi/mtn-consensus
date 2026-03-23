@@ -12,9 +12,9 @@
 //! - `tx_recovery`: Transaction recovery across epoch boundaries
 
 mod consensus_setup;
-mod demotion;
+pub mod demotion;
 pub mod epoch_transition;
-mod mode_transition;
+pub mod mode_transition;
 pub mod tx_recovery;
 mod verification;
 

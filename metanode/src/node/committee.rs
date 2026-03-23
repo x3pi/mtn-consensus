@@ -48,7 +48,7 @@ pub async fn build_committee_from_go_validators_at_block_with_epoch(
                     || e.to_string().contains("not committed")
                 {
                     // Try to get the last committed block and use that instead
-                    if let Ok(last_committed) = executor_client.get_last_block_number().await {
+                    if let Ok((last_committed, _)) = executor_client.get_last_block_number().await {
                         if last_committed < current_block
                             && last_committed > 0
                             && current_block == requested_block

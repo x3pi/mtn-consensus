@@ -22,7 +22,7 @@ use crate::{
     commit_vote_monitor::CommitVoteMonitor,
     context::{Clock, Context},
     core::{Core, CoreSignals},
-    core_thread::{ChannelCoreThreadDispatcher, CoreThreadHandle},
+    core_thread::{ChannelCoreThreadDispatcher, CoreThreadDispatcher, CoreThreadHandle},
     dag_state::DagState,
     leader_schedule::LeaderSchedule,
     leader_timeout::{LeaderTimeoutTask, LeaderTimeoutTaskHandle},
@@ -366,6 +366,19 @@ where
             min_round_delay_ms
         );
 
+        // ═══════════════════════════════════════════════════════════════════
+        // QUORUM READINESS GATE: Create flag that blocks proposals until
+        // enough peers are connected. This prevents startup forks where
+        // isolated subgroups form independent consensus.
+        // ═══════════════════════════════════════════════════════════════════
+        let quorum_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let quorum_threshold = context.committee.quorum_threshold();
+        let committee_size = context.committee.size();
+        info!(
+            "🔒 [QUORUM GATE] Initialized: quorum_threshold={}, committee_size={}",
+            quorum_threshold, committee_size
+        );
+
         let core = Core::new(
             context.clone(),
             leader_schedule,
@@ -380,6 +393,7 @@ where
             round_tracker.clone(),
             Some(adaptive_delay_state.clone()),
             system_transaction_provider, // System transaction provider for Sui-style epoch transition
+            quorum_ready.clone(),
         );
 
         let (core_dispatcher, core_thread_handle) =
@@ -445,13 +459,14 @@ where
             commit_vote_monitor,
             round_tracker.clone(),
             synchronizer.clone(),
-            core_dispatcher,
+            core_dispatcher.clone(),
             signals_receivers.block_broadcast_receiver(),
             transaction_certifier,
             dag_state.clone(),
             store.clone(),
             None,                 // epoch_change_processor
             legacy_store_manager, // Pass initialized manager
+            epoch_base_index,     // CRITICAL: Pass epoch_base for cold-start fallback
         ));
 
         let subscriber = {
@@ -470,6 +485,87 @@ where
         };
 
         network_manager.install_service(network_service).await;
+
+        // ═══════════════════════════════════════════════════════════════════
+        // QUORUM MONITOR: Polls highest_received_rounds to detect real peers.
+        //
+        // No deadlock because round 1 proposals are ALWAYS allowed by the
+        // quorum gate in proposer.rs (clock_round > 1 check). Round 1 blocks
+        // flow freely through the network, updating highest_received_rounds.
+        // Once peers with total stake ≥ quorum_threshold show round > 0,
+        // quorum_ready is set and round 2+ proposals are unlocked.
+        //
+        // NOTE: quorum_threshold is STAKE-weighted (e.g., 2667 for 4×1000),
+        // so we must sum peer stakes, not count peers.
+        //
+        // Timeout after 30s as a safety fallback.
+        // ═══════════════════════════════════════════════════════════════════
+        {
+            let quorum_ready_clone = quorum_ready.clone();
+            let dispatcher_clone = core_dispatcher.clone();
+            let quorum_threshold_val = quorum_threshold;
+            let own_index_val = context.own_index;
+            let committee_size_val = committee_size;
+            // Collect per-authority stakes for stake-weighted comparison
+            let authority_stakes: Vec<u64> = context
+                .committee
+                .authorities()
+                .map(|(_, a)| a.stake)
+                .collect();
+            let own_stake = authority_stakes[own_index_val.value()];
+            let total_stake: u64 = authority_stakes.iter().sum();
+            info!(
+                "🔒 [QUORUM GATE] Initialized: quorum_threshold={} (stake-weighted), \
+                 total_stake={}, own_stake={}, committee_size={}",
+                quorum_threshold_val, total_stake, own_stake, committee_size_val
+            );
+            tokio::spawn(async move {
+                let timeout = tokio::time::Duration::from_secs(30);
+                let start = tokio::time::Instant::now();
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200));
+
+                loop {
+                    interval.tick().await;
+
+                    // Safety timeout
+                    if start.elapsed() >= timeout {
+                        tracing::warn!(
+                            "⚠️ [QUORUM GATE] Timeout after 30s. Enabling proposals as fallback."
+                        );
+                        quorum_ready_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
+
+                    // Sum stakes of peers with received rounds > 0
+                    let received_rounds = dispatcher_clone.highest_received_rounds();
+                    let mut active_stake: u64 = own_stake; // include ourselves
+                    let mut peers_heard: usize = 0;
+                    for (i, round) in received_rounds.iter().enumerate() {
+                        if i != own_index_val.value() && *round > 0 {
+                            active_stake += authority_stakes[i];
+                            peers_heard += 1;
+                        }
+                    }
+
+                    if active_stake >= quorum_threshold_val {
+                        tracing::info!(
+                            "🔓 [QUORUM GATE] Quorum reached: stake {}/{} ({} peers + self). \
+                             Enabling round 2+ proposals.",
+                            active_stake, total_stake, peers_heard
+                        );
+                        quorum_ready_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
+
+                    tracing::debug!(
+                        "🔒 [QUORUM GATE] Waiting: stake {}/{} ({} peers), \
+                         need {} for quorum. Elapsed: {:?}",
+                        active_stake, total_stake, peers_heard,
+                        quorum_threshold_val, start.elapsed()
+                    );
+                }
+            });
+        }
 
         info!(
             "✅ [AUTHORITY NODE] Consensus authority started, took {:?}",
@@ -614,7 +710,7 @@ mod tests {
         #[values(5, 10)] gc_depth: u32,
     ) {
         // // telemetry_subscribers::init_for_testing();
-        let db_registry = Registry::new();
+        let _db_registry = Registry::new();
         // DBMetrics::init(RegistryService::new(db_registry));
 
         const NUM_OF_AUTHORITIES: usize = 4;
@@ -721,7 +817,7 @@ mod tests {
         #[values(1, 2, 3)] num_authorities: usize,
     ) {
         // // telemetry_subscribers::init_for_testing();
-        let db_registry = Registry::new();
+        let _db_registry = Registry::new();
         // DBMetrics::init(RegistryService::new(db_registry));
 
         let (committee, keypairs) = local_committee_and_keys(0, vec![1; num_authorities]);
@@ -820,7 +916,7 @@ mod tests {
     #[ignore]
     async fn test_amnesia_recovery_success(#[values(5, 10)] gc_depth: u32) {
         // // telemetry_subscribers::init_for_testing();
-        let db_registry = Registry::new();
+        let _db_registry = Registry::new();
         // DBMetrics::init(RegistryService::new(db_registry));
 
         const NUM_OF_AUTHORITIES: usize = 4;

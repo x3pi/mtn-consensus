@@ -14,6 +14,7 @@ use crate::network::peer_rpc::query_peer_epoch_boundary_data;
 
 impl RustSyncNode {
     /// Process queue - drain ready commits and send to Go sequentially (Phase 3)
+    #[allow(dead_code)]
     pub(super) async fn process_queue(&self) -> Result<u32> {
         let pq_timer = self.metrics.process_queue_total_seconds.start_timer();
 
@@ -118,7 +119,7 @@ impl RustSyncNode {
                         // 2. Fallback to local Go only if peers failed
                         if !loaded {
                             match self.executor_client.get_epoch_boundary_data(epoch).await {
-                                Ok((_e, _ts, _boundary, validators)) => {
+                                Ok((_e, _ts, _boundary, validators, _, _)) => {
                                     let mut sorted_validators = validators.clone();
                                     sorted_validators
                                         .sort_by(|a, b| a.authority_key.cmp(&b.authority_key));
@@ -315,7 +316,7 @@ impl RustSyncNode {
 
                 if let Err(e) = self
                     .executor_client
-                    .advance_epoch(trans.epoch, trans.timestamp_ms, trans.boundary_block)
+                    .advance_epoch(trans.epoch, trans.timestamp_ms, trans.boundary_block, trans.boundary_gei)
                     .await
                 {
                     warn!(

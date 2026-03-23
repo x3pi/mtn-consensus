@@ -1,7 +1,7 @@
 // Copyright (c) MetaNode Team
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::node::tx_submitter::TransactionSubmitter;
+
 use crate::types::tx_hash::calculate_transaction_hash_hex;
 use anyhow::Result;
 use std::sync::Arc;
@@ -13,33 +13,26 @@ use tracing::{error, info, warn};
 /// Simple HTTP RPC server for submitting transactions
 /// Supports both HTTP POST and length-prefixed binary protocols
 pub struct RpcServer {
-    transaction_client: Arc<dyn TransactionSubmitter>,
     port: u16,
-    /// Optional node reference for readiness checking
-    /// If provided, transactions are rejected when node is not ready (catching up, transitioning, etc.)
+    /// Optional node reference for readiness checking and dynamic submitter fetching
     node: Option<Arc<Mutex<crate::node::ConsensusNode>>>,
 }
 
 impl RpcServer {
     #[allow(dead_code)]
-    pub fn new(transaction_client: Arc<dyn TransactionSubmitter>, port: u16) -> Self {
+    pub fn new(port: u16) -> Self {
         Self {
-            transaction_client,
             port,
             node: None,
         }
     }
 
-    /// Create RPC server with node reference for readiness checking
-    /// This allows the server to reject transactions when the node is not ready
-    /// (e.g., catching up, transitioning epochs, or not fully initialized)
+    /// Create RPC server with node reference
     pub fn with_node(
-        transaction_client: Arc<dyn TransactionSubmitter>,
         port: u16,
         node: Arc<Mutex<crate::node::ConsensusNode>>,
     ) -> Self {
         Self {
-            transaction_client,
             port,
             node: Some(node),
         }
@@ -80,7 +73,6 @@ impl RpcServer {
                 warn!("Failed to set TCP_NODELAY: {}", e);
             }
 
-            let client = self.transaction_client.clone();
             let node = self.node.clone();
             let permit = semaphore.clone().acquire_owned().await;
 
@@ -144,7 +136,6 @@ impl RpcServer {
                                                 };
                                                 let is_length_prefixed = false;
                                                 if let Err(e) = Self::process_transaction_data(
-                                                    &client,
                                                     &node,
                                                     &mut stream,
                                                     tx_data,
@@ -194,7 +185,6 @@ impl RpcServer {
 
                                     let is_length_prefixed = true;
                                     if let Err(e) = Self::process_transaction_data(
-                                        &client,
                                         &node,
                                         &mut stream,
                                         tx_data.clone(),
@@ -254,7 +244,6 @@ impl RpcServer {
     }
 
     async fn process_transaction_data(
-        client: &Arc<dyn TransactionSubmitter>,
         node: &Option<Arc<Mutex<crate::node::ConsensusNode>>>,
         stream: &mut tokio::net::TcpStream,
         tx_data: Vec<u8>,
@@ -418,10 +407,12 @@ impl RpcServer {
             "unknown".to_string()
         };
 
-        // Check if node is ready to accept transactions or should queue them
+        // Check if node is ready and fetch current submitter
+        let mut active_client = None;
         if let Some(ref node) = node {
             let node_guard = node.lock().await;
             let (is_ready, should_queue, reason) = node_guard.check_transaction_acceptance().await;
+            active_client = node_guard.transaction_submitter();
             drop(node_guard);
 
             if !is_ready {
@@ -478,6 +469,18 @@ impl RpcServer {
                 }
             }
         }
+
+        let Some(client) = active_client else {
+            let reason = "No transaction submitter available (SyncOnly mode or node initializing)";
+            warn!("🚫 [TX FLOW] Transaction rejected: {}", reason);
+            if is_length_prefixed {
+                Self::send_binary_response(stream, false, reason).await?;
+            } else {
+                let response = format!(r#"{{"success":false,"error":"{}"}}"#, reason);
+                Self::send_response(stream, &response, false).await?;
+            }
+            return Ok(());
+        };
 
         info!(
             "📤 [TX FLOW] Submitting {} transaction(s) via RPC: first_hash={}",

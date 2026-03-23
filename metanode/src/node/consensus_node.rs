@@ -51,11 +51,21 @@ struct StorageSetup {
     storage_path: std::path::PathBuf,
     protocol_keypair: consensus_config::ProtocolKeyPair,
     network_keypair: consensus_config::NetworkKeyPair,
+    /// Epoch duration in seconds, loaded from Go via protobuf (from genesis.json)
+    epoch_duration_from_go: u64,
+    /// Indicates if the node's local Go state is significantly behind the peer network
+    is_lagging: bool,
 }
 
 /// Results from consensus setup phase.
 struct ConsensusSetup {
     authority: Option<ConsensusAuthority>,
+    /// Whether DAG storage has prior history. False after snapshot restore (DAG deleted).
+    /// When false, CommitProcessor uses timestamp-based guard to skip stale replay commits.
+    dag_has_history: bool,
+    /// Cold-start flag shared with CommitProcessor for timestamp-based stale commit filtering
+    #[allow(dead_code)]
+    cold_start: Arc<std::sync::atomic::AtomicBool>,
     commit_consumer_holder: Option<CommitConsumerArgs>,
     transaction_client_proxy: Option<Arc<TransactionClientProxy>>,
     executor_client_for_proc: Arc<ExecutorClient>,
@@ -131,18 +141,136 @@ impl ConsensusNode {
             Some(config.storage_path.clone()),
         ));
 
-        let latest_block_number = match executor_client.get_last_block_number().await {
-            Ok(n) => n,
-            Err(e) => {
-                warn!("⚠️ [STARTUP] Failed to fetch latest block from Go: {}. Attempting to read persisted value.", e);
-                super::executor_client::read_last_block_number(&config.storage_path)
-                    .await
-                    .unwrap_or(0)
+        // SNAPSHOT RESTORE FIX: Go Master needs time to load DB after snapshot restore.
+        // Without retry, Rust gets block=0/epoch=0 and initializes consensus at epoch 0,
+        // making it permanently stuck and unable to catch up with the cluster.
+        // Retry up to 30 times (2s intervals = 60s max) waiting for Go to report block > 0.
+        let latest_block_number = {
+            let max_retries = 30;
+            let retry_interval = std::time::Duration::from_secs(2);
+            let mut block_num = 0u64;
+            
+            for attempt in 1..=max_retries {
+                match executor_client.get_last_block_number().await {
+                    Ok((n, _is_ready)) => {
+                        block_num = n;
+                        if n > 0 {
+                            info!(
+                                "✅ [STARTUP] Got block number {} from Go (attempt {})",
+                                n, attempt
+                            );
+                            break;
+                        } else if attempt < max_retries {
+                            info!(
+                                "⏳ [STARTUP] Go returned block=0 (attempt {}/{}). Go may still be loading DB after snapshot restore. Retrying in {}s...",
+                                attempt, max_retries, retry_interval.as_secs()
+                            );
+                            tokio::time::sleep(retry_interval).await;
+                        }
+                    }
+                    Err(e) => {
+                        if attempt < max_retries {
+                            warn!(
+                                "⚠️ [STARTUP] Failed to fetch block from Go (attempt {}/{}): {}. Retrying...",
+                                attempt, max_retries, e
+                            );
+                            tokio::time::sleep(retry_interval).await;
+                        } else {
+                            warn!("⚠️ [STARTUP] Failed to fetch latest block from Go after {} attempts: {}. Attempting to read persisted value.", max_retries, e);
+                            block_num = super::executor_client::read_last_block_number(&config.storage_path)
+                                .await
+                                .unwrap_or(0);
+                        }
+                    }
+                }
             }
+            
+            if block_num == 0 {
+                warn!("⚠️ [STARTUP] Go still reporting block=0 after {} retries. This may be a fresh node or Go failed to load snapshot data.", max_retries);
+            }
+            
+            block_num
         };
 
         // PEER EPOCH DISCOVERY: Query TCP peers to get correct epoch (with retry)
-        let (go_epoch, peer_last_block, best_socket) = if !config.peer_rpc_addresses.is_empty() {
+        // ═══════════════════════════════════════════════════════════════════════
+        // CRITICAL FIX: SyncOnly nodes MUST use local Go epoch, NOT peer epoch!
+        // Using peer epoch causes DEADLOCK:
+        //   1. Peer says epoch=1 → Rust advances internal state to epoch 1
+        //   2. Deferred epoch transition waits for Go GEI >= boundary
+        //   3. But Go GEI=0 (no blocks synced yet) → 120s timeout → DEADLOCK
+        // SyncOnly must sync blocks sequentially: epoch transitions happen naturally
+        // when Go processes blocks up to the epoch boundary.
+        // ═══════════════════════════════════════════════════════════════════════
+        let is_sync_only = matches!(config.initial_node_mode, NodeMode::SyncOnly);
+        let (go_epoch, peer_last_block, best_socket) = if is_sync_only {
+            // SyncOnly: ALWAYS use local Go epoch to prevent deadlock
+            // SNAPSHOT RESTORE FIX: If we already know block > 0 (from retry above),
+            // Go should also report epoch > 0. Retry until epoch matches.
+            let epoch = if latest_block_number > 0 {
+                let max_epoch_retries = 30;
+                let retry_interval = std::time::Duration::from_secs(2);
+                let mut final_epoch = 0u64;
+                
+                for attempt in 1..=max_epoch_retries {
+                    match executor_client.get_current_epoch().await {
+                        Ok(e) => {
+                            final_epoch = e;
+                            if e > 0 {
+                                info!(
+                                    "✅ [SYNC-ONLY STARTUP] Got epoch {} from Go (attempt {}, block={})",
+                                    e, attempt, latest_block_number
+                                );
+                                break;
+                            } else if attempt < max_epoch_retries {
+                                info!(
+                                    "⏳ [SYNC-ONLY STARTUP] Go returned epoch=0 but block={}. DB still loading. Retrying in {}s... (attempt {}/{})",
+                                    latest_block_number, retry_interval.as_secs(), attempt, max_epoch_retries
+                                );
+                                tokio::time::sleep(retry_interval).await;
+                            }
+                        }
+                        Err(e) => {
+                            if attempt < max_epoch_retries {
+                                warn!(
+                                    "⚠️ [SYNC-ONLY STARTUP] Failed to get epoch (attempt {}/{}): {}. Retrying...",
+                                    attempt, max_epoch_retries, e
+                                );
+                                tokio::time::sleep(retry_interval).await;
+                            } else {
+                                return Err(anyhow::anyhow!(
+                                    "Failed to fetch epoch from Go after {} attempts: {}",
+                                    max_epoch_retries, e
+                                ));
+                            }
+                        }
+                    }
+                }
+                
+                if final_epoch == 0 && latest_block_number > 0 {
+                    warn!(
+                        "⚠️ [SYNC-ONLY STARTUP] Go still reporting epoch=0 despite block={}. Snapshot data may not have loaded correctly.",
+                        latest_block_number
+                    );
+                }
+                final_epoch
+            } else {
+                executor_client
+                    .get_current_epoch()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to fetch current epoch from Go: {}", e))?
+            };
+            
+            info!(
+                "📋 [SYNC-ONLY STARTUP] Using LOCAL Go epoch {} (skipping peer discovery to prevent deadlock)",
+                epoch
+            );
+            (
+                epoch,
+                latest_block_number,
+                config.executor_receive_socket_path.clone(),
+            )
+        } else if !config.peer_rpc_addresses.is_empty() {
             use crate::network::peer_rpc::query_peer_epochs_network;
             let max_attempts = 3;
             let mut peer_result = None;
@@ -288,49 +416,176 @@ impl ConsensusNode {
         };
 
         // Fetch epoch boundary data with fallback chain
-        let (current_epoch, epoch_timestamp_ms, boundary_block, validators) =
+        let (current_epoch, epoch_timestamp_ms, boundary_block, validators, epoch_duration_from_go) =
             match peer_executor_client
                 .get_epoch_boundary_data(current_epoch)
                 .await
             {
-                Ok((epoch, timestamp, boundary, vals)) => {
+                Ok((epoch, timestamp, boundary, vals, epoch_dur, _boundary_gei)) => {
                     info!(
-                        "✅ [STARTUP] Got epoch boundary data for epoch {} from Go",
-                        epoch
+                        "✅ [STARTUP] Got epoch boundary data for epoch {} from Go (epoch_duration={}s)",
+                        epoch, epoch_dur
                     );
-                    (epoch, timestamp, boundary, vals)
+                    (epoch, timestamp, boundary, vals, epoch_dur)
                 }
                 Err(e) => {
                     warn!(
-                        "⚠️ [STARTUP] Failed to get epoch boundary for epoch {}: {}. Falling back to local Go's epoch.",
+                        "⚠️ [STARTUP] Failed to get epoch boundary for epoch {}: {}. Trying fallbacks...",
                         current_epoch, e
                     );
-                    let local_epoch = executor_client.get_current_epoch().await.unwrap_or(0);
-                    info!(
-                        "📊 [STARTUP] Falling back to local Go epoch {} (network epoch was {})",
-                        local_epoch, current_epoch
-                    );
 
-                    match executor_client.get_epoch_boundary_data(local_epoch).await {
-                        Ok((epoch, timestamp, boundary, vals)) => {
-                            info!(
-                                "✅ [STARTUP] Got epoch boundary data for local epoch {}",
-                                epoch
-                            );
-                            (epoch, timestamp, boundary, vals)
+                    // SNAPSHOT RESTORE FIX (2026-03-19):
+                    // After snapshot restore, Go may have stale epoch data (epoch=0) while
+                    // peers are at epoch N. Instead of falling back to local Go's stale epoch,
+                    // query peers FIRST for epoch boundary data.
+                    let local_epoch = executor_client.get_current_epoch().await.unwrap_or(0);
+                    
+                    if local_epoch < current_epoch && !config.peer_rpc_addresses.is_empty() {
+                        warn!(
+                            "🔄 [STARTUP] Local Go epoch {} < peer epoch {}. Go may have stale data (snapshot restore?). Querying peers for epoch boundary...",
+                            local_epoch, current_epoch
+                        );
+                        
+                        // Try each peer for epoch boundary data at the CORRECT (peer) epoch
+                        let mut peer_boundary = None;
+                        for peer_addr in &config.peer_rpc_addresses {
+                            match crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                                peer_addr, current_epoch,
+                            ).await {
+                                Ok(boundary) => {
+                                    info!(
+                                        "✅ [STARTUP] Got epoch {} boundary from peer {}: {} validators, boundary_block={}",
+                                        current_epoch, peer_addr, boundary.validators.len(), boundary.boundary_block
+                                    );
+                                    peer_boundary = Some(boundary);
+                                    break;
+                                }
+                                Err(pe) => {
+                                    warn!("⚠️ [STARTUP] Peer {} epoch {} boundary failed: {}", peer_addr, current_epoch, pe);
+                                }
+                            }
                         }
-                        Err(e2) => {
-                            warn!(
-                                "⚠️ [STARTUP] No epoch boundary available (local epoch {} error: {}). Using epoch 0 genesis.",
-                                local_epoch, e2
-                            );
-                            let (genesis_validators, _genesis_epoch, _) = executor_client
-                                .get_validators_at_block(0)
-                                .await
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Failed to fetch genesis validators: {}", e)
-                                })?;
-                            (0u64, 0u64, 0u64, genesis_validators)
+                        
+                        if let Some(boundary) = peer_boundary {
+                            use super::executor_client::proto::ValidatorInfo as ProtoVI;
+                            let validators: Vec<ProtoVI> = boundary.validators.into_iter().map(|v| {
+                                ProtoVI {
+                                    address: v.address,
+                                    stake: v.stake.to_string(),
+                                    name: v.name,
+                                    authority_key: v.authority_key,
+                                    protocol_key: v.protocol_key,
+                                    network_key: v.network_key,
+                                    description: String::new(),
+                                    website: String::new(),
+                                    image: String::new(),
+                                    commission_rate: 0,
+                                    min_self_delegation: String::new(),
+                                    accumulated_rewards_per_share: String::new(),
+                                    p2p_address: String::new(),
+                                }
+                            }).collect();
+                            (current_epoch, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64)
+                        } else {
+                            warn!("⚠️ [STARTUP] No peers returned epoch {} boundary. Falling back to local Go epoch {}.", current_epoch, local_epoch);
+                            // Fall through to local Go fallback below
+                            match executor_client.get_epoch_boundary_data(local_epoch).await {
+                                Ok((epoch, timestamp, boundary, vals, epoch_dur, _boundary_gei)) => {
+                                    (epoch, timestamp, boundary, vals, epoch_dur)
+                                }
+                                Err(e2) => {
+                                    return Err(anyhow::anyhow!(
+                                        "Failed to get epoch boundary from peers AND local Go. Peer epoch={} error: {}, Local epoch={} error: {}",
+                                        current_epoch, e, local_epoch, e2
+                                    ));
+                                }
+                            }
+                        }
+                    } else {
+                        // Local epoch matches or no peers — use local Go
+                        info!(
+                            "📊 [STARTUP] Using local Go epoch {} for boundary data",
+                            local_epoch
+                        );
+
+                        match executor_client.get_epoch_boundary_data(local_epoch).await {
+                            Ok((epoch, timestamp, boundary, vals, epoch_dur, _boundary_gei)) => {
+                                info!(
+                                    "✅ [STARTUP] Got epoch boundary data for local epoch {} (epoch_duration={}s)",
+                                    epoch, epoch_dur
+                                );
+                                (epoch, timestamp, boundary, vals, epoch_dur)
+                            }
+                            Err(e2) => {
+                                warn!(
+                                    "⚠️ [STARTUP] No epoch boundary available (local epoch {} error: {}). Trying genesis validators...",
+                                    local_epoch, e2
+                                );
+                                // Try local Go first
+                                match executor_client.get_validators_at_block(0).await {
+                                    Ok((genesis_validators, _genesis_epoch, _)) => {
+                                        (0u64, 0u64, 0u64, genesis_validators, 900u64)
+                                    }
+                                    Err(e3) => {
+                                        // LOCAL GO FAILED — query peers for epoch 0
+                                        warn!(
+                                            "⚠️ [STARTUP] Local Go genesis validators failed: {}. Querying peers...",
+                                            e3
+                                        );
+                                        if !config.peer_rpc_addresses.is_empty() {
+                                            let mut peer_validators = None;
+                                            for peer_addr in &config.peer_rpc_addresses {
+                                                match crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                                                    peer_addr, 0,
+                                                ).await {
+                                                    Ok(boundary) => {
+                                                        info!(
+                                                            "✅ [STARTUP] Got epoch 0 boundary from peer {}: {} validators",
+                                                            peer_addr, boundary.validators.len()
+                                                        );
+                                                        peer_validators = Some(boundary);
+                                                        break;
+                                                    }
+                                                    Err(pe) => {
+                                                        warn!("⚠️ [STARTUP] Peer {} epoch 0 boundary failed: {}", peer_addr, pe);
+                                                    }
+                                                }
+                                            }
+                                            if let Some(boundary) = peer_validators {
+                                                use super::executor_client::proto::ValidatorInfo as ProtoVI;
+                                                let validators: Vec<ProtoVI> = boundary.validators.into_iter().map(|v| {
+                                                    ProtoVI {
+                                                        address: v.address,
+                                                        stake: v.stake.to_string(),
+                                                        name: v.name,
+                                                        authority_key: v.authority_key,
+                                                        protocol_key: v.protocol_key,
+                                                        network_key: v.network_key,
+                                                        description: String::new(),
+                                                        website: String::new(),
+                                                        image: String::new(),
+                                                        commission_rate: 0,
+                                                        min_self_delegation: String::new(),
+                                                        accumulated_rewards_per_share: String::new(),
+                                                        p2p_address: String::new(),
+                                                    }
+                                                }).collect();
+                                                (0u64, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64)
+                                            } else {
+                                                return Err(anyhow::anyhow!(
+                                                    "Failed to fetch genesis validators from both local Go and peers. Local: {}, No peers returned data.",
+                                                    e3
+                                                ));
+                                            }
+                                        } else {
+                                            return Err(anyhow::anyhow!(
+                                                "Failed to fetch genesis validators: {} (no peers configured for fallback)",
+                                                e3
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -365,7 +620,7 @@ impl ConsensusNode {
         );
 
         // EXECUTION INDEX SYNC
-        let last_global_exec_index = Self::calculate_last_global_exec_index(
+        let (last_global_exec_index, is_lagging) = Self::calculate_last_global_exec_index(
             config,
             &executor_client,
             &best_socket,
@@ -441,21 +696,24 @@ impl ConsensusNode {
             storage_path,
             protocol_keypair,
             network_keypair,
+            epoch_duration_from_go,
+            is_lagging,
         })
     }
 
     /// Determines the effective last global execution index from local Go, peers, and persisted state.
+    /// Returns (effective_index, is_lagging).
     async fn calculate_last_global_exec_index(
         config: &NodeConfig,
         executor_client: &Arc<ExecutorClient>,
         best_socket: &str,
         peer_last_block: u64,
-    ) -> u64 {
+    ) -> (u64, bool) {
         if !config.executor_read_enabled {
-            return 0;
+            return (0, false);
         }
 
-        let local_go_block = executor_client.get_last_block_number().await.unwrap_or(0);
+        let (local_go_block, _go_ready) = executor_client.get_last_block_number().await.unwrap_or((0, false));
         let storage_path = &config.storage_path;
 
         let (persisted_index, persisted_commit) =
@@ -488,19 +746,21 @@ impl ConsensusNode {
             if local_go_block > peer_last_block + 5 {
                 warn!("🚨 [STARTUP] STALE CHAIN DETECTED: Local ({}) is ahead of Peer ({})! Forcing resync from Peer.", 
                        local_go_block, peer_last_block);
-                peer_last_block
+                (peer_last_block, false)
             } else if local_go_block < peer_last_block.saturating_sub(5) {
+                let lag = peer_last_block - local_go_block;
                 info!(
                     "ℹ️ [STARTUP] Local Go Master ({}) is behind Peer ({}) by {} blocks. Using Local {} to trigger recovery/backfill.",
-                    local_go_block, peer_last_block, peer_last_block - local_go_block, local_go_block
+                    local_go_block, peer_last_block, lag, local_go_block
                 );
-                local_go_block
+                // Flag as lagging if behind by more than 50 blocks
+                (local_go_block, lag > 50)
             } else {
                 info!(
                     "✅ [STARTUP] Local and Peer are in sync (Local={}, Peer={}). Using Local Go as authoritative.",
                     local_go_block, peer_last_block
                 );
-                local_go_block
+                (local_go_block, false)
             }
         } else {
             if persisted_index > local_go_block {
@@ -511,7 +771,7 @@ impl ConsensusNode {
                 "📊 [STARTUP] No peer reference, using Local Go Last Block: {}",
                 local_go_block
             );
-            local_go_block
+            (local_go_block, false)
         }
     }
 
@@ -566,6 +826,34 @@ impl ConsensusNode {
         let shared_last_global_exec_index =
             Arc::new(tokio::sync::Mutex::new(storage.epoch_base_exec_index));
 
+        // ═══════════════════════════════════════════════════════════════════
+        // FORK-SAFETY: Detect empty DAG BEFORE commit_processor creation.
+        // When DAG is empty (snapshot restore), create cold_start flag for
+        // CommitProcessor's GEI-based stale commit filter.
+        // MOVED HERE so commit_processor can use cold_start immediately.
+        // ═══════════════════════════════════════════════════════════════════
+        let dag_has_history = {
+            let epoch_db = config
+                .storage_path
+                .join("epochs")
+                .join(format!("epoch_{}", storage.current_epoch))
+                .join("consensus_db");
+            epoch_db.exists()
+                && std::fs::read_dir(&epoch_db)
+                    .map(|mut entries| entries.next().is_some())
+                    .unwrap_or(false)
+        };
+        let cold_start = Arc::new(std::sync::atomic::AtomicBool::new(
+            !dag_has_history && storage.is_in_committee && storage.current_epoch > 0
+        ));
+        if !dag_has_history && storage.is_in_committee && storage.current_epoch > 0 {
+            warn!(
+                "⚠️ [FORK-SAFETY] DAG storage empty for epoch {} — cold-start guard active. \
+                 Node will vote in DAG but skip stale replay commits until live rounds detected.",
+                storage.current_epoch
+            );
+        }
+
         let mut commit_processor = crate::consensus::commit_processor::CommitProcessor::new(
             commit_receiver,
         )
@@ -603,7 +891,15 @@ impl ConsensusNode {
                 storage.validator_eth_addresses.clone(),
             );
             Arc::new(tokio::sync::Mutex::new(map))
-        });
+        })
+        .with_cold_start(cold_start.clone())
+        .with_cold_start_skip_gei(
+            if !dag_has_history && storage.is_in_committee && storage.current_epoch > 0 {
+                u64::MAX  // Block ALL commits — mode_transition processor will handle them
+            } else {
+                0  // Normal operation — no GEI skip needed
+            }
+        );
 
         // ExecutorClient for commit processing
         let initial_next_expected = if config.executor_read_enabled {
@@ -612,15 +908,30 @@ impl ConsensusNode {
             1
         };
 
+        // MOVED UP: Create system_transaction_provider BEFORE executor_client_for_proc
+        // so we can wire the go_lag_handle for backpressure
+        let epoch_duration_seconds = storage.epoch_duration_from_go;
+        let system_transaction_provider = Arc::new(DefaultSystemTransactionProvider::new(
+            storage.current_epoch,
+            epoch_duration_seconds,
+            storage.epoch_timestamp_ms,
+            config.time_based_epoch_change,
+        ));
+
         let executor_client_for_proc = if config.executor_read_enabled {
-            Arc::new(ExecutorClient::new_with_initial_index(
+            let mut client = ExecutorClient::new_with_initial_index(
                 true,
                 config.executor_commit_enabled,
                 config.executor_send_socket_path.clone(),
                 config.executor_receive_socket_path.clone(),
                 initial_next_expected,
                 Some(config.storage_path.clone()),
-            ))
+            );
+            // BACKPRESSURE: Wire go_lag_handle from SystemTransactionProvider into ExecutorClient
+            // This creates the feedback loop: flush_buffer() computes lag → updates go_lag
+            // → SystemTransactionProvider checks go_lag before emitting EndOfEpoch
+            client.set_go_lag_handle(system_transaction_provider.go_lag_handle());
+            Arc::new(client)
         } else {
             Arc::new(ExecutorClient::new(
                 false,
@@ -636,13 +947,15 @@ impl ConsensusNode {
             executor_client_for_init.initialize_from_go().await;
         });
 
+
         // ♻️ TX Recycler: Create shared instance for tracking and recycling uncommitted TXs
         let tx_recycler = Arc::new(crate::consensus::tx_recycler::TxRecycler::new());
         info!("♻️ [TX RECYCLER] Created shared TxRecycler instance");
 
         commit_processor = commit_processor
             .with_executor_client(executor_client_for_proc.clone())
-            .with_tx_recycler(tx_recycler.clone());
+            .with_tx_recycler(tx_recycler.clone())
+            .with_cold_start(cold_start.clone());
 
         // Spawn background recycler is done in setup_epoch_management where tx_client is accessible
 
@@ -687,16 +1000,12 @@ impl ConsensusNode {
         std::fs::create_dir_all(&db_path)?;
         parameters.db_path = db_path;
 
-        let epoch_duration_seconds = config.epoch_duration_seconds.unwrap_or(180);
-        let system_transaction_provider = Arc::new(DefaultSystemTransactionProvider::new(
-            storage.current_epoch,
-            epoch_duration_seconds,
-            storage.epoch_timestamp_ms,
-            config.time_based_epoch_change,
-        ));
+        // system_transaction_provider and epoch_duration_seconds are created earlier
+        // (before executor_client_for_proc) for backpressure wiring
 
         // Start authority or hold commit_consumer for SyncOnly
-        let (authority, commit_consumer_holder) = if storage.is_in_committee {
+        let start_as_validator = storage.is_in_committee && !storage.is_lagging && (dag_has_history || storage.current_epoch == 0);
+        let (authority, commit_consumer_holder) = if start_as_validator {
             info!("🚀 Starting consensus authority node...");
             (
                 Some(
@@ -724,8 +1033,12 @@ impl ConsensusNode {
                 None,
             )
         } else {
-            info!("🔄 Starting as sync-only node");
-            info!("📡 Keeping commit_consumer alive for SyncOnly mode to prevent channel close");
+            if storage.is_in_committee {
+                info!("🔄 Node is a Validator but is lagging behind. Starting as SyncOnly temporarily for catch-up...");
+            } else {
+                info!("🔄 Starting as sync-only node");
+            }
+            info!("📡 Keeping commit_consumer alive for SyncOnly/Catch-up mode to prevent channel close");
             (None, Some(commit_consumer))
         };
 
@@ -739,6 +1052,8 @@ impl ConsensusNode {
 
         Ok(ConsensusSetup {
             authority,
+            dag_has_history,
+            cold_start,
             commit_consumer_holder,
             transaction_client_proxy,
             executor_client_for_proc,
@@ -831,10 +1146,15 @@ impl ConsensusNode {
                 config.epochs_to_keep,
             )),
             node_mode: if storage.is_in_committee {
-                NodeMode::Validator
+                if storage.is_lagging || (!consensus.dag_has_history && storage.current_epoch > 0) {
+                    NodeMode::SyncingUp
+                } else {
+                    NodeMode::Validator
+                }
             } else {
                 NodeMode::SyncOnly
             },
+            cold_start: !consensus.dag_has_history && storage.is_in_committee && storage.current_epoch > 0,
             execution_lock: Arc::new(tokio::sync::RwLock::new(storage.current_epoch)),
             reconfig_state: Arc::new(tokio::sync::RwLock::new(ReconfigState::default())),
             transaction_client_proxy: consensus.transaction_client_proxy,

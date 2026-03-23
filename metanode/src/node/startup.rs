@@ -88,26 +88,22 @@ impl InitializedNode {
         // Get transaction submitter for servers
         let tx_client = { node.lock().await.transaction_submitter() };
 
-        let mut rpc_server_handle = None;
+        let rpc_server_handle;
         let uds_server_handle;
         let mut peer_rpc_server_handle = None;
 
-        if let Some(ref tx_client) = tx_client {
-            // Start RPC server for client submissions (HTTP) - only for validator nodes
-            let rpc_port = node_config.metrics_port + 1000;
-            let node_for_rpc = node.clone();
-            let rpc_server =
-                RpcServer::with_node(tx_client.clone(), rpc_port, node_for_rpc.clone());
-            rpc_server_handle = Some(tokio::spawn(async move {
-                if let Err(e) = rpc_server.start().await {
-                    error!("RPC server error: {}", e);
-                }
-            }));
-            info!("Consensus node started successfully (validator mode)");
-            info!("RPC server available at http://127.0.0.1:{}", rpc_port);
-        } else {
-            info!("Sync-only node started (no RPC server, UDS forwarding enabled)");
-        }
+        // Start RPC server for client submissions (HTTP)
+        // ALWAY start RPC Server. For SyncOnly nodes that are catching up, they still need the port open
+        // so that clients can connect (the transactions will just be rejected/queued until caught up).
+        let rpc_port = node_config.metrics_port + 1000;
+        let node_for_rpc = node.clone();
+        let rpc_server = RpcServer::with_node(rpc_port, node_for_rpc);
+        rpc_server_handle = Some(tokio::spawn(async move {
+            if let Err(e) = rpc_server.start().await {
+                error!("RPC server error: {}", e);
+            }
+        }));
+        info!("RPC server available at http://127.0.0.1:{}", rpc_port);
 
         // Start Unix Domain Socket server for ALL node types (validator + SyncOnly)
         // Validators submit directly to consensus; SyncOnly forwards to validators via peer RPC
@@ -198,7 +194,7 @@ impl InitializedNode {
                     let node_guard = node.lock().await;
                     (
                         node_guard.executor_client.clone(),
-                        Some(node_guard.shared_last_global_exec_index.clone())
+                        Some(node_guard.shared_last_global_exec_index.clone()),
                     )
                 };
                 if let Some(exc) = executor_client_for_peer {
@@ -207,13 +203,12 @@ impl InitializedNode {
                         peer_port,
                         node_config.network_address.clone(),
                         exc,
-                        shared_index_for_peer.unwrap_or_else(|| std::sync::Arc::new(tokio::sync::Mutex::new(0))),
+                        shared_index_for_peer
+                            .unwrap_or_else(|| std::sync::Arc::new(tokio::sync::Mutex::new(0))),
                     );
-                    // Inject transaction submitter so validators can accept forwarded TXs from SyncOnly nodes
-                    if let Some(ref submitter) = tx_client {
-                        peer_server = peer_server.with_transaction_submitter(submitter.clone());
-                        info!("📡 [PEER RPC] Transaction submitter injected for /submit_transaction endpoint");
-                    }
+                    // Inject dynamic node reference instead of static transaction submitter
+                    peer_server = peer_server.with_node(node.clone());
+                    info!("📡 [PEER RPC] Node reference injected for dynamic transaction routing");
                     peer_rpc_server_handle = Some(tokio::spawn(async move {
                         if let Err(e) = peer_server.start().await {
                             error!("Peer RPC server error: {}", e);
@@ -257,20 +252,79 @@ impl InitializedNode {
             }
         };
 
-        if let Some(cm) = catchup_manager {
-            info!("⏳ [STARTUP] Verifying sync status before joining consensus...");
-            let _check_interval = std::time::Duration::from_secs(2); // kept for reference
-            let timeout = std::time::Duration::from_secs(600); // 10 minutes timeout
+        // ═══════════════════════════════════════════════════════════════════════
+        // SNAPSHOT RESTORE SUPPORT for SyncOnly nodes:
+        // Previously, SyncOnly skipped catchup entirely, causing nodes restored
+        // from Go snapshot to get stuck (commit_syncer at stale epoch = "Not
+        // enough votes"). Now we run a LIGHTWEIGHT epoch-catchup: sync Go blocks
+        // from peers until Go reaches the current network epoch. After Go catches
+        // up, the existing epoch_monitor detects the epoch change and triggers
+        // consensus restart at the correct epoch. Combined with the cold-start
+        // fast-forward in commit_syncer, the node does NOT need Rust consensus
+        // storage copied from another node.
+        //
+        // The old deadlock (can't match epoch without blocks, can't get blocks
+        // without matching epoch) is broken by sync_go_to_current_epoch() which
+        // fetches blocks from peer Go nodes regardless of epoch match.
+        // ═══════════════════════════════════════════════════════════════════════
+        let is_sync_only_mode = {
+            let node_guard = self.node.lock().await;
+            matches!(node_guard.node_mode, crate::node::NodeMode::SyncOnly)
+        };
+
+        if is_sync_only_mode {
+            // SyncOnly: Run lightweight epoch-catchup only (no consensus join wait)
+            if let Some(ref cm) = catchup_manager {
+                info!("📋 [STARTUP] SyncOnly mode: running epoch-catchup before sync_loop...");
+                let local_epoch = {
+                    let node_guard = self.node.lock().await;
+                    node_guard.current_epoch
+                };
+                match cm.check_sync_status(local_epoch, 0).await {
+                    Ok(status) if !status.epoch_match => {
+                        info!(
+                            "🔄 [STARTUP] SyncOnly epoch mismatch: Local={}, Network={}. Syncing Go blocks...",
+                            local_epoch, status.go_epoch
+                        );
+                        match cm.sync_go_to_current_epoch(status.go_epoch).await {
+                            Ok(synced) => {
+                                info!(
+                                    "✅ [STARTUP] SyncOnly epoch-catchup complete: {} blocks synced. \
+                                     epoch_monitor will handle consensus restart at correct epoch.",
+                                    synced
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "⚠️ [STARTUP] SyncOnly epoch-catchup failed: {}. \
+                                     sync_loop will handle catchup at runtime.",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        info!("✅ [STARTUP] SyncOnly: epoch matches network, no catchup needed.");
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [STARTUP] SyncOnly sync status check failed: {}. Proceeding.", e);
+                    }
+                }
+            } else {
+                info!("📋 [STARTUP] SyncOnly mode: no executor client, skipping catchup.");
+            }
+        } else if let Some(cm) = catchup_manager {
+            let is_syncing_up_mode = {
+                let node_guard = self.node.lock().await;
+                matches!(node_guard.node_mode, crate::node::NodeMode::SyncingUp)
+            };
+
+            if is_syncing_up_mode {
+                info!("⏳ [STARTUP] Verifying sync status before joining consensus...");
+                let timeout = std::time::Duration::from_secs(600); // 10 minutes timeout
             let start = std::time::Instant::now();
 
-            // Force SyncingUp mode while waiting
-            {
-                let mut node_guard = self.node.lock().await;
-                if node_guard.node_mode == crate::node::NodeMode::Validator {
-                    info!("🔄 [STARTUP] Switching to SyncingUp mode while waiting for catchup");
-                    node_guard.node_mode = crate::node::NodeMode::SyncingUp;
-                }
-            }
+                // Node is already in SyncingUp mode, we just wait.
 
             loop {
                 // Check timeout
@@ -304,6 +358,26 @@ impl InitializedNode {
                                 "✅ [STARTUP] Node is synced (gap={}). Joining consensus!",
                                 status.commit_gap
                             );
+                            // CRITICAL FIX: Update Rust's internal state to match the synced network state
+                            // If Rust started with epoch 0 but Go and the Network are at epoch N,
+                            // we must update Rust's state before joining consensus, otherwise it starts at epoch 0!
+                            {
+                                let mut node = self.node.lock().await;
+                                if node.current_epoch != status.go_epoch {
+                                    info!(
+                                        "🔄 [STARTUP] Updating Rust internal epoch {} -> {} (Network Epoch)",
+                                        node.current_epoch, status.go_epoch
+                                    );
+                                    node.current_epoch = status.go_epoch;
+                                }
+                                if node.last_global_exec_index < status.network_commit {
+                                    info!(
+                                        "🔄 [STARTUP] Updating Rust internal exec_index {} -> {} (Network Commit)",
+                                        node.last_global_exec_index, status.network_commit
+                                    );
+                                    node.last_global_exec_index = status.network_commit;
+                                }
+                            }
                             break;
                         }
 
@@ -361,10 +435,33 @@ impl InitializedNode {
                                 warn!("⚠️ [CATCHUP] Block sync from peers failed: {}", e);
                             }
                         } else {
+                            // ═══════════════════════════════════════════════════
+                            // CROSS-EPOCH BLOCK SYNC (Snapshot Restore Support)
+                            // Go is at a different epoch than the network.
+                            // Fetch blocks from peer Go nodes until Go catches up
+                            // to the current network epoch. This enables nodes to
+                            // start from only a Go snapshot without Rust data.
+                            // ═══════════════════════════════════════════════════
                             info!(
-                                "🔄 [CATCHUP] Syncing epoch: Local={}, Network={}",
+                                "🔄 [CATCHUP] Epoch mismatch: GoLocal={}, Network={}. Syncing Go blocks to reach target epoch...",
                                 local_epoch, status.go_epoch
                             );
+                            match cm.sync_go_to_current_epoch(status.go_epoch).await {
+                                Ok(synced) => {
+                                    info!(
+                                        "✅ [CATCHUP] Cross-epoch sync complete: {} blocks synced. Go should now be at epoch {}.",
+                                        synced, status.go_epoch
+                                    );
+                                    // Don't delay — immediately re-check sync status
+                                    continue;
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "⚠️ [CATCHUP] Cross-epoch sync failed: {}. Will retry...",
+                                        e
+                                    );
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -372,24 +469,283 @@ impl InitializedNode {
                     }
                 }
 
-                // Dynamic delay: 200ms for near-caught-up (much faster than original 2s)
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    // Dynamic delay: 200ms for near-caught-up (much faster than original 2s)
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            } else {
+                // ═══════════════════════════════════════════════════════════════
+                // SNAPSHOT RESTORE: Even when "not lagging" (no peer reference),
+                // the node may be behind by entire epochs after snapshot restore.
+                // Check if Go epoch matches network epoch — if not, sync Go
+                // blocks from peers until Go catches up to the current epoch.
+                // Without this, the node joins consensus at a stale epoch and
+                // commit_syncer fails with "wrong epoch" on every fetch.
+                // ═══════════════════════════════════════════════════════════════
+                info!("✅ [STARTUP] Node is starting directly as Validator (lag is below threshold). Checking epoch match before proceeding...");
+                let local_epoch = {
+                    let node_guard = self.node.lock().await;
+                    node_guard.current_epoch
+                };
+                match cm.check_sync_status(local_epoch, 0).await {
+                    Ok(status) if !status.epoch_match => {
+                        warn!(
+                            "🔄 [STARTUP] Epoch mismatch detected at Validator startup: Local epoch={}, Network epoch={}. Running cross-epoch sync...",
+                            local_epoch, status.go_epoch
+                        );
+                        match cm.sync_go_to_current_epoch(status.go_epoch).await {
+                            Ok(synced) => {
+                                info!(
+                                    "✅ [STARTUP] Cross-epoch sync complete: {} blocks synced. epoch_monitor will handle transition.",
+                                    synced
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "⚠️ [STARTUP] Cross-epoch sync failed: {}. Proceeding anyway — epoch_monitor may handle it later.",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Ok(status) if status.block_gap > 10 => {
+                        // ═══════════════════════════════════════════════════════
+                        // SNAPSHOT RESTORE BLOCK GAP FIX: Epoch matches, but Go
+                        // is behind network by >10 blocks (e.g., snapshot at 3050
+                        // but network at 3255). Without syncing these blocks from
+                        // peers FIRST, the Rust commit processor will ask Go for
+                        // blocks that don't exist yet, and block sync keeps
+                        // requesting from Go Master returning 0 blocks forever.
+                        // ═══════════════════════════════════════════════════════
+                        warn!(
+                            "🔄 [STARTUP] Epoch matches but Go is behind by {} blocks (Go={}, Network={}). Syncing gap from peers...",
+                            status.block_gap, status.go_last_block, status.network_block_height
+                        );
+                        let mut current_go_block = status.go_last_block;
+                        let target = status.network_block_height;
+                        let mut total_synced = 0u64;
+                        while current_go_block < target {
+                            let fetch_to = std::cmp::min(current_go_block + 50, target);
+                            match cm.sync_blocks_from_peers(current_go_block, fetch_to).await {
+                                Ok(synced) => {
+                                    if synced == 0 { break; }
+                                    current_go_block += synced;
+                                    total_synced += synced;
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ [STARTUP] Block gap sync failed: {}. Proceeding — commit processor will retry.", e);
+                                    break;
+                                }
+                            }
+                        }
+                        info!(
+                            "✅ [STARTUP] Block gap sync complete: {} blocks synced. Go should be near block {}.",
+                            total_synced, current_go_block
+                        );
+                    }
+                    Ok(_) => {
+                        info!("✅ [STARTUP] Epoch matches network and block gap is small. Consensus syncing will handle any minor lag.");
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [STARTUP] Epoch check failed: {}. Proceeding anyway.", e);
+                    }
+                }
             }
 
-            // Restore Validator mode
-            {
+            // Restore Validator mode by triggering a mode-only transition
+            let was_syncing_up = {
+                let node_guard = self.node.lock().await;
+                node_guard.node_mode == crate::node::NodeMode::SyncingUp
+            };
+
+            if was_syncing_up {
+                // Check if this is a cold-start restore
+                let is_cold_start = {
+                    let node_guard = self.node.lock().await;
+                    node_guard.cold_start
+                };
+
+                if is_cold_start {
+                    // ═══════════════════════════════════════════════════════
+                    // COLD-START RESTORE: Sync blocks from peers FIRST.
+                    //
+                    // CRITICAL: ConsensusAuthority CANNOT start with a fresh
+                    // DAG — it creates genesis blocks with incompatible hashes.
+                    // All subsequent commits would produce different blocks
+                    // than the network (different timestamps → hash fork).
+                    //
+                    // Flow: Phase 1 (peer sync) → Phase 2 (set exec_index) →
+                    //       Phase 3 (start authority) → Phase 4 (DualStream overlap)
+                    // ═══════════════════════════════════════════════════════
+                    warn!(
+                        "🚨 [COLD-START] DAG was wiped (snapshot restore). Syncing blocks from peers \
+                         FIRST, then joining consensus with correct exec_index."
+                    );
+
+                    let executor_client_opt = self.node.lock().await.executor_client.clone();
+                    if let Some(executor_client) = executor_client_opt {
+                        let catchup_manager = crate::node::catchup::CatchupManager::new(
+                            executor_client.clone(),
+                            self.node_config.executor_receive_socket_path.clone(),
+                            self.node_config.peer_rpc_addresses.clone(),
+                        );
+
+                        let mut last_log_block: u64 = 0;
+
+                        // Phase 1: Sync Go blocks from peers until caught up
+                        info!("📋 [COLD-START] Phase 1: Syncing Go blocks from peers...");
+                        loop {
+                            let go_block = match executor_client.get_last_block_number().await {
+                                Ok((b, is_ready)) => {
+                                    if !is_ready {
+                                        info!("⏳ [COLD-START] Go Master DB is not yet ready. Waiting...");
+                                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                        continue;
+                                    }
+                                    b
+                                }
+                                Err(_) => {
+                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                    continue;
+                                }
+                            };
+
+                            match crate::network::peer_rpc::query_peer_epochs_network(
+                                &self.node_config.peer_rpc_addresses
+                            ).await {
+                                Ok((net_epoch, net_block, _peer, net_commit)) => {
+                                    if go_block < net_block {
+                                        let gap = net_block - go_block;
+                                        if go_block != last_log_block {
+                                            info!(
+                                                "🔄 [COLD-START SYNC] Go={}, Network={}, Gap={} blocks. Fetching...",
+                                                go_block, net_block, gap
+                                            );
+                                            last_log_block = go_block;
+                                        }
+                                        let fetch_to = std::cmp::min(go_block + 500, net_block);
+                                        match catchup_manager.sync_blocks_from_peers(go_block, fetch_to).await {
+                                            Ok(synced) if synced > 0 => {
+                                                info!(
+                                                    "✅ [COLD-START SYNC] Synced {} blocks (Go now at ~{})",
+                                                    synced, go_block + synced
+                                                );
+                                                if gap > 100 { continue; }
+                                            }
+                                            _ => {}
+                                        }
+
+                                        // Caught up when gap is small
+                                        if gap <= 5 {
+                                            info!(
+                                                "✅ [COLD-START] Phase 1 complete! Go={}, Network block={}, commit={}. \
+                                                 Joining consensus...",
+                                                go_block, net_block, net_commit
+                                            );
+                                            // Phase 2: Set exec_index to network's current commit
+                                            {
+                                                let mut node_guard = self.node.lock().await;
+                                                let old_exec = node_guard.last_global_exec_index;
+                                                node_guard.last_global_exec_index = net_commit;
+                                                node_guard.current_epoch = net_epoch;
+                                                // NOTE: Do NOT reset cold_start here!
+                                                // mode_transition.rs needs cold_start=true to enable
+                                                // amnesia recovery (FetchOwnLastBlock). It will be
+                                                // reset to false after ConsensusAuthority starts.
+                                                info!(
+                                                    "📋 [COLD-START] Phase 2: Updated exec_index {} → {} (network commit). \
+                                                     Epoch set to {}. cold_start remains true for amnesia recovery.",
+                                                    old_exec, net_commit, net_epoch
+                                                );
+                                            }
+                                            break;
+                                        }
+                                    } else {
+                                        info!(
+                                            "✅ [COLD-START] Go={} already caught up with Network={}. commit={}",
+                                            go_block, net_block, net_commit
+                                        );
+                                        {
+                                            let mut node_guard = self.node.lock().await;
+                                            let old_exec = node_guard.last_global_exec_index;
+                                            node_guard.last_global_exec_index = net_commit;
+                                            node_guard.current_epoch = net_epoch;
+                                            // NOTE: Do NOT reset cold_start here!
+                                            // mode_transition.rs needs cold_start=true for amnesia recovery.
+                                            info!(
+                                                "📋 [COLD-START] Updated exec_index {} → {} (network commit). Epoch={}. \
+                                                 cold_start remains true for amnesia recovery.",
+                                                old_exec, net_commit, net_epoch
+                                            );
+                                        }
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ [COLD-START SYNC] Peer query failed: {}", e);
+                                }
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                    }
+                }
+
+                // Phase 3: Start ConsensusAuthority
+                info!("✅ [STARTUP] Catch-up complete. Starting ConsensusAuthority for Validator...");
+                let (new_epoch, new_exec_index) = {
+                    let node_guard = self.node.lock().await;
+                    (node_guard.current_epoch, node_guard.last_global_exec_index)
+                };
                 let mut node_guard = self.node.lock().await;
-                // Only switch if we intended to be a validator (based on committee)
-                // We re-run check_and_update_node_mode to determine correct mode
-                let _config = node_guard.protocol_config.clone(); // Need config... wait, protocol_config is strict.
-                                                                  // We need NodeConfig. It is not stored in ConsensusNode except parts.
-                                                                  // But we can just set to Validator if it was SyncingUp.
-                                                                  // Actually, check_and_update_node_mode requires Committee and NodeConfig.
-                                                                  // We don't have them easily here.
-                                                                  // Simpler: Set to Validator.
-                if node_guard.node_mode == crate::node::NodeMode::SyncingUp {
-                    info!("✅ [STARTUP] Switching to Validator mode");
+                
+                if let Err(e) = crate::node::transition::mode_transition::transition_mode_only(
+                    &mut *node_guard,
+                    new_epoch,
+                    0,
+                    new_exec_index,
+                    &self.node_config,
+                ).await {
+                    error!("❌ [STARTUP] Failed to transition to Validator mode: {}", e);
                     node_guard.node_mode = crate::node::NodeMode::Validator;
+                } else {
+                    info!("✅ [STARTUP] Node is now a Validator at epoch {}! exec_index={}", new_epoch, new_exec_index);
+                }
+                
+                let executor_client_opt = node_guard.executor_client.clone();
+                drop(node_guard);
+
+                // ═══════════════════════════════════════════════════════════════
+                // Phase 4: DualStreamController for overlap period
+                //
+                // ConsensusAuthority just started and will begin delivering
+                // blocks via CommitProcessor. Meanwhile, the network may have
+                // advanced further during our Phase 1 sync. DualStreamController
+                // runs peer sync in background to fill any remaining gap.
+                //
+                // CRITICAL: Skip Phase 4 when cold_start! After snapshot restore,
+                // the commit processor replays ALL old DAG commits in the correct
+                // consensus-determined order. Starting peer sync simultaneously
+                // creates DUAL DELIVERY → Go receives blocks from two sources →
+                // different execution order → stateRoot divergence → FORK!
+                //
+                // The commit processor alone is the authoritative source.
+                // Convergence: When consensus delivers blocks for 10 consecutive
+                // rounds without peer sync contributing, peer sync stops.
+                // ═══════════════════════════════════════════════════════════════
+                if is_cold_start {
+                    info!(
+                        "⏭️ [STARTUP] Phase 4: SKIPPING DualStreamController (cold_start=true). \
+                         Commit processor is the sole block source to prevent fork from dual delivery."
+                    );
+                } else if let Some(executor_client) = executor_client_opt {
+                    let peer_addrs = self.node_config.peer_rpc_addresses.clone();
+                    if !peer_addrs.is_empty() {
+                        info!("🔄 [STARTUP] Phase 4: Spawning DualStreamController for consensus/peer overlap...");
+                        let controller = crate::node::dual_stream::DualStreamController::new(
+                            executor_client,
+                            peer_addrs,
+                        );
+                        let _dual_stream_handle = controller.spawn_block_sync_stream();
+                    }
                 }
             }
         }

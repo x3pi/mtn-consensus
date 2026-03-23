@@ -38,6 +38,7 @@ impl PeerGoClient {
     }
 
     /// Create from string address (e.g., "192.168.1.100:9001")
+    #[allow(dead_code)]
     pub fn from_str(addr: &str) -> Result<Self> {
         let peer_addr: SocketAddr = addr
             .parse()
@@ -54,6 +55,7 @@ impl PeerGoClient {
 
     /// Fetch blocks from peer's Go layer
     /// Returns blocks in the range [from_block, to_block] (inclusive)
+    #[allow(dead_code)]
     pub async fn get_blocks_range(&self, from_block: u64, to_block: u64) -> Result<Vec<BlockData>> {
         debug!(
             "📤 [PEER-GO] Requesting blocks {} to {} from peer {}",
@@ -216,7 +218,7 @@ impl PeerGoClient {
     pub async fn get_epoch_boundary_data(
         &self,
         epoch: u64,
-    ) -> Result<(u64, u64, u64, Vec<proto::ValidatorInfo>)> {
+    ) -> Result<(u64, u64, u64, Vec<proto::ValidatorInfo>, u64)> {
         let connect_timeout = Duration::from_secs(self.timeout_secs);
         let mut stream = timeout(connect_timeout, TcpStream::connect(self.peer_addr))
             .await
@@ -244,12 +246,20 @@ impl PeerGoClient {
 
         let response = Response::decode(&response_buf[..])?;
         match response.payload {
-            Some(proto::response::Payload::EpochBoundaryData(data)) => Ok((
-                data.epoch,
-                data.epoch_start_timestamp_ms,
-                data.boundary_block,
-                data.validators,
-            )),
+            Some(proto::response::Payload::EpochBoundaryData(data)) => {
+                let epoch_duration = if data.epoch_duration_seconds > 0 {
+                    data.epoch_duration_seconds
+                } else {
+                    900
+                };
+                Ok((
+                    data.epoch,
+                    data.epoch_start_timestamp_ms,
+                    data.boundary_block,
+                    data.validators,
+                    epoch_duration,
+                ))
+            }
             Some(proto::response::Payload::Error(e)) => Err(anyhow::anyhow!("Peer error: {}", e)),
             _ => Err(anyhow::anyhow!("Unexpected response type")),
         }

@@ -9,7 +9,7 @@ use parking_lot::RwLock;
 
 use crate::{
     base_committer::BaseCommitter,
-    block::{GENESIS_ROUND, Slot},
+    block::{Slot, GENESIS_ROUND},
     commit::{DecidedLeader, Decision},
     context::Context,
     dag_state::DagState,

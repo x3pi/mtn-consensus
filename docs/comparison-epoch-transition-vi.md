@@ -39,16 +39,16 @@ Trong chế độ SyncOnly, node không tham gia tạo block nên không biết 
 
 ### Quy Trình Kích Hoạt:
 1.  **External Sync**: Go Master (Execution Layer) đồng bộ blocks từ các peers khác trong mạng qua P2P.
-2.  **Polling**: Task `EpochMonitor` trong Rust Metanode định kỳ (mặc định 5s) gọi API `get_current_epoch()` sang Go.
+2.  **Polling**: Task `Unified EpochMonitor` trong Rust Metanode định kỳ (mặc định 10s, cấu hình qua `epoch_monitor_poll_interval_secs`) gọi API `get_current_epoch()` sang Go và query các TCP peers.
 3.  **Detection**:
     *   Monitor phát hiện `go_epoch > current_rust_epoch`.
     *   Điều này có nghĩa là mạng lưới đã đi sang epoch mới.
 4.  **Safety Barrier (Quan Trọng)**:
     *   Node kiểm tra xem Go Master đã thực sự tải hết block của epoch cũ chưa.
-    *   Kiểm tra `Peer Last Block` vs `Local Go Last Block`.
+    *   Sử dụng `EpochTransitionManager` để đảm bảo chỉ có 1 transition chạy tại một thời điểm.
 5.  **Local Transition**:
-    *   Nếu node phát hiện mình có tên trong Committee mới, nó gọi `transition_to_epoch`.
-    *   Nếu không, nó chỉ cập nhật metadata nội bộ và tiếp tục sync.
+    *   Nếu node phát hiện mình có tên trong Committee mới, nó gọi `transition_to_epoch_from_system_tx()`.
+    *   Nếu không, nó chỉ advance Go epoch và tiếp tục sync.
 
 > **Đặc điểm chính**: Node SyncOnly luôn đi sau (lag) mạng lưới một chút. Nó không tự quyết định thời điểm chuyển epoch mà "phản ứng" lại trạng thái của mạng.
 
@@ -79,5 +79,5 @@ Do SyncOnly không có consensus stream liên tục, nó rất dễ bị tình t
 
 ## 5. Kết Luận
 
-*   Nếu bạn đang debug **Validator**: Hãy nhìn vào `CommitProcessor` và các `SystemTransaction`. Lỗi thường nằm ở việc không thống nhất được index.
-*   Nếu bạn đang debug **SyncOnly/Promotion**: Hãy nhìn vào `EpochMonitor` và kết nối RPC với Go. Lỗi thường nằm ở việc Go chưa sync kịp (network lag) hoặc cấu hình peer không đúng.
+*   Nếu bạn đang debug **Validator**: Hãy nhìn vào `CommitProcessor`, `EpochTransitionManager`, và các `SystemTransaction`. Lỗi thường nằm ở việc không thống nhất được index.
+*   Nếu bạn đang debug **SyncOnly/Promotion**: Hãy nhìn vào `Unified EpochMonitor` và `rust_sync_node`. Lỗi thường nằm ở việc Go chưa sync kịp (network lag) hoặc cấu hình `peer_rpc_addresses` không đúng.

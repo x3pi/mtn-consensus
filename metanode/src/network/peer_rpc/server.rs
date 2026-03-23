@@ -18,7 +18,6 @@ use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 use crate::node::executor_client::ExecutorClient;
-use crate::node::tx_submitter::TransactionSubmitter;
 
 use super::types::*;
 
@@ -32,8 +31,8 @@ pub struct PeerRpcServer {
     network_address: String,
     /// Executor client for querying Go Master
     executor_client: Arc<ExecutorClient>,
-    /// Optional transaction submitter for forwarding transactions to consensus
-    transaction_submitter: Option<Arc<dyn TransactionSubmitter>>,
+    /// Optional dynamic reference to the ConsensusNode for fetching the transaction_submitter
+    node: Option<Arc<tokio::sync::Mutex<crate::node::ConsensusNode>>>,
     /// Shared index to get the last global execution index
     shared_last_global_exec_index: Arc<tokio::sync::Mutex<u64>>,
 }
@@ -52,14 +51,14 @@ impl PeerRpcServer {
             port,
             network_address,
             executor_client,
-            transaction_submitter: None,
+            node: None,
             shared_last_global_exec_index,
         }
     }
 
-    /// Set transaction submitter for forwarding support (validators only)
-    pub fn with_transaction_submitter(mut self, submitter: Arc<dyn TransactionSubmitter>) -> Self {
-        self.transaction_submitter = Some(submitter);
+    /// Set node reference for dynamic transaction submitter fetching
+    pub fn with_node(mut self, node: Arc<tokio::sync::Mutex<crate::node::ConsensusNode>>) -> Self {
+        self.node = Some(node);
         self
     }
 
@@ -74,7 +73,7 @@ impl PeerRpcServer {
         );
 
         let executor_client = Arc::clone(&self.executor_client);
-        let transaction_submitter = self.transaction_submitter.clone();
+        let node_opt = self.node.clone();
         let node_id = self.node_id;
         let network_address = self.network_address.clone();
         let shared_index_arc = self.shared_last_global_exec_index.clone();
@@ -89,7 +88,7 @@ impl PeerRpcServer {
             };
 
             let executor = Arc::clone(&executor_client);
-            let submitter = transaction_submitter.clone();
+            let node = node_opt.clone();
             let net_addr = network_address.clone();
             let shared_exec_index = shared_index_arc.clone();
 
@@ -162,16 +161,24 @@ impl PeerRpcServer {
 
                 // Route request
                 if request.starts_with("GET /peer_info") {
-                    Self::handle_peer_info(&mut stream, &executor, node_id, &net_addr, &shared_exec_index).await;
+                    Self::handle_peer_info(
+                        &mut stream,
+                        &executor,
+                        node_id,
+                        &net_addr,
+                        &shared_exec_index,
+                    )
+                    .await;
                 } else if request.starts_with("GET /get_epoch_boundary_data") {
                     Self::handle_get_epoch_boundary_data(&mut stream, &executor, &request).await;
+                } else if request.starts_with("GET /get_executable_blocks") {
+                    Self::handle_get_executable_blocks(&mut stream, &executor, node_id, &request).await;
                 } else if request.starts_with("GET /get_blocks") {
                     Self::handle_get_blocks(&mut stream, &executor, node_id, &request).await;
                 } else if request.starts_with("GET /health") {
                     Self::handle_health(&mut stream).await;
                 } else if request.starts_with("POST /submit_transaction") {
-                    Self::handle_submit_transaction(&mut stream, submitter.as_ref(), &request)
-                        .await;
+                    Self::handle_submit_transaction(&mut stream, node.as_ref(), &request).await;
                 } else {
                     // Return 404 for unknown routes
                     let response = "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n{\"error\":\"Not Found\"}";
@@ -204,7 +211,7 @@ impl PeerRpcServer {
         };
 
         let last_block = match executor.get_last_block_number().await {
-            Ok(b) => b,
+            Ok((b, _)) => b,
             Err(e) => {
                 error!("🌐 [PEER RPC] Failed to get last block: {}", e);
                 let response = format!(
@@ -275,6 +282,7 @@ impl PeerRpcServer {
                 timestamp_ms: 0,
                 boundary_block: 0,
                 validators: vec![],
+                boundary_gei: 0,
                 error: Some("Missing or invalid 'epoch' parameter".to_string()),
             };
             let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
@@ -293,7 +301,7 @@ impl PeerRpcServer {
 
         // Fetch from local Go Master
         match executor.get_epoch_boundary_data(target_epoch).await {
-            Ok((epoch, timestamp_ms, boundary_block, validators)) => {
+            Ok((epoch, timestamp_ms, boundary_block, validators, _, boundary_gei)) => {
                 // Convert ValidatorInfo to ValidatorInfoSimple for JSON transport
                 let validators_simple: Vec<ValidatorInfoSimple> = validators
                     .iter()
@@ -312,6 +320,7 @@ impl PeerRpcServer {
                     timestamp_ms,
                     boundary_block,
                     validators: validators_simple,
+                    boundary_gei,
                     error: None,
                 };
 
@@ -340,6 +349,7 @@ impl PeerRpcServer {
                     timestamp_ms: 0,
                     boundary_block: 0,
                     validators: vec![],
+                    boundary_gei: 0,
                     error: Some(format!("{}", e)),
                 };
 
@@ -374,6 +384,114 @@ impl PeerRpcServer {
         None
     }
 
+    /// Handle /get_executable_blocks request
+    /// Reads ExecutableBlock protobuf bytes directly from Rust file store.
+    /// No Go PebbleDB involved — pure Rust-to-Rust sync.
+    /// URL format: GET /get_executable_blocks?from=X&to=Y
+    async fn handle_get_executable_blocks(
+        stream: &mut tokio::net::TcpStream,
+        executor: &Arc<ExecutorClient>,
+        node_id: usize,
+        request: &str,
+    ) {
+        let (from_block, to_block) = Self::parse_block_range(request);
+
+        let (Some(from), Some(to)) = (from_block, to_block) else {
+            let response = GetBlocksResponse {
+                node_id,
+                blocks: std::collections::HashMap::new(),
+                count: 0,
+                error: Some("Missing or invalid from/to parameters".to_string()),
+            };
+            let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+            let http_response = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{}",
+                json
+            );
+            let _ = stream.write_all(http_response.as_bytes()).await;
+            return;
+        };
+
+        let max_batch = 500u64;
+        let actual_to = std::cmp::min(to, from + max_batch - 1);
+
+        info!(
+            "🌐 [PEER RPC] /get_executable_blocks request: from={}, to={} (actual_to={})",
+            from, to, actual_to
+        );
+
+        // Read from Rust file store — no Go PebbleDB
+        let storage_path = match executor.storage_path() {
+            Some(p) => p,
+            None => {
+                let response = GetBlocksResponse {
+                    node_id,
+                    blocks: std::collections::HashMap::new(),
+                    count: 0,
+                    error: Some("No storage path configured".to_string()),
+                };
+                let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+                let http_response = format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{}",
+                    json
+                );
+                let _ = stream.write_all(http_response.as_bytes()).await;
+                return;
+            }
+        };
+
+        match crate::node::executor_client::block_store::load_executable_blocks_range(
+            storage_path,
+            from,
+            actual_to,
+        )
+        .await
+        {
+            Ok(block_list) => {
+                let mut blocks = std::collections::HashMap::new();
+                for (gei, data) in &block_list {
+                    blocks.insert(*gei, hex::encode(data));
+                }
+
+                let count = blocks.len();
+                info!("🌐 [PEER RPC] Returning {} executable blocks from Rust store", count);
+
+                let response = GetBlocksResponse {
+                    node_id,
+                    blocks,
+                    count,
+                    error: None,
+                };
+
+                let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+                let http_response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
+                    json
+                );
+
+                if let Err(e) = stream.write_all(http_response.as_bytes()).await {
+                    error!("🌐 [PEER RPC] Failed to write /get_executable_blocks response: {}", e);
+                }
+            }
+            Err(e) => {
+                warn!("🌐 [PEER RPC] Failed to load executable blocks from store: {}", e);
+                let response = GetBlocksResponse {
+                    node_id,
+                    blocks: std::collections::HashMap::new(),
+                    count: 0,
+                    error: Some(format!("Failed to load blocks: {}", e)),
+                };
+
+                let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+                let http_response = format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{}",
+                    json
+                );
+                let _ = stream.write_all(http_response.as_bytes()).await;
+            }
+        }
+    }
+
     /// Handle /get_blocks request
     /// URL format: GET /get_blocks?from=X&to=Y
     async fn handle_get_blocks(
@@ -402,7 +520,7 @@ impl PeerRpcServer {
         };
 
         // Limit batch size to prevent DoS or timeouts on huge blocks (200MB+)
-        let max_batch = 5u64;
+        let max_batch = 500u64;
         let actual_to = std::cmp::min(to, from + max_batch - 1);
 
         info!(
@@ -494,15 +612,12 @@ impl PeerRpcServer {
     }
 
     /// Handle /submit_transaction POST request
-    /// BROADCAST-ONLY MODE: This endpoint receives transactions broadcast from other validators.
-    /// It acknowledges receipt but does NOT submit them to local consensus.
-    /// Each TX should only enter consensus through the validator that received it directly
-    /// from the client. This prevents TX duplication in DAG proposals.
-    /// SyncOnly nodes still use forward_transaction_to_validators() which goes through
-    /// the UDS path on the target validator, so SyncOnly forwarding is unaffected.
+    /// Receives transactions forwarded from SyncOnly nodes and submits them to local consensus.
+    /// SyncOnly nodes use forward_transaction_to_validators() which sends TXs to this endpoint
+    /// on validator nodes. The validator must submit these TXs to its local consensus (DAG).
     async fn handle_submit_transaction(
         stream: &mut tokio::net::TcpStream,
-        _submitter: Option<&Arc<dyn TransactionSubmitter>>,
+        node: Option<&Arc<tokio::sync::Mutex<crate::node::ConsensusNode>>>,
         request: &str,
     ) {
         // Parse POST body - find content after double newline
@@ -535,25 +650,85 @@ impl PeerRpcServer {
 
         let tx_count = submit_req.transactions_hex.len();
 
-        // BROADCAST-ONLY: Acknowledge receipt without submitting to local consensus.
-        // This prevents TX duplication where the same TX appears in multiple validators'
-        // DAG proposals (e.g., 100K sent → 275K in blocks with 4 validators).
-        // The broadcasting validator already submitted these TXs to its own consensus.
-        info!(
-            "📡 [TX BROADCAST-RECV] Acknowledged {} TXs from peer broadcast (NOT submitting to local consensus)",
-            tx_count
-        );
+        let mut submitter = None;
+        if let Some(ref wrapped_node) = node {
+            submitter = wrapped_node.lock().await.transaction_submitter();
+        }
 
-        let response = SubmitTransactionResponse {
-            success: true,
-            count: tx_count,
-            error: None,
-        };
-        let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
-        let http_response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
-            json
-        );
-        let _ = stream.write_all(http_response.as_bytes()).await;
+        // Submit TXs to local consensus if submitter is available (validator nodes)
+        if let Some(submitter) = submitter {
+            // Decode all TX hex values into byte vectors
+            let mut all_tx_bytes: Vec<Vec<u8>> = Vec::with_capacity(tx_count);
+            let mut decode_errors = Vec::new();
+
+            for tx_hex in &submit_req.transactions_hex {
+                match hex::decode(tx_hex) {
+                    Ok(tx_bytes) => {
+                        all_tx_bytes.push(tx_bytes);
+                    }
+                    Err(e) => {
+                        decode_errors.push(format!("Hex decode error: {}", e));
+                    }
+                }
+            }
+
+            if !all_tx_bytes.is_empty() {
+                match submitter.submit(all_tx_bytes.clone()).await {
+                    Ok((_block_ref, _indices, _status_rx)) => {
+                        info!(
+                            "📡 [TX SUBMIT] Received {} TXs from peer, submitted {} to local consensus",
+                            tx_count, all_tx_bytes.len()
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "📡 [TX SUBMIT] Failed to submit {} TXs to consensus: {}",
+                            all_tx_bytes.len(), e
+                        );
+                        decode_errors.push(format!("Consensus submit error: {}", e));
+                    }
+                }
+            }
+
+            let submitted = if decode_errors.iter().any(|e| e.contains("Consensus submit")) {
+                0
+            } else {
+                all_tx_bytes.len()
+            };
+
+            let response = SubmitTransactionResponse {
+                success: decode_errors.is_empty(),
+                count: submitted,
+                error: if decode_errors.is_empty() {
+                    None
+                } else {
+                    Some(decode_errors.join("; "))
+                },
+            };
+            let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+            let http_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
+                json
+            );
+            let _ = stream.write_all(http_response.as_bytes()).await;
+        } else {
+            // No submitter available (SyncOnly node) — just acknowledge
+            info!(
+                "📡 [TX BROADCAST-RECV] Acknowledged {} TXs (no submitter — SyncOnly node)",
+                tx_count
+            );
+
+            let response = SubmitTransactionResponse {
+                success: true,
+                count: tx_count,
+                error: None,
+            };
+            let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+            let http_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
+                json
+            );
+            let _ = stream.write_all(http_response.as_bytes()).await;
+        }
     }
 }

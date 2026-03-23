@@ -7,7 +7,7 @@ use crate::node::tx_submitter::TransactionSubmitter;
 use crate::node::ConsensusNode;
 use anyhow::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{error, info, trace, warn};
+use tracing::{info, trace, warn};
 
 /// Recover transactions that were submitted in the previous epoch but not committed
 pub(super) async fn recover_epoch_pending_transactions(node: &mut ConsensusNode) -> Result<usize> {
@@ -37,19 +37,6 @@ pub(super) async fn recover_epoch_pending_transactions(node: &mut ConsensusNode)
     for tx_data in epoch_pending.iter() {
         let tx_hash = crate::types::tx_hash::calculate_transaction_hash(tx_data);
         let hash_hex = hex::encode(&tx_hash);
-
-        // Special debug logging for the problematic transaction
-        if hash_hex.starts_with("44a535f2") {
-            warn!(
-                "🔍 [DEBUG] Found problematic transaction {} in recovery. Checking registry...",
-                hash_hex
-            );
-            if committed_hashes.contains(&tx_hash) {
-                warn!("🔍 [DEBUG] Transaction {} WAS found in committed registry - this should prevent duplicate!", hash_hex);
-            } else {
-                error!("🔍 [DEBUG] Transaction {} NOT found in registry - this explains why it was sent twice!", hash_hex);
-            }
-        }
 
         if committed_hashes.contains(&tx_hash) {
             info!("⏭️ [EPOCH RECOVERY] Skipping already committed transaction: {} (found in epoch {} registry)",

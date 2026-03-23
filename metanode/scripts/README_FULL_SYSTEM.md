@@ -1,161 +1,117 @@
 # Scripts để chạy Full System
 
+> **⚠️ LƯU Ý:** File này mô tả kiến trúc cũ (`run_full_system.sh`). Hệ thống hiện tại sử dụng kiến trúc 5 nodes, mỗi node gồm **Go Master + Go Sub + Rust Metanode**. Xin tham khảo:
+> - [scripts/README.md](./README.md) — Quản lý node mới
+> - [scripts/node/OPERATIONS_GUIDE.md](./node/OPERATIONS_GUIDE.md) — Hướng dẫn vận hành đầy đủ
+
 ## Tổng quan
 
-Scripts để chạy toàn bộ hệ thống:
-- **4 Rust Consensus Nodes** (Node 0, 1, 2, 3)
-- **1 Go Sub Node** (config-sub-write.json)
-- **1 Go Master Node** (config-master.json)
+Hệ thống bao gồm **5 nodes** (0–4), mỗi node gồm 3 process:
+- **Rust Metanode** — Consensus engine
+- **Go Master** — Execution engine (EVM), xử lý blocks
+- **Go Sub** — Tiếp nhận TX, đồng bộ state từ Master
 
-Mỗi lần chạy sẽ:
-- ✅ Xóa dữ liệu cũ (Go sample + Rust storage)
-- ✅ Tạo committee mới (epoch 0)
-- ✅ Khởi động tất cả nodes
+### Kiến trúc hiện tại
 
-## Scripts
+```
+Node 0: go-master-0 + go-sub-0 + metanode-0
+Node 1: go-master-1 + go-sub-1 + metanode-1
+Node 2: go-master-2 + go-sub-2 + metanode-2
+Node 3: go-master-3 + go-sub-3 + metanode-3
+Node 4: go-master-4 + go-sub-4 + metanode-4 (SyncOnly — không propose blocks)
+```
 
-### 1. `run_full_system.sh` - Khởi động toàn bộ hệ thống
+## Scripts hiện tại (thay thế `run_full_system.sh`)
 
-**Chức năng:**
-1. Xóa dữ liệu cũ:
-   - `mtn-simple-2025/cmd/simple_chain/sample/` (Go data)
-   - `mtn-consensus/metanode/config/storage/` (Rust data)
-2. Dừng các nodes đang chạy
-3. Tạo committee mới cho 4 nodes (epoch 0)
-4. Enable executor cho Node 0
-5. Khởi động 4 Rust consensus nodes
-6. Khởi động Go Sub Node (tmux session: `go-sub`)
-7. Khởi động Go Master Node (tmux session: `go-master`)
+### Khởi động
 
-**Cách sử dụng:**
 ```bash
-cd /home/abc/chain-n/mtn-consensus/metanode
-./scripts/run_full_system.sh
+cd /home/abc/chain-n/mtn-consensus/metanode/scripts/node
+
+# Fresh start tất cả validators (4 nodes, khuyến nghị)
+./run_all_validator.sh
+
+# Fresh start tất cả 5 nodes (bao gồm SyncOnly)
+./run_all.sh
+
+# Fresh start 1 node
+./run_node.sh <node_id>
 ```
 
-**Output:**
-```
-📋 Bước 1: Xóa dữ liệu cũ...
-ℹ️  Xóa dữ liệu Go: ...
-ℹ️  Xóa dữ liệu Rust: ...
-✅ Đã xóa dữ liệu cũ
+### Dừng
 
-📋 Bước 2: Dừng các nodes đang chạy...
-✅ Đã dừng các nodes cũ
-
-📋 Bước 3: Tạo committee mới cho đồng thuận...
-✅ Đã tạo committee mới
-
-📋 Bước 4: Cấu hình executor cho Node 0...
-✅ Executor đã được enable cho Node 0
-
-📋 Bước 5: Khởi động 4 Rust consensus nodes...
-✅ Đã khởi động 4 Rust nodes
-
-📋 Bước 6: Khởi động Go Sub Node...
-✅ Go Sub Node đã khởi động (tmux session: go-sub)
-
-📋 Bước 7: Khởi động Go Master Node...
-✅ Go Master Node đã khởi động (tmux session: go-master)
-
-📋 Bước 8: Kiểm tra hệ thống...
-🎉 Hệ thống đã được khởi động!
-```
-
-### 2. `stop_full_system.sh` - Dừng toàn bộ hệ thống
-
-**Chức năng:**
-1. Dừng Go Sub Node (tmux session: `go-sub`)
-2. Dừng Go Master Node (tmux session: `go-master`)
-3. Dừng 4 Rust consensus nodes
-4. Xóa sockets
-
-**Cách sử dụng:**
 ```bash
-cd /home/abc/chain-n/mtn-consensus/metanode
-./scripts/stop_full_system.sh
+./stop_all.sh              # Dừng tất cả
+./stop_node.sh <node_id>   # Dừng 1 node
+```
+
+### Resume (giữ data)
+
+```bash
+./resume_all.sh              # Resume tất cả
+./resume_node.sh <node_id>   # Resume 1 node
+```
+
+## Luồng hoàn chỉnh
+
+```
+Client
+  ↓ TX → Go Sub Node N (RPC/API)
+Go Sub Node N
+  ↓ TX → Rust Metanode N (Unix Domain Socket)
+Rust Metanode N (Consensus)
+  ↓ Committed Blocks → Go Master N (Unix Domain Socket)
+Go Master N (Execution — EVM)
+  ↓ State + Receipts → Go Sub Node N (Block Sync)
+Go Sub Node N
+  ↓ Receipt → Client
 ```
 
 ## Xem logs
 
-### Rust Nodes
 ```bash
-# Node 0
+# Rust log
 tmux attach -t metanode-0
 
-# Node 1
-tmux attach -t metanode-1
+# Go Master log
+tmux attach -t go-master-0
 
-# Node 2
-tmux attach -t metanode-2
+# Go Sub log
+tmux attach -t go-sub-0
 
-# Node 3
-tmux attach -t metanode-3
-```
-
-### Go Nodes
-```bash
-# Go Sub Node
-tmux attach -t go-sub
-
-# Go Master Node
-tmux attach -t go-master
+# Hoặc xem file
+tail -f logs/node_0/rust.log
+tail -f logs/node_0/go-master-stdout.log
+tail -f logs/node_0/go-sub-stdout.log
 ```
 
 ## Kiểm tra trạng thái
 
 ### Check processes
 ```bash
-# Rust nodes
-ps aux | grep metanode | grep -v grep
-
-# Go nodes
-ps aux | grep simple_chain | grep -v grep
+tmux ls
+# Mong đợi: go-master-{0..4}, go-sub-{0..4}, metanode-{0..4}
 ```
 
 ### Check sockets
 ```bash
-# Transaction sockets
-ls -la /tmp/metanode-tx-*.sock
-
-# Executor socket (chỉ Node 0)
-ls -la /tmp/executor0.sock
-```
-
-### Check tmux sessions
-```bash
-tmux ls
-```
-
-## Luồng hoàn chỉnh
-
-```
-Go Sub (config-sub-write.json)
-    ↓ Transactions → Rust Node 0 (127.0.0.1:10100)
-Rust Node 0 (Consensus + Executor)
-    ↓ Committed Blocks → Go Master (/tmp/executor0.sock)
-Go Master (config-master.json)
-    ↓ Execution
-State Updated
+ls -la /tmp/metanode-tx-*.sock        # Transaction sockets
+ls -la /tmp/executor*.sock            # Executor sockets
+ls -la /tmp/rust-go-node*-master.sock # Go Master sockets
 ```
 
 ## Troubleshooting
 
 ### Rust nodes không khởi động
 - Check binary: `ls -la target/release/metanode`
-- Build nếu cần: `cargo build --release --bin metanode`
-- Check ports: `netstat -tuln | grep -E "9000|9001|9002|9003"`
+- Build nếu cần: `cargo +nightly build --release --bin metanode`
+- Check ports: `netstat -tuln | grep -E "9000|9001|9002|9003|9004"`
 
 ### Go nodes không khởi động
-- Check binary: `ls -la ../mtn-simple-2025/bin/simple_chain`
-- Build nếu cần: `cd ../mtn-simple-2025 && go build -o bin/simple_chain ./cmd/simple_chain`
-- Check config files: `ls -la ../mtn-simple-2025/cmd/simple_chain/config-*.json`
+- Check binary: `ls -la ../../mtn-simple-2025/cmd/simple_chain/simple_chain`
+- Build nếu cần: `cd ../../mtn-simple-2025 && ./build.sh linux`
+- Check config files: `ls -la ../../mtn-simple-2025/cmd/simple_chain/config-*.json`
 
 ### Sockets không được tạo
-- Check Rust Node 0 đang chạy: `tmux attach -t metanode-0`
-- Check logs: `tail -f logs/node_0.log`
-
-### Committee không được tạo
-- Check binary: `./target/release/metanode --help`
-- Generate thủ công: `./target/release/metanode generate --nodes 4 --output config`
-
+- Check Rust Node đang chạy: `tmux attach -t metanode-0`
+- Check logs: `tail -f logs/node_0/rust.log`

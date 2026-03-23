@@ -20,12 +20,12 @@
 /// - Node-X joins at commit 500 of epoch 1: base=4000, commit 500 → global=4500 ✓
 pub fn calculate_global_exec_index(
     _epoch: u64,           // Not used in formula but kept for logging/debugging
-    commit_index: u32,     // Consensus-agreed value from Mysticeti
+    commit_index: u64,     // Consensus-agreed value from Mysticeti
     epoch_base_index: u64, // last_global_exec_index at epoch START (not current!)
 ) -> u64 {
     // FORK-SAFE FORMULA: All nodes with same commit_index will get same global_exec_index
     // because commit_index is agreed upon by Mysticeti consensus
-    epoch_base_index + commit_index as u64
+    epoch_base_index + commit_index
 }
 
 #[cfg(test)]

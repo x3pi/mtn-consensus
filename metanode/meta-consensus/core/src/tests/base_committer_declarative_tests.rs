@@ -6,9 +6,9 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 use crate::{
-    TestBlock, VerifiedBlock, base_committer::base_committer_builder::BaseCommitterBuilder,
-    block::BlockAPI, commit::LeaderStatus, context::Context, dag_state::DagState,
-    storage::mem_store::MemStore, test_dag_parser::parse_dag,
+    base_committer::base_committer_builder::BaseCommitterBuilder, block::BlockAPI,
+    commit::LeaderStatus, context::Context, dag_state::DagState, storage::mem_store::MemStore,
+    test_dag_parser::parse_dag, TestBlock, VerifiedBlock,
 };
 
 #[tokio::test]

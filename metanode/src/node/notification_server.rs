@@ -39,6 +39,15 @@ impl EpochNotificationServer {
         }
 
         let listener = UnixListener::bind(&self.socket_path)?;
+
+        // Restrict socket permissions to owner + group only (same as tx_socket_server)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o660);
+            std::fs::set_permissions(&self.socket_path, perms)?;
+        }
+
         info!(
             "👂 [NOTIFICATION SERVER] Listening on {}",
             self.socket_path.display()

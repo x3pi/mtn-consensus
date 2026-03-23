@@ -66,7 +66,8 @@ pub struct NodeConfig {
     /// Time-based epoch change configuration
     #[serde(default)]
     pub time_based_epoch_change: bool,
-    /// Epoch duration in seconds (None = disabled, Some(86400) = 24h)
+    /// DEPRECATED: epoch_duration_seconds is now loaded from Go via protobuf (from genesis.json)
+    /// Kept for backward compatibility with existing TOML files that still have this field
     #[serde(default)]
     pub epoch_duration_seconds: Option<u64>,
     /// Max allowed clock drift in seconds (default: 5)
@@ -318,14 +319,14 @@ impl NodeConfig {
                 speed_multiplier: 1.0, // Default: normal speed
                 leader_timeout_ms: None,
                 min_round_delay_ms: None,
-                time_based_epoch_change: true,     // Enabled by default
-                epoch_duration_seconds: Some(600), // Default: 10 minutes (10 * 60 seconds)
+                time_based_epoch_change: true, // Enabled by default
+                epoch_duration_seconds: None,  // DEPRECATED: loaded from Go via protobuf now
                 max_clock_drift_seconds: 5,
                 enable_ntp_sync: false, // Disabled by default (enable for production)
                 ntp_servers: default_ntp_servers(),
                 ntp_sync_interval_seconds: 300,
                 executor_read_enabled: true, // All nodes can read committee state from Go
-                executor_commit_enabled: idx == 0, // Only node 0 can commit blocks by default
+                executor_commit_enabled: true, // All validators commit blocks to their local Go Master
                 executor_send_socket_path: format!("/tmp/executor{}.sock", idx), // Rust -> Go
                 executor_receive_socket_path: "/tmp/rust-go.sock_1".to_string(), // Go -> Rust (all nodes read from same socket)
                 commit_sync_batch_size: default_commit_sync_batch_size(),

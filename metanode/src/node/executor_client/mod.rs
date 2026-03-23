@@ -12,6 +12,7 @@
 //! - `transition_handoff`: Epoch transition handoff APIs
 
 mod block_sending;
+pub mod block_store;
 mod block_sync;
 pub mod connection_pool;
 pub mod persistence;
@@ -26,6 +27,7 @@ pub use persistence::{load_persisted_last_index, read_last_block_number};
 pub use socket_stream::{SocketAddress, SocketStream};
 
 use anyhow::Result;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, trace, warn};
@@ -70,6 +72,9 @@ pub struct ExecutorClient {
     pub(crate) send_cb_open_until: Arc<tokio::sync::RwLock<Option<tokio::time::Instant>>>,
     /// Connection pool for parallel RPC queries to Go Master
     pub(crate) request_pool: Arc<ConnectionPool>,
+    /// BACKPRESSURE: Shared handle to update Go lag in SystemTransactionProvider
+    /// When set, flush_buffer() will update this value with the computed lag
+    pub(crate) go_lag_handle: Option<Arc<AtomicU64>>,
 }
 
 /// Production safety constants
@@ -151,6 +156,7 @@ impl ExecutorClient {
             send_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             send_cb_open_until: Arc::new(tokio::sync::RwLock::new(None)),
             request_pool,
+            go_lag_handle: None, // Set via set_go_lag_handle() after construction
         }
     }
 
@@ -164,6 +170,16 @@ impl ExecutorClient {
         self.can_commit
     }
 
+    /// Get the storage path for persistence (used by block_store for sync)
+    pub fn storage_path(&self) -> Option<&std::path::Path> {
+        self.storage_path.as_deref()
+    }
+
+    /// Set the Go lag handle for backpressure signaling to SystemTransactionProvider
+    pub fn set_go_lag_handle(&mut self, handle: Arc<AtomicU64>) {
+        self.go_lag_handle = Some(handle);
+    }
+
     /// Get reference to the RPC circuit breaker
     #[allow(dead_code)]
     pub fn circuit_breaker(&self) -> &RpcCircuitBreaker {
@@ -171,6 +187,7 @@ impl ExecutorClient {
     }
 
     /// Check if the TCP send circuit breaker is open
+    #[allow(dead_code)]
     pub async fn check_send_circuit_breaker(&self) -> Result<()> {
         let cb_guard = self.send_cb_open_until.read().await;
         if let Some(open_until) = *cb_guard {
@@ -254,9 +271,9 @@ impl ExecutorClient {
             return;
         }
 
-        // Query Go Master for last_global_exec_index (using get_validators_at_block as a carrier)
-        let last_global_exec_index_opt = match self.get_validators_at_block(0).await {
-            Ok((_, _, gei)) => Some(gei),
+        // Query Go Master for last_global_exec_index directly
+        let last_global_exec_index_opt = match self.get_last_global_exec_index().await {
+            Ok(gei) => Some(gei),
             Err(e) => {
                 warn!("⚠️  [INIT] Failed to get last block number from Go Master: {}. Attempting to read persisted value.", e);
                 // Fallback to persisted last block number if available
@@ -504,16 +521,18 @@ mod tests {
     }
 
     #[test]
-    fn test_executor_client_enabled_no_commit() {
+    fn test_executor_client_enabled_always_commits() {
+        // All enabled executor clients should be able to commit
+        // (can_commit guard was removed — executor_commit_enabled config controls creation)
         let client = ExecutorClient::new(
             true,
-            false,
+            true, // All enabled clients commit
             "/tmp/test_send.sock".to_string(),
             "/tmp/test_recv.sock".to_string(),
             None,
         );
         assert!(client.is_enabled());
-        assert!(!client.can_commit());
+        assert!(client.can_commit());
     }
 
     #[tokio::test]

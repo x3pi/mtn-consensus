@@ -1,9 +1,4 @@
-use std::{
-    collections::BTreeSet,
-    iter,
-    time::Duration,
-    vec,
-};
+use std::{collections::BTreeSet, iter, sync::atomic::Ordering, time::Duration, vec};
 
 use itertools::Itertools as _;
 use tokio::time::Instant;
@@ -425,6 +420,35 @@ impl Core {
         let clock_round = self.dag_state.read().threshold_clock_round();
         let core_skipped_proposals = &self.context.metrics.node_metrics.core_skipped_proposals;
 
+        // ═══════════════════════════════════════════════════════════════════
+        // QUORUM GATE: Prevents startup forks by gating round 2+ proposals
+        // until we've heard from enough peers (quorum_threshold).
+        //
+        // Round 1 proposals are ALWAYS allowed — this is critical because:
+        //   1. Round 1 blocks flow freely through the network
+        //   2. Peers update highest_received_rounds when they receive them
+        //   3. The quorum monitor detects enough peers from these updates
+        //   4. It then sets quorum_ready=true, unlocking round 2+ proposals
+        //
+        // Without this, ALL proposals are blocked → no blocks sent →
+        // highest_received_rounds never updates → DEADLOCK.
+        //
+        // Commits require round 3+ blocks, so gating round 2 is sufficient
+        // to prevent isolated subgroups from committing divergent leaders.
+        // Once quorum_ready latches to true, it stays true permanently.
+        // ═══════════════════════════════════════════════════════════════════
+        if clock_round > 1 && !self.quorum_ready.load(Ordering::Relaxed) {
+            debug!(
+                "🔒 [QUORUM GATE] Round {} proposals blocked: waiting for peer quorum \
+                 (round 1 allowed freely to bootstrap peer detection)",
+                clock_round
+            );
+            core_skipped_proposals
+                .with_label_values(&["quorum_gate_waiting"])
+                .inc();
+            return false;
+        }
+
         // CRITICAL: Check if node is lagging and prioritize sync over consensus
         // When lag is significant, skip proposing new blocks to focus on syncing commits
         let local_commit_index = self.dag_state.read().last_commit_index();
@@ -470,6 +494,12 @@ impl Core {
         // Check if we're recovering (lag was high but now decreasing)
         let is_recovering = lag <= moderate_lag_threshold_with_hysteresis
             && lag_percentage <= moderate_lag_percentage_with_hysteresis;
+
+        // CRITICAL FORK-PREVENTION: The "Fresh DAG" rule was REMOVED.
+        // Previously, we blocked nodes with a fresh DAG from proposing to prevent forks
+        // caused by mismatched genesis blocks. However, the genesis timestamp is now
+        // unified and strictly matches the network's timestamp. Restored nodes will
+        // generate identical genesis hashes and can safely join consensus mid-epoch.
 
         if should_skip_consensus {
             if is_severe_lag {

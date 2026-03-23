@@ -61,6 +61,10 @@ pub(crate) struct AuthorityService<C: CoreThreadDispatcher> {
     epoch_change_processor: Arc<RwLock<Option<Box<dyn EpochChangeProcessor>>>>,
     /// Legacy store manager for querying previous epochs (optional for backward compatibility)
     legacy_store_manager: Option<Arc<LegacyEpochStoreManager>>,
+    /// Epoch base index (boundary block of the previous epoch). Used when there are no
+    /// commits in the store (e.g., snapshot restore cold start) to correctly compute
+    /// global_exec_index ranges.
+    epoch_base_index: u64,
     /// Cache of recently verified block refs to skip re-verification.
     /// Bounded to prevent unbounded memory growth.
     #[allow(dead_code)]
@@ -81,6 +85,7 @@ impl<C: CoreThreadDispatcher> AuthorityService<C> {
         store: Arc<dyn Store>,
         epoch_change_processor: Option<Box<dyn EpochChangeProcessor>>,
         legacy_store_manager: Option<Arc<LegacyEpochStoreManager>>,
+        epoch_base_index: u64,
     ) -> Self {
         let subscription_counter = Arc::new(SubscriptionCounter::new(context.clone()));
         Self {
@@ -97,6 +102,7 @@ impl<C: CoreThreadDispatcher> AuthorityService<C> {
             round_tracker,
             epoch_change_processor: Arc::new(RwLock::new(epoch_change_processor)),
             legacy_store_manager,
+            epoch_base_index,
             recently_verified_blocks: Arc::new(RwLock::new(BTreeSet::new())),
         }
     }
@@ -772,12 +778,21 @@ impl<C: CoreThreadDispatcher> NetworkService for AuthorityService<C> {
                     );
                     calculated_base
                 } else {
-                    warn!("⚠️ [FETCH-GLOBAL] No commits in store, using epoch_base=0");
-                    0
+                    // CRITICAL FIX: Use epoch_base_index from constructor instead of 0!
+                    // On snapshot restore / cold start, there are no commits yet but
+                    // the epoch_base_index was correctly set during authority startup.
+                    warn!(
+                        "⚠️ [FETCH-GLOBAL] No commits in store, using epoch_base_index={} from constructor",
+                        self.epoch_base_index
+                    );
+                    self.epoch_base_index
                 }
             } else {
-                warn!("⚠️ [FETCH-GLOBAL] Failed to read first commit, using epoch_base=0");
-                0
+                warn!(
+                    "⚠️ [FETCH-GLOBAL] Failed to read first commit, using epoch_base_index={} from constructor",
+                    self.epoch_base_index
+                );
+                self.epoch_base_index
             }
         };
 
@@ -1431,6 +1446,7 @@ mod tests {
             store,
             None,
             None, // legacy_store_manager
+            0,    // epoch_base_index (tests start at epoch 0)
         ));
 
         // Test delaying blocks with time drift.
@@ -1551,6 +1567,7 @@ mod tests {
             store,
             None,
             None, // legacy_store_manager
+            0,    // epoch_base_index (tests start at epoch 0)
         ));
 
         // GIVEN: 40 rounds of blocks in the dag state.
@@ -1720,6 +1737,7 @@ mod tests {
             store,
             None,
             None, // legacy_store_manager
+            0,    // epoch_base_index (tests start at epoch 0)
         ));
 
         // Create some blocks for a few authorities. Create some equivocations as well and store in dag state.

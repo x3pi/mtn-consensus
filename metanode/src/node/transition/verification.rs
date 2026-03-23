@@ -87,7 +87,7 @@ pub(super) async fn verify_epoch_consistency(
         node.current_epoch,
         node.node_mode,
         node.last_global_exec_index,
-        executor_client.get_last_block_number().await.unwrap_or(0) >= node.last_global_exec_index
+        executor_client.get_last_block_number().await.map(|(b, _)| b).unwrap_or(0) >= node.last_global_exec_index
     );
 
     Ok(())

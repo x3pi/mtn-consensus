@@ -10,6 +10,7 @@ use tracing::{info, warn};
 
 /// Data stored in the queue for each commit
 #[derive(Clone)]
+#[allow(dead_code)]
 pub(crate) struct CommitData {
     pub commit: Commit,
     pub blocks: Vec<VerifiedBlock>,
@@ -24,6 +25,7 @@ pub(crate) struct BlockQueue {
     /// Next expected global_exec_index
     next_expected: u64,
     /// Last time we logged about a gap
+    #[allow(dead_code)]
     last_gap_log: Option<std::time::Instant>,
 }
 
@@ -39,6 +41,7 @@ impl BlockQueue {
     }
 
     /// Add a commit to the queue (will be deduplicated by index)
+    #[allow(dead_code)]
     pub fn push(&mut self, data: CommitData) {
         let index = data.commit.global_exec_index();
         // Only add if not already processed and not already pending
@@ -50,6 +53,7 @@ impl BlockQueue {
     /// Drain all commits that can be processed sequentially
     /// Returns commits in order, stopping at the first gap
     /// CRITICAL: If there's a large gap (e.g., after epoch transition), auto-adjust next_expected
+    #[allow(dead_code)]
     pub fn drain_ready(&mut self) -> Vec<CommitData> {
         let mut ready = Vec::new();
 
@@ -133,6 +137,36 @@ impl BlockQueue {
         }
         // CASE 3: Queue slightly ahead of Go (normal - blocks in flight)
         // Keep as-is, this is expected during normal sync
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // CASE 4 (SyncOnly EPOCH BOUNDARY GAP SKIP):
+        // When Go has confirmed processing up to a GEI, but the queue has
+        // pending commits starting ahead of next_expected with a small gap,
+        // the gap represents permanently unavailable empty consensus blocks
+        // from epoch transitions that peers no longer store.
+        //
+        // Examples:
+        //   - Fresh start: Go GEI=0, queue expects 1, first pending at GEI=9
+        //     (epoch 0 had 8 empty blocks that peers discarded)
+        //   - After epoch boundary: Go GEI=208, queue expects 209, first pending
+        //     at GEI=217 (epoch boundary had 8 empty blocks)
+        //
+        // Safety: Go has CONFIRMED processing all blocks up to go_last_block.
+        //         The missing blocks between go_last_block+1 and first_pending
+        //         were empty consensus blocks (no TX) that don't affect state.
+        //         Max gap of 16 prevents accidentally skipping real missing data.
+        // ═══════════════════════════════════════════════════════════════════════
+        if let Some((&first_pending, _)) = self.pending.first_key_value() {
+            let gap = first_pending.saturating_sub(self.next_expected);
+            if gap > 0 && gap <= 16 {
+                // Small gap - likely epoch boundary empty blocks
+                info!(
+                    "📋 [QUEUE-SYNC] Epoch boundary gap skip: next_expected={} → {} (Go GEI={}, gap={}, first pending at {})",
+                    self.next_expected, first_pending, go_last_block, gap, first_pending
+                );
+                self.next_expected = first_pending;
+            }
+        }
     }
 
     /// Number of pending commits in queue

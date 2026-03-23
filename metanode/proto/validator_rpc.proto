@@ -52,6 +52,7 @@ message AdvanceEpochRequest {
     uint64 new_epoch = 1;  // New epoch number to advance to
     uint64 epoch_start_timestamp_ms = 2;  // Epoch start timestamp in milliseconds
     uint64 boundary_block = 3;  // global_exec_index of last block of ending epoch (epoch boundary)
+    uint64 boundary_gei = 4;  // NEW: Authoritative global_exec_index at epoch boundary
 }
 
 message AdvanceEpochResponse {
@@ -68,10 +69,12 @@ message GetEpochBoundaryDataRequest {
 // NEW: Unified epoch boundary data response
 // Contains all data needed for fork-safe epoch transition
 message EpochBoundaryData {
-    uint64 epoch = 1;                      // Target epoch
-    uint64 epoch_start_timestamp_ms = 2;   // Fixed timestamp for genesis hash consistency
-    uint64 boundary_block = 3;             // Last block of previous epoch (validator snapshot point)
-    repeated ValidatorInfo validators = 4; // Validators at boundary_block
+    uint64 epoch = 1;  // Epoch number
+    uint64 epoch_start_timestamp_ms = 2;  // Epoch start timestamp in milliseconds
+    uint64 boundary_block = 3;  // Boundary block number (last block of previous epoch)
+    repeated ValidatorInfo validators = 4;  // New active validators
+    uint64 epoch_duration_seconds = 5;  // Epoch duration in seconds (from genesis, default 900 = 15 min)
+    uint64 boundary_gei = 6;  // NEW: Authoritative global_exec_index at epoch boundary
 }
 
 // ============================================================================
@@ -214,6 +217,8 @@ message ValidatorInfoList {
 // Response cho GetLastBlockNumberRequest
 message LastBlockNumberResponse {
     uint64 last_block_number = 1;  // Last block number from Go Master DB
+    uint64 last_global_exec_index = 2;  // Last processed GlobalExecIndex (includes empty commits)
+    bool is_ready = 3;             // True if Master is fully synced/ready
 }
 
 // Request message

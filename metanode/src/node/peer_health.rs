@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 /// Peer health state
+#[allow(dead_code)]
 struct PeerHealth {
     consecutive_failures: u32,
     last_failure: Option<Instant>,
@@ -33,8 +34,11 @@ pub struct PeerHealthTracker {
 }
 
 /// Backoff thresholds
+#[allow(dead_code)]
 const BACKOFF_THRESHOLD_1: u32 = 3; // 3 failures → 10s backoff
+#[allow(dead_code)]
 const BACKOFF_THRESHOLD_2: u32 = 5; // 5 failures → 30s backoff
+#[allow(dead_code)]
 const BACKOFF_THRESHOLD_3: u32 = 10; // 10 failures → 60s backoff
 
 impl PeerHealthTracker {
@@ -58,6 +62,7 @@ impl PeerHealthTracker {
     }
 
     /// Record a successful interaction with a peer — resets failure count
+    #[allow(dead_code)]
     pub fn record_success(&mut self, peer_index: u32) {
         if let Some(health) = self.peers.get_mut(&peer_index) {
             if health.consecutive_failures > 0 {
@@ -73,6 +78,7 @@ impl PeerHealthTracker {
     }
 
     /// Record a failed interaction with a peer — increments failure count and may trigger backoff
+    #[allow(dead_code)]
     pub fn record_failure(&mut self, peer_index: u32) {
         let health = self.peers.entry(peer_index).or_default();
         health.consecutive_failures += 1;

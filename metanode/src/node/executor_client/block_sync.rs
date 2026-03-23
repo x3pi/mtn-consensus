@@ -108,7 +108,8 @@ impl ExecutorClient {
         );
 
         // Chunking to prevent hitting 32MB max message length limits on large block payloads
-        const CHUNK_SIZE: usize = 5;
+        // Each chunk opens a new UDS connection so larger chunks = fewer round trips = faster sync
+        const CHUNK_SIZE: usize = 50;
         let mut total_synced_count = 0u64;
         let mut final_synced_block = 0u64;
 
