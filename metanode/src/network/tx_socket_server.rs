@@ -905,6 +905,45 @@ impl TxSocketServer {
                                     );
                                 }
                             }
+                        } else if err_str.contains("shutting down") || err_str.contains("channel closed") {
+                            // CRITICAL FIX: Epoch transition closed the consensus channel.
+                            // Queue TXs for next epoch instead of dropping them permanently.
+                            warn!(
+                                "♻️ [TX FLOW] Consensus shutting down during sub-batch {} submission. Queueing {} TXs for next epoch.",
+                                chunk_idx + 1, chunk_len
+                            );
+                            if let (Some(ref queue), Some(ref path)) =
+                                (&pending_transactions_queue, &storage_path)
+                            {
+                                let mut queued_count = 0usize;
+                                for tx_data in &chunk_vec {
+                                    match crate::node::queue::queue_transaction(
+                                        queue, path, tx_data.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(_) => queued_count += 1,
+                                        Err(e) => {
+                                            error!("❌ [TX FLOW] Failed to queue TX during epoch transition: {}", e);
+                                        }
+                                    }
+                                }
+                                info!(
+                                    "♻️ [TX FLOW] Queued {}/{} TXs from sub-batch {} for next epoch",
+                                    queued_count, chunk_len, chunk_idx + 1
+                                );
+                            } else {
+                                error!(
+                                    "❌ [TX FLOW] Cannot queue TXs — no pending_transactions_queue available. {} TXs LOST.",
+                                    chunk_len
+                                );
+                            }
+                            all_succeeded = false;
+                            last_error = format!(
+                                "Epoch transition: queued {} TXs for next epoch",
+                                chunk_len
+                            );
+                            // Don't break — try remaining sub-batches (they'll likely also need queuing)
                         } else {
                             all_succeeded = false;
                             last_error = err_str;
