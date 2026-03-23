@@ -501,7 +501,22 @@ impl Core {
         // unified and strictly matches the network's timestamp. Restored nodes will
         // generate identical genesis hashes and can safely join consensus mid-epoch.
 
-        if should_skip_consensus {
+        // ═══════════════════════════════════════════════════════════════════
+        // COLD-START EXEMPTION: When local_commit_index == 0 (after snapshot
+        // restore), the node has NO local commits yet. Lag = quorum - 0 = 100%,
+        // which would block proposals forever. But proposing is ESSENTIAL:
+        // the node must create DAG blocks to participate in consensus, which
+        // produces local commits, which reduces lag. Without this exemption
+        // there's a deadlock: no proposals → no commits → lag stays 100%.
+        // ═══════════════════════════════════════════════════════════════════
+        if local_commit_index == 0 && quorum_commit_index > 200 {
+            // Cold-start: allow proposing despite lag
+            debug!(
+                "🚀 [COLD-START] Allowing proposal at round {} despite lag={} (local_commit=0, cold-start bootstrap)",
+                clock_round, lag
+            );
+            // Fall through to remaining checks (propagation delay, etc.)
+        } else if should_skip_consensus {
             if is_severe_lag {
                 // Severe lag: Skip consensus aggressively
                 debug!(
