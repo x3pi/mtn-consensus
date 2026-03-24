@@ -147,19 +147,32 @@ impl DagState {
             }
             false
         } else {
-            panic!(
-                "Block {:?} not found in cache to set as committed.",
+            // GRACEFUL (2026-03-24): After snapshot restore + amnesia recovery,
+            // own-slot conflict blocks are rejected and NOT added to recent_blocks.
+            // The linearizer may still reference them. Return false instead of panic.
+            tracing::warn!(
+                "⚠️ [DAG] set_committed: Block {:?} not found in cache (likely own-slot conflict after restore). Treating as not committed.",
                 block_ref
             );
+            false
         }
     }
 
     /// Returns true if the block is committed. Only valid for blocks above the GC round.
     pub fn is_committed(&self, block_ref: &BlockRef) -> bool {
-        self.recent_blocks
-            .get(block_ref)
-            .unwrap_or_else(|| panic!("Attempted to query for commit status for a block not in cached data {block_ref}"))
-            .committed
+        match self.recent_blocks.get(block_ref) {
+            Some(info) => info.committed,
+            None => {
+                // GRACEFUL (2026-03-24): After snapshot restore + amnesia recovery,
+                // own-slot conflict blocks are rejected and NOT added to recent_blocks.
+                // The linearizer may still reference them. Return false instead of panic.
+                tracing::warn!(
+                    "⚠️ [DAG] is_committed: Block {} not found in cache (likely own-slot conflict after restore). Treating as not committed.",
+                    block_ref
+                );
+                false
+            }
+        }
     }
 
     /// Recursively sets blocks in the causal history of the root block as hard linked, including the root block itself.
