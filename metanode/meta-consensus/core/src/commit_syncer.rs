@@ -267,16 +267,10 @@ impl<C: NetworkClient> CommitSyncer<C> {
         // validate vote blocks from the current epoch.
         // ═══════════════════════════════════════════════════════════════════════
         if local_commit_index == 0 && quorum_commit_index > 200 {
-            // SNAPSHOT RESTORE: Continuously fast-forward until the DAG starts
-            // processing real commits (local_commit_index > 0).
-            //
-            // A cold-start node has a completely fresh DAG with no historical blocks,
-            // so verify_commits() will ALWAYS fail for ANY historical commit range
-            // ("Not enough votes (0)") because vote blocks reference digests from
-            // the original DAG that this node doesn't have.
-            //
-            // We must keep fast-forwarding to the CURRENT quorum so the node
-            // only processes NEW commits that happen after it fully joins.
+            // SNAPSHOT RESTORE: Fast-forward to the current quorum. Historical
+            // commits can never be verified (DAG was wiped — vote blocks reference
+            // digests that don't exist). The node will only process NEW commits 
+            // after it joins consensus via the proposer cold-start exemption.
             let fast_forward_to = quorum_commit_index;
             if self.synced_commit_index < fast_forward_to {
                 if self.synced_commit_index == 0 {

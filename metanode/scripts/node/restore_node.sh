@@ -42,9 +42,13 @@ GO_SIMPLE_ROOT="$GO_PROJECT_ROOT/cmd/simple_chain"
 LOG_DIR="$METANODE_ROOT/logs"
 BINARY="$METANODE_ROOT/target/release/metanode"
 
-# Snapshot source — mặc định từ Node 0
+# Snapshot source — HTTP server
+# Có thể override bằng biến môi trường: SNAP_SERVER=http://192.168.1.232:8701 ./restore_node.sh 2
+SNAP_SERVER="${SNAP_SERVER:-http://localhost:8701}"
+SNAP_API="$SNAP_SERVER/api/snapshots"
+SNAP_FILES_URL="$SNAP_SERVER/files"
+# Local fallback paths (chỉ dùng khi tất cả nodes trên cùng máy)
 SNAP_BASE_DIR="$GO_SIMPLE_ROOT/snapshot_data_node${NODE_ID}"
-SNAP_API="http://localhost:8701/api/snapshots"
 
 NODE_DATA="$GO_SIMPLE_ROOT/sample/node${NODE_ID}"
 
@@ -114,45 +118,74 @@ echo -e "${GREEN}═════════════════════
 echo ""
 
 # ─── Tìm snapshot mới nhất ────────────────────────────────────
+# Helper: find a snapshot dir across ALL LOCAL nodes' snapshot directories
+find_snap_dir_local() {
+    local snap_name="$1"
+    for i in 0 1 2 3 4; do
+        local candidate="$GO_SIMPLE_ROOT/snapshot_data_node${i}/$snap_name"
+        if [ -d "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Determine download mode: local (cp) or network (wget)
+SNAP_MODE="network"  # default: download via HTTP
+SNAP_DIR=""          # will be set if local mode
+
+echo -e "${BLUE}📡 Snapshot server: ${NC}$SNAP_SERVER"
+
 if [ -n "$2" ]; then
     SNAP_NAME="$2"
     echo -e "${BLUE}📸 Sử dụng snapshot chỉ định: ${NC}$SNAP_NAME"
 else
     echo -e "${BLUE}🔍 Tự động tìm snapshot mới nhất...${NC}"
     
-    # Thử qua API trước
+    # Lấy tên snapshot mới nhất từ API
     SNAP_NAME=$(curl -sf "$SNAP_API" 2>/dev/null \
         | python3 -c "import sys,json; snaps=json.load(sys.stdin); print(snaps[-1]['snapshot_name'])" 2>/dev/null) || true
     
-    # Validate: API có thể trả về snapshot đang tạo dở (directory chưa tồn tại)
-    if [ -n "$SNAP_NAME" ] && [ ! -d "$SNAP_BASE_DIR/$SNAP_NAME" ]; then
-        echo -e "${YELLOW}⚠️  API trả về $SNAP_NAME nhưng thư mục chưa tồn tại (snapshot đang tạo?). Fallback sang filesystem...${NC}"
-        SNAP_NAME=""
-    fi
-    
-    # Fallback: tìm trong thư mục
     if [ -z "$SNAP_NAME" ]; then
-        SNAP_NAME=$(ls -1d "$SNAP_BASE_DIR"/snap_* 2>/dev/null | sort | tail -1 | xargs basename 2>/dev/null) || true
-    fi
-    
-    if [ -z "$SNAP_NAME" ]; then
-        echo -e "${RED}❌ Không tìm thấy snapshot nào!${NC}"
+        echo -e "${RED}❌ Không lấy được snapshot từ API!${NC}"
         echo "   Kiểm tra: curl $SNAP_API"
-        echo "   Hoặc:     ls $SNAP_BASE_DIR/"
         exit 1
     fi
     
-    echo -e "${GREEN}  ✅ Tìm thấy: ${NC}$SNAP_NAME"
+    echo -e "${GREEN}  ✅ API trả về: ${NC}$SNAP_NAME"
 fi
 
-SNAP_DIR="$SNAP_BASE_DIR/$SNAP_NAME"
-if [ ! -d "$SNAP_DIR" ]; then
-    echo -e "${RED}❌ Thư mục snapshot không tồn tại: $SNAP_DIR${NC}"
-    exit 1
+# Validate snapshot tồn tại — thử HTTP trước, local fallback
+# 1) Kiểm tra qua HTTP
+HTTP_CHECK=$(curl -sf -o /dev/null -w "%{http_code}" "$SNAP_FILES_URL/$SNAP_NAME/" 2>/dev/null || echo "000")
+
+if [ "$HTTP_CHECK" = "200" ]; then
+    echo -e "${GREEN}  ✅ Snapshot có sẵn qua HTTP${NC}"
+    SNAP_MODE="network"
+else
+    echo -e "${YELLOW}  ⚠️  HTTP check failed (code=$HTTP_CHECK). Thử tìm trên filesystem local...${NC}"
+    # 2) Fallback: tìm trên LOCAL filesystem (chế độ dev, tất cả nodes cùng máy)
+    LOCAL_DIR=$(find_snap_dir_local "$SNAP_NAME")
+    if [ -n "$LOCAL_DIR" ]; then
+        SNAP_DIR="$LOCAL_DIR"
+        SNAP_MODE="local"
+        echo -e "${GREEN}  ✅ Tìm thấy local: ${NC}$(basename $(dirname $SNAP_DIR))/$SNAP_NAME"
+    else
+        echo -e "${RED}❌ Snapshot $SNAP_NAME không tìm thấy qua HTTP lẫn local!${NC}"
+        echo "   HTTP: $SNAP_FILES_URL/$SNAP_NAME/"
+        echo "   Local: $GO_SIMPLE_ROOT/snapshot_data_node*/$SNAP_NAME"
+        exit 1
+    fi
 fi
 
-SNAP_SIZE=$(du -sh "$SNAP_DIR" 2>/dev/null | awk '{print $1}')
-echo -e "${BLUE}  📦 Kích thước: ${NC}$SNAP_SIZE"
+# Hiển thị thông tin
+if [ "$SNAP_MODE" = "local" ]; then
+    SNAP_SIZE=$(du -sh "$SNAP_DIR" 2>/dev/null | awk '{print $1}')
+    echo -e "${BLUE}  📦 Kích thước: ${NC}$SNAP_SIZE ${CYAN}(local copy)${NC}"
+else
+    echo -e "${BLUE}  📦 Download từ: ${NC}$SNAP_FILES_URL/$SNAP_NAME/ ${CYAN}(network)${NC}"
+fi
 
 # ─── Xác nhận ─────────────────────────────────────────────────
 echo ""
@@ -208,13 +241,51 @@ echo -e "${GREEN}  ✅ Dữ liệu và logs đã xóa sạch${NC}"
 # ══════════════════════════════════════════════════════════════
 # Step 3: Restore từ Snapshot
 # ══════════════════════════════════════════════════════════════
-echo -e "${BLUE}[3/7] 📸 Khôi phục từ $SNAP_NAME...${NC}"
+echo -e "${BLUE}[3/7] 📸 Khôi phục từ $SNAP_NAME ($SNAP_MODE mode)...${NC}"
 
 # Tạo thư mục cha trước
 mkdir -p "$NODE_DATA/data/data"
 mkdir -p "$NODE_DATA/data-write/data"
 mkdir -p "$NODE_DATA/back_up"
 mkdir -p "$NODE_DATA/back_up_write"
+
+if [ "$SNAP_MODE" = "network" ]; then
+    # ═══════════════════════════════════════════════════════════
+    # NETWORK MODE: Download snapshot via HTTP using wget
+    # ═══════════════════════════════════════════════════════════
+    TEMP_SNAP="/tmp/snapshot_restore_$$"
+    mkdir -p "$TEMP_SNAP"
+    echo -e "${CYAN}  📥 Downloading snapshot via HTTP...${NC}"
+    echo -e "${CYAN}     URL: $SNAP_FILES_URL/$SNAP_NAME/${NC}"
+    
+    # Download toàn bộ snapshot bằng wget (recursive, resume support)
+    wget -c -r -np -nH --cut-dirs=2 -q --show-progress \
+        "$SNAP_FILES_URL/$SNAP_NAME/" \
+        -P "$TEMP_SNAP" 2>&1 || {
+        echo -e "${RED}  ❌ Download thất bại!${NC}"
+        rm -rf "$TEMP_SNAP"
+        exit 1
+    }
+    
+    # wget tải vào $TEMP_SNAP/$SNAP_NAME/ (do cấu trúc URL)
+    # Hoặc trực tiếp vào $TEMP_SNAP nếu --cut-dirs đúng
+    if [ -d "$TEMP_SNAP/$SNAP_NAME" ]; then
+        SNAP_DL_DIR="$TEMP_SNAP/$SNAP_NAME"
+    else
+        SNAP_DL_DIR="$TEMP_SNAP"
+    fi
+    
+    DL_SIZE=$(du -sh "$SNAP_DL_DIR" 2>/dev/null | awk '{print $1}')
+    echo -e "${GREEN}  ✅ Downloaded: $DL_SIZE${NC}"
+    
+    # Set SNAP_DIR to downloaded dir for the copy logic below
+    SNAP_DIR="$SNAP_DL_DIR"
+fi
+
+# ═══════════════════════════════════════════════════════════
+# Copy snapshot data to node dirs (works for both local and network mode)
+# SNAP_DIR is either local path or downloaded temp dir
+# ═══════════════════════════════════════════════════════════
 
 # Copy LevelDB dirs to BOTH Master (data/data) and Sub (data-write/data)
 echo "  📁 Mapping LevelDB & Xapian dirs..."
@@ -256,22 +327,28 @@ if [ "$EPOCH_RESTORED" = false ]; then
     echo -e "${YELLOW}     Tiếp tục nhưng cần theo dõi kỹ...${NC}"
 fi
 
-# Cleanup: remove stale LOCK files
+# Cleanup: remove stale LOCK files and temp download
 find "$NODE_DATA" -name "LOCK" -delete 2>/dev/null
 mkdir -p "$NODE_DATA/data/data/xapian_node"
 mkdir -p "$NODE_DATA/data-write/data/xapian_node"
 
+# Clean up temp download dir
+if [ "$SNAP_MODE" = "network" ] && [ -n "$TEMP_SNAP" ]; then
+    rm -rf "$TEMP_SNAP"
+    echo -e "${GREEN}  ✅ Temp download cleaned${NC}"
+fi
+
 RESTORED_SIZE=$(du -sh "$NODE_DATA" 2>/dev/null | awk '{print $1}')
 echo -e "${GREEN}  ✅ Đã khôi phục tổng cộng: $RESTORED_SIZE${NC}"
 
-# CRITICAL: Create RESET_GEI marker files
-# Go startup checks for this marker and resets GEI=0, which prevents
-# Rust's COLD-START GUARD from skipping commits after restore.
-# Go's sequential block guard handles deduplication for blocks already committed.
-echo -e "${BLUE}  📌 Creating RESET_GEI markers for GEI reset...${NC}"
-touch "$NODE_DATA/data/data/RESET_GEI"
-touch "$NODE_DATA/data-write/data/RESET_GEI"
-echo -e "${GREEN}  ✅ RESET_GEI markers created (Go will reset GEI=0 on startup)${NC}"
+# NOTE: RESET_GEI markers REMOVED (2026-03-24)
+# Previously, we created RESET_GEI markers to reset Go's GEI to 0 on startup.
+# This caused FORK: Go syncs block HEADERS from peers (advancing block number)
+# but does NOT re-execute transactions → state frozen at snapshot nonce.
+# When new commits arrive with advanced nonce → NONCE-REJECT → stateRoot diverge.
+# Rust's COLD-START GUARD already handles commit deduplication via GEI comparison.
+# Go will start with correct GEI from snapshot. Sequential block guard handles
+# any duplicate blocks from peer sync.
 
 # ══════════════════════════════════════════════════════════════
 # Step 4: Pre-start Validation

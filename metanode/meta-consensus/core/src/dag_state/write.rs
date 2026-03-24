@@ -52,15 +52,20 @@ impl DagState {
             .with_label_values(&[hostname])
             .inc_by(block.timestamp_ms().saturating_sub(now));
 
-        // TODO: Move this check to core
-        // Ensure we don't write multiple blocks per slot for our own index
+        // Ensure we don't write multiple blocks per slot for our own index.
+        // During cold-start amnesia recovery, old own-blocks fetched from peers can
+        // conflict with newly created blocks at the same round/author slot.
+        // Instead of panicking, gracefully skip the duplicate.
         if block_ref.author == self.context.own_index {
             let existing_blocks = self.get_uncommitted_blocks_at_slot(block_ref.into());
-            assert!(
-                existing_blocks.is_empty(),
-                "Block Rejected! Attempted to add block {block:#?} to own slot where \
-                block(s) {existing_blocks:#?} already exists."
-            );
+            if !existing_blocks.is_empty() {
+                error!(
+                    "⚠️ [DAG] Own-slot conflict: attempted to add block {block:#?} to slot \
+                     where block(s) {existing_blocks:#?} already exist. Keeping existing block, \
+                     skipping new one. (Common during amnesia recovery after snapshot restore)"
+                );
+                return;
+            }
         }
         self.update_block_metadata(&block);
         self.blocks_to_write.push(block);
@@ -142,19 +147,32 @@ impl DagState {
             }
             false
         } else {
-            panic!(
-                "Block {:?} not found in cache to set as committed.",
+            // GRACEFUL (2026-03-24): After snapshot restore + amnesia recovery,
+            // own-slot conflict blocks are rejected and NOT added to recent_blocks.
+            // The linearizer may still reference them. Return false instead of panic.
+            tracing::warn!(
+                "⚠️ [DAG] set_committed: Block {:?} not found in cache (likely own-slot conflict after restore). Treating as not committed.",
                 block_ref
             );
+            false
         }
     }
 
     /// Returns true if the block is committed. Only valid for blocks above the GC round.
     pub fn is_committed(&self, block_ref: &BlockRef) -> bool {
-        self.recent_blocks
-            .get(block_ref)
-            .unwrap_or_else(|| panic!("Attempted to query for commit status for a block not in cached data {block_ref}"))
-            .committed
+        match self.recent_blocks.get(block_ref) {
+            Some(info) => info.committed,
+            None => {
+                // GRACEFUL (2026-03-24): After snapshot restore + amnesia recovery,
+                // own-slot conflict blocks are rejected and NOT added to recent_blocks.
+                // The linearizer may still reference them. Return false instead of panic.
+                tracing::warn!(
+                    "⚠️ [DAG] is_committed: Block {} not found in cache (likely own-slot conflict after restore). Treating as not committed.",
+                    block_ref
+                );
+                false
+            }
+        }
     }
 
     /// Recursively sets blocks in the causal history of the root block as hard linked, including the root block itself.

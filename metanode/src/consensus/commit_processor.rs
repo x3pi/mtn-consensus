@@ -794,8 +794,18 @@ impl CommitProcessor {
         let is_cold_start = cold_start.load(std::sync::atomic::Ordering::Relaxed);
         if let Some(ref client) = executor_client {
             // LAYER 1: GEI-based skip
-            let go_gei = client.get_last_global_exec_index().await.unwrap_or(0);
-            if go_gei >= global_exec_index && global_exec_index > 0 {
+            // CRITICAL FIX (2026-03-24): During cold-start, use SNAPSHOT GEI instead of live Go GEI.
+            // Go's peer sync advances the live GEI by storing block headers WITHOUT executing
+            // transactions. Using live GEI causes the guard to skip commits whose transactions
+            // are needed to advance account_state → nonce gap → FORK.
+            // cold_start_skip_gei = GEI at snapshot time (set during restore).
+            // After cold_start clears, use live Go GEI as normal.
+            let skip_threshold_gei = if is_cold_start && _cold_start_skip_gei > 0 {
+                _cold_start_skip_gei
+            } else {
+                client.get_last_global_exec_index().await.unwrap_or(0)
+            };
+            if skip_threshold_gei >= global_exec_index && global_exec_index > 0 {
                 let has_end_of_epoch = subdag.extract_end_of_epoch_transaction().is_some();
                 if is_cold_start {
                     // During cold_start: skip ALL commits including EndOfEpoch
@@ -803,15 +813,15 @@ impl CommitProcessor {
                     // that don't match the network's real epoch boundaries
                     if has_end_of_epoch {
                         info!(
-                            "⏭️ [COLD-START GUARD] Skipping EndOfEpoch commit #{}: Go GEI={} >= commit GEI={}. \
+                            "⏭️ [COLD-START GUARD] Skipping EndOfEpoch commit #{}: snapshot GEI={} >= commit GEI={}. \
                              Cold-start active — blocking fake epoch transition from replayed DAG.",
-                            commit_index, go_gei, global_exec_index
+                            commit_index, skip_threshold_gei, global_exec_index
                         );
                     } else if commit_index % 500 == 0 || commit_index <= 5 {
                         info!(
-                            "⏭️ [COLD-START GUARD] Skipping commit #{}: Go GEI={} >= commit GEI={}. \
-                             Go already has this state from peer sync.",
-                            commit_index, go_gei, global_exec_index
+                            "⏭️ [COLD-START GUARD] Skipping commit #{}: snapshot GEI={} >= commit GEI={}. \
+                             Commit predates snapshot — safe to skip.",
+                            commit_index, skip_threshold_gei, global_exec_index
                         );
                     }
                     return Ok(());
@@ -820,7 +830,7 @@ impl CommitProcessor {
                     info!(
                         "⏭️ [COLD-START GUARD] Skipping commit #{}: Go GEI={} >= commit GEI={}. \
                          Go already has this state from peer sync.",
-                        commit_index, go_gei, global_exec_index
+                        commit_index, skip_threshold_gei, global_exec_index
                     );
                     return Ok(());
                 } else {
@@ -828,47 +838,36 @@ impl CommitProcessor {
                     info!(
                         "⚠️ [COLD-START GUARD] Go GEI={} >= commit GEI={}, but commit #{} \
                          contains EndOfEpoch — processing anyway for epoch transition safety.",
-                        go_gei, global_exec_index, commit_index
+                        skip_threshold_gei, global_exec_index, commit_index
                     );
                 }
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // LAYER 2: Timestamp-based cold-start clearing
+            // LAYER 2: Cold-start clearing
             // When cold_start is active and a commit passes LAYER 1
-            // (go_gei < commit_gei), verify it's TRULY live by checking
-            // the commit timestamp. DAG replay can produce commits with
-            // high GEI but old timestamps → these would fork if processed.
-            // Only clear cold_start and allow through when the commit is
-            // genuinely recent (within 30s of current time).
+            // (go_gei < commit_gei), this commit is NEW to Go and must be
+            // processed. Clear cold_start immediately.
+            //
+            // REMOVED (2026-03-24): Age-based filtering. Previously, commits
+            // with age > 30s were skipped as "DAG replay". But after restore +
+            // peer sync, these commits ARE the real blocks (94-140) that Go
+            // needs to process to advance account_state. Skipping them caused
+            // Go to create block 94 from GEI=725 (network block ~130) with
+            // tx.Nonce()=136, but state only had nonce=94 → FORK.
+            //
+            // Layer 1's GEI comparison is sufficient protection:
+            // - Pre-synced commits (GEI <= go_gei): Skip ✅
+            // - Post-synced commits (GEI > go_gei): Process ✅
             // ═══════════════════════════════════════════════════════════════
             if is_cold_start {
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-                let commit_ts_ms = subdag.timestamp_ms;
-                let age_s = if now_ms > commit_ts_ms { (now_ms - commit_ts_ms) / 1000 } else { 0 };
-
-                if age_s > 30 {
-                    // Stale commit from DAG replay — skip to prevent fork
-                    if commit_index % 500 == 0 || commit_index <= 5 {
-                        info!(
-                            "⏭️ [COLD-START L2] Skipping stale commit #{}: GEI={} > Go GEI={}, \
-                             but commit is {}s old (threshold: 30s). DAG replay — not yet live.",
-                            commit_index, global_exec_index, go_gei, age_s
-                        );
-                    }
-                    return Ok(());
-                } else {
-                    // Truly live commit — clear cold_start and allow through
-                    cold_start.store(false, std::sync::atomic::Ordering::Relaxed);
-                    info!(
-                        "✅ [COLD-START L2] Cleared cold_start at commit #{}: GEI={} > Go GEI={}, \
-                         commit age={}s. Now processing live commits normally.",
-                        commit_index, global_exec_index, go_gei, age_s
-                    );
-                }
+                let go_gei_l2 = client.get_last_global_exec_index().await.unwrap_or(0);
+                cold_start.store(false, std::sync::atomic::Ordering::Relaxed);
+                info!(
+                    "✅ [COLD-START L2] Cleared cold_start at commit #{}: GEI={} > Go GEI={}. \
+                     Now processing live commits normally.",
+                    commit_index, global_exec_index, go_gei_l2
+                );
             }
 
             // LAYER 1 handles the primary cold-start protection.

@@ -150,7 +150,35 @@ Script tự động:
 ./run_node.sh 4    # Reset và start Node 4
 ```
 
-### 3.3 Kiểm tra trạng thái
+### 3.3 Fresh Restart + SyncOnly Node 4
+
+```bash
+# Fresh start: xóa data + build + chạy tất cả 5 nodes (Node 4 = SyncOnly)
+./fresh_restart_with_sync.sh
+
+# Restart giữ data (KHÔNG xóa) + auto-rebuild nếu source thay đổi
+./fresh_restart_with_sync.sh --keep-data
+
+# Restart giữ data + bỏ qua build (nhanh nhất)
+./fresh_restart_with_sync.sh --keep-data --no-build
+
+# Fresh start nhưng bỏ qua build
+./fresh_restart_with_sync.sh --no-build
+```
+
+| Flag | Xóa data? | Build? |
+|------|-----------|--------|
+| *(không flag)* | ✅ Xóa sạch | ✅ Auto-build Rust + C++ + Go |
+| `--keep-data` | ❌ Giữ nguyên | ✅ Auto-build |
+| `--no-build` | ✅ Xóa sạch | ❌ Dùng binary có sẵn |
+| `--keep-data --no-build` | ❌ Giữ nguyên | ❌ Dùng binary có sẵn |
+
+> **Khi nào dùng?**
+> - Vừa deploy code mới → `./fresh_restart_with_sync.sh` (full reset)
+> - Restart sau khi tắt tạm → `./fresh_restart_with_sync.sh --keep-data --no-build`
+> - Code thay đổi nhưng giữ data → `./fresh_restart_with_sync.sh --keep-data`
+
+### 3.4 Kiểm tra trạng thái
 
 ```bash
 # Xem tất cả tmux sessions
@@ -206,9 +234,31 @@ Giống `run_all.sh` nhưng **không xóa data** — dùng khi restart sau khi t
 ./resume_node.sh 1    # Resume Node 1 (giữ data)
 ```
 
-> **Khác biệt `run` vs `resume`:**  
+> **Khác biệt `run` vs `resume` vs `fresh_restart --keep-data`:**  
 > - `run_node.sh` = xóa data + start (fresh)  
-> - `resume_node.sh` = giữ data + start (tiếp tục)
+> - `resume_node.sh` = giữ data + start (tiếp tục)  
+> - `fresh_restart_with_sync.sh --keep-data` = giữ data + auto-build + chạy tất cả 5 nodes
+
+### 5.3 Restore từ Snapshot
+
+```bash
+# Restore Node 2 từ snapshot mới nhất (tự detect)
+./restore_node.sh 2
+
+# Restore Node 2 từ snapshot cụ thể
+./restore_node.sh 2 snap_epoch_1_block_50
+```
+
+Quy trình (7 bước tự động):
+1. Dừng node
+2. Xóa toàn bộ data (Go + Rust DAG)
+3. Khôi phục từ snapshot
+4. Validate tính toàn vẹn
+5. Khởi động tuần tự (Go Master → Go Sub → Rust)
+6. Giám sát sync 90s
+7. Kiểm tra hash divergence với mạng
+
+> Xem thêm: [SNAPSHOT_RESTORE_GUIDE_VN.md](./SNAPSHOT_RESTORE_GUIDE_VN.md)
 
 ---
 
@@ -316,16 +366,17 @@ rm -f /tmp/executor*.sock /tmp/rust-go-*.sock /tmp/metanode-tx-*.sock
 | Hành động | Lệnh |
 |-----------|-------|
 | **Build cả 2** | `./build.sh` |
-| **Build Rust** | `cargo +nightly build --release --bin metanode` |
-| **Build Go** | `cd mtn-simple-2025 && ./build.sh linux` |
 | **Sửa IP** | `./update_ips.sh IP0 IP1 IP2 IP3 [IP4]` |
-| **Chạy validators (fresh)** | `./run_all_validator.sh` |
-| **Chạy tất cả 5 nodes** | `./run_all.sh` |
+| **Fresh start (validators)** | `./run_all_validator.sh` |
+| **Fresh start (5 nodes + sync)** | `./fresh_restart_with_sync.sh` |
+| **Restart giữ data (nhanh)** | `./fresh_restart_with_sync.sh --keep-data --no-build` |
+| **Restart giữ data + rebuild** | `./fresh_restart_with_sync.sh --keep-data` |
 | **Chạy 1 node (fresh)** | `./run_node.sh N` |
 | **Dừng tất cả** | `./stop_all.sh` |
 | **Dừng 1 node** | `./stop_node.sh N` |
 | **Resume tất cả** | `./resume_all.sh` |
 | **Resume 1 node** | `./resume_node.sh N` |
+| **Restore từ snapshot** | `./restore_node.sh N [snap_name]` |
 | **Xem log** | `./logs/rust.sh N -f` |
 | **Kiểm tra** | `tmux ls` |
 

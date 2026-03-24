@@ -268,10 +268,17 @@ pub async fn transition_mode_only(
 
     // When cold_start, set the GEI threshold so commit_processor skips ALL
     // replayed commits with GEI ≤ synced_global_exec_index (Phase 1 peer sync state).
+    // CRITICAL FIX (2026-03-24): Also pass the cold_start Arc to the processor!
+    // Without this, the processor defaults cold_start=false and queries Go's live GEI
+    // (which may be inflated by peer-synced blocks without full state execution)
+    // instead of using snapshot GEI → nonce gap → FORK.
     if node.cold_start {
-        processor = processor.with_cold_start_skip_gei(synced_global_exec_index);
+        let cold_start_arc = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        processor = processor
+            .with_cold_start(cold_start_arc)
+            .with_cold_start_skip_gei(synced_global_exec_index);
         info!(
-            "🛡️ [MODE TRANSITION] Cold-start: set cold_start_skip_gei={} to prevent replayed commits from creating duplicate blocks",
+            "🛡️ [MODE TRANSITION] Cold-start: set cold_start=true + cold_start_skip_gei={} to prevent replayed commits from creating duplicate blocks",
             synced_global_exec_index
         );
     }
