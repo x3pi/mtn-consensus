@@ -52,15 +52,20 @@ impl DagState {
             .with_label_values(&[hostname])
             .inc_by(block.timestamp_ms().saturating_sub(now));
 
-        // TODO: Move this check to core
-        // Ensure we don't write multiple blocks per slot for our own index
+        // Ensure we don't write multiple blocks per slot for our own index.
+        // During cold-start amnesia recovery, old own-blocks fetched from peers can
+        // conflict with newly created blocks at the same round/author slot.
+        // Instead of panicking, gracefully skip the duplicate.
         if block_ref.author == self.context.own_index {
             let existing_blocks = self.get_uncommitted_blocks_at_slot(block_ref.into());
-            assert!(
-                existing_blocks.is_empty(),
-                "Block Rejected! Attempted to add block {block:#?} to own slot where \
-                block(s) {existing_blocks:#?} already exists."
-            );
+            if !existing_blocks.is_empty() {
+                error!(
+                    "⚠️ [DAG] Own-slot conflict: attempted to add block {block:#?} to slot \
+                     where block(s) {existing_blocks:#?} already exist. Keeping existing block, \
+                     skipping new one. (Common during amnesia recovery after snapshot restore)"
+                );
+                return;
+            }
         }
         self.update_block_metadata(&block);
         self.blocks_to_write.push(block);
