@@ -183,7 +183,7 @@ for i in "${!ALL_NODES[@]}"; do
         echo -e "  🚀 Go Master $id..."
     fi
     tmux new-session -d -s "${GO_MASTER_SESSION[$i]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && ./simple_chain -config=${GO_MASTER_CONFIG[$i]} $PPROF_ARG >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && export MVM_LOG_DIR='$LOG_DIR/node_$id' && ./simple_chain -config=${GO_MASTER_CONFIG[$i]} $PPROF_ARG >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
     sleep 2
 done
 
@@ -192,7 +192,8 @@ for i in "${!ALL_NODES[@]}"; do
     wait_for_socket "${GO_MASTER_SOCKET[$i]}" "Go Master ${ALL_NODES[$i]}" 120
 done
 
-# Start Go Subs
+# Start Go Subs — wait extra time for master to flush genesis state trie to disk
+sleep 5  # ← Master cần flush genesis AccountStatesRoot trước khi sub đọc
 for i in "${!ALL_NODES[@]}"; do
     id=${ALL_NODES[$i]}; DATA="${GO_DATA_DIR[$i]}"
     XAPIAN="sample/$DATA/data-write/data/xapian_node"
@@ -203,10 +204,10 @@ for i in "${!ALL_NODES[@]}"; do
         echo -e "  🚀 Go Sub $id..."
     fi
     tmux new-session -d -s "${GO_SUB_SESSION[$i]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && ./simple_chain -config=${GO_SUB_CONFIG[$i]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
-    sleep 1
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && export MVM_LOG_DIR='$LOG_DIR/node_$id' && ./simple_chain -config=${GO_SUB_CONFIG[$i]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
+    sleep 2
 done
-sleep 3
+sleep 8  # ← Chờ sub nodes ổn định và sync block đầu từ master
 
 # ==============================================================================
 # STEP 5: START RUST METANODES (all 5 nodes)
@@ -248,3 +249,25 @@ echo ""
 echo -e "  ${BLUE}Logs:${NC}    $LOG_DIR/node_N/"
 echo -e "  ${BLUE}Status:${NC}  tmux ls"
 echo ""
+
+
+# ==============================================================================
+# Step 9: Run SetGet test (chỉ chạy khi không có flag nào)
+# ==============================================================================
+if ! $SKIP_BUILD && ! $KEEP_DATA; then
+sleep 20
+    echo -e "${BLUE}📋 Step 9: Running SetGet test...${NC}"
+    CLIENT_DIR="$HOME/nhat/client/cmd/client/call_tool_example_new"
+    if [ -d "$CLIENT_DIR" ]; then
+        cd "$CLIENT_DIR"
+        echo -e "${GREEN}  🚀 Running: go run . -data=SetGet.json -config=config-local-genis.json${NC}"
+        # Run the command and pipe 3 enters to it
+        (sleep 2; echo ""; sleep 2; echo ""; sleep 2; echo "") | go run . -data=SetGet.json -config=config-local-genis.json
+        echo -e "${GREEN}  ✅ SetGet test completed${NC}"
+    else
+        echo -e "${YELLOW}  ⚠️ Client directory not found: $CLIENT_DIR${NC}"
+    fi
+    echo ""
+else
+    echo -e "${YELLOW}  ⏭️ Step 9 skipped (flags detected: SKIP_BUILD=$SKIP_BUILD, KEEP_DATA=$KEEP_DATA)${NC}"
+fi
