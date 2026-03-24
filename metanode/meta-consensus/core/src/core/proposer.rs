@@ -547,7 +547,16 @@ impl Core {
             );
         }
 
-        if self.propagation_delay
+        // ═══════════════════════════════════════════════════════════════════
+        // COLD-START EXEMPTION (part 2): After snapshot restore, amnesia
+        // recovery syncs the old last_known_proposed_round from peers (e.g.
+        // round 4828). But the fresh DAG starts at round 1, so clock_round(1)
+        // <= last_known_proposed_round(4828) → proposal blocked forever.
+        // During cold-start, skip propagation delay and proposed round checks.
+        // ═══════════════════════════════════════════════════════════════════
+        let is_cold_start = local_commit_index == 0 && quorum_commit_index > 200;
+
+        if !is_cold_start && self.propagation_delay
             > self
                 .context
                 .parameters
@@ -567,15 +576,23 @@ impl Core {
         }
 
         let Some(last_known_proposed_round) = self.last_known_proposed_round else {
+            if !is_cold_start {
+                debug!(
+                    "Skip proposing for round {clock_round}, last known proposed round has not been synced yet."
+                );
+                core_skipped_proposals
+                    .with_label_values(&["no_last_known_proposed_round"])
+                    .inc();
+                return false;
+            }
+            // Cold-start: allow proposing even without synced proposed round
             debug!(
-                "Skip proposing for round {clock_round}, last known proposed round has not been synced yet."
+                "🚀 [COLD-START] Allowing proposal at round {} without last_known_proposed_round (cold-start bootstrap)",
+                clock_round
             );
-            core_skipped_proposals
-                .with_label_values(&["no_last_known_proposed_round"])
-                .inc();
-            return false;
+            return true;
         };
-        if clock_round <= last_known_proposed_round {
+        if !is_cold_start && clock_round <= last_known_proposed_round {
             debug!(
                 "Skip proposing for round {clock_round} as last known proposed round is {last_known_proposed_round}"
             );
