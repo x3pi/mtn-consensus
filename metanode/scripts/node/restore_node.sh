@@ -114,6 +114,19 @@ echo -e "${GREEN}═════════════════════
 echo ""
 
 # ─── Tìm snapshot mới nhất ────────────────────────────────────
+# Helper: find a snapshot dir across ALL nodes' snapshot directories
+find_snap_dir() {
+    local snap_name="$1"
+    for i in 0 1 2 3 4; do
+        local candidate="$GO_SIMPLE_ROOT/snapshot_data_node${i}/$snap_name"
+        if [ -d "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 if [ -n "$2" ]; then
     SNAP_NAME="$2"
     echo -e "${BLUE}📸 Sử dụng snapshot chỉ định: ${NC}$SNAP_NAME"
@@ -124,28 +137,41 @@ else
     SNAP_NAME=$(curl -sf "$SNAP_API" 2>/dev/null \
         | python3 -c "import sys,json; snaps=json.load(sys.stdin); print(snaps[-1]['snapshot_name'])" 2>/dev/null) || true
     
-    # Validate: API có thể trả về snapshot đang tạo dở (directory chưa tồn tại)
-    if [ -n "$SNAP_NAME" ] && [ ! -d "$SNAP_BASE_DIR/$SNAP_NAME" ]; then
-        echo -e "${YELLOW}⚠️  API trả về $SNAP_NAME nhưng thư mục chưa tồn tại (snapshot đang tạo?). Fallback sang filesystem...${NC}"
-        SNAP_NAME=""
+    # Validate: kiểm tra snapshot tồn tại ở BẤT KỲ node nào (không chỉ target node)
+    if [ -n "$SNAP_NAME" ]; then
+        FOUND_DIR=$(find_snap_dir "$SNAP_NAME")
+        if [ -z "$FOUND_DIR" ]; then
+            echo -e "${YELLOW}⚠️  API trả về $SNAP_NAME nhưng thư mục chưa tồn tại ở bất kỳ node nào. Fallback sang filesystem...${NC}"
+            SNAP_NAME=""
+        fi
     fi
     
-    # Fallback: tìm trong thư mục
+    # Fallback: tìm snapshot MỚI NHẤT từ TẤT CẢ nodes' snapshot dirs
     if [ -z "$SNAP_NAME" ]; then
-        SNAP_NAME=$(ls -1d "$SNAP_BASE_DIR"/snap_* 2>/dev/null | sort | tail -1 | xargs basename 2>/dev/null) || true
+        SNAP_NAME=$(find "$GO_SIMPLE_ROOT" -maxdepth 2 -type d -name "snap_*" 2>/dev/null \
+            | xargs -I{} basename {} \
+            | sort -t_ -k4 -n \
+            | tail -1) || true
     fi
     
     if [ -z "$SNAP_NAME" ]; then
         echo -e "${RED}❌ Không tìm thấy snapshot nào!${NC}"
         echo "   Kiểm tra: curl $SNAP_API"
-        echo "   Hoặc:     ls $SNAP_BASE_DIR/"
+        echo "   Hoặc:     ls $GO_SIMPLE_ROOT/snapshot_data_node*/snap_*"
         exit 1
     fi
     
     echo -e "${GREEN}  ✅ Tìm thấy: ${NC}$SNAP_NAME"
 fi
 
+# Tìm snapshot dir — ưu tiên target node, nếu không có thì tìm ở node khác
 SNAP_DIR="$SNAP_BASE_DIR/$SNAP_NAME"
+if [ ! -d "$SNAP_DIR" ]; then
+    SNAP_DIR=$(find_snap_dir "$SNAP_NAME")
+    if [ -n "$SNAP_DIR" ]; then
+        echo -e "${YELLOW}  ℹ️  Snapshot không có ở node $NODE_ID, dùng từ: $(basename $(dirname $SNAP_DIR))${NC}"
+    fi
+fi
 if [ ! -d "$SNAP_DIR" ]; then
     echo -e "${RED}❌ Thư mục snapshot không tồn tại: $SNAP_DIR${NC}"
     exit 1
