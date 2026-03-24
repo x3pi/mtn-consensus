@@ -341,14 +341,14 @@ fi
 RESTORED_SIZE=$(du -sh "$NODE_DATA" 2>/dev/null | awk '{print $1}')
 echo -e "${GREEN}  ✅ Đã khôi phục tổng cộng: $RESTORED_SIZE${NC}"
 
-# CRITICAL: Create RESET_GEI marker files
-# Go startup checks for this marker and resets GEI=0, which prevents
-# Rust's COLD-START GUARD from skipping commits after restore.
-# Go's sequential block guard handles deduplication for blocks already committed.
-echo -e "${BLUE}  📌 Creating RESET_GEI markers for GEI reset...${NC}"
-touch "$NODE_DATA/data/data/RESET_GEI"
-touch "$NODE_DATA/data-write/data/RESET_GEI"
-echo -e "${GREEN}  ✅ RESET_GEI markers created (Go will reset GEI=0 on startup)${NC}"
+# NOTE: RESET_GEI markers REMOVED (2026-03-24)
+# Previously, we created RESET_GEI markers to reset Go's GEI to 0 on startup.
+# This caused FORK: Go syncs block HEADERS from peers (advancing block number)
+# but does NOT re-execute transactions → state frozen at snapshot nonce.
+# When new commits arrive with advanced nonce → NONCE-REJECT → stateRoot diverge.
+# Rust's COLD-START GUARD already handles commit deduplication via GEI comparison.
+# Go will start with correct GEI from snapshot. Sequential block guard handles
+# any duplicate blocks from peer sync.
 
 # ══════════════════════════════════════════════════════════════
 # Step 4: Pre-start Validation
