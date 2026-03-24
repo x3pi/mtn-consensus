@@ -794,8 +794,18 @@ impl CommitProcessor {
         let is_cold_start = cold_start.load(std::sync::atomic::Ordering::Relaxed);
         if let Some(ref client) = executor_client {
             // LAYER 1: GEI-based skip
-            let go_gei = client.get_last_global_exec_index().await.unwrap_or(0);
-            if go_gei >= global_exec_index && global_exec_index > 0 {
+            // CRITICAL FIX (2026-03-24): During cold-start, use SNAPSHOT GEI instead of live Go GEI.
+            // Go's peer sync advances the live GEI by storing block headers WITHOUT executing
+            // transactions. Using live GEI causes the guard to skip commits whose transactions
+            // are needed to advance account_state → nonce gap → FORK.
+            // cold_start_skip_gei = GEI at snapshot time (set during restore).
+            // After cold_start clears, use live Go GEI as normal.
+            let skip_threshold_gei = if is_cold_start && _cold_start_skip_gei > 0 {
+                _cold_start_skip_gei
+            } else {
+                client.get_last_global_exec_index().await.unwrap_or(0)
+            };
+            if skip_threshold_gei >= global_exec_index && global_exec_index > 0 {
                 let has_end_of_epoch = subdag.extract_end_of_epoch_transaction().is_some();
                 if is_cold_start {
                     // During cold_start: skip ALL commits including EndOfEpoch
@@ -803,15 +813,15 @@ impl CommitProcessor {
                     // that don't match the network's real epoch boundaries
                     if has_end_of_epoch {
                         info!(
-                            "⏭️ [COLD-START GUARD] Skipping EndOfEpoch commit #{}: Go GEI={} >= commit GEI={}. \
+                            "⏭️ [COLD-START GUARD] Skipping EndOfEpoch commit #{}: snapshot GEI={} >= commit GEI={}. \
                              Cold-start active — blocking fake epoch transition from replayed DAG.",
-                            commit_index, go_gei, global_exec_index
+                            commit_index, skip_threshold_gei, global_exec_index
                         );
                     } else if commit_index % 500 == 0 || commit_index <= 5 {
                         info!(
-                            "⏭️ [COLD-START GUARD] Skipping commit #{}: Go GEI={} >= commit GEI={}. \
-                             Go already has this state from peer sync.",
-                            commit_index, go_gei, global_exec_index
+                            "⏭️ [COLD-START GUARD] Skipping commit #{}: snapshot GEI={} >= commit GEI={}. \
+                             Commit predates snapshot — safe to skip.",
+                            commit_index, skip_threshold_gei, global_exec_index
                         );
                     }
                     return Ok(());
@@ -820,7 +830,7 @@ impl CommitProcessor {
                     info!(
                         "⏭️ [COLD-START GUARD] Skipping commit #{}: Go GEI={} >= commit GEI={}. \
                          Go already has this state from peer sync.",
-                        commit_index, go_gei, global_exec_index
+                        commit_index, skip_threshold_gei, global_exec_index
                     );
                     return Ok(());
                 } else {
@@ -828,7 +838,7 @@ impl CommitProcessor {
                     info!(
                         "⚠️ [COLD-START GUARD] Go GEI={} >= commit GEI={}, but commit #{} \
                          contains EndOfEpoch — processing anyway for epoch transition safety.",
-                        go_gei, global_exec_index, commit_index
+                        skip_threshold_gei, global_exec_index, commit_index
                     );
                 }
             }
