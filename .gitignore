@@ -306,3 +306,6 @@ metanode/rust_run_log.out
 
 # Scratch test scripts
 /test_*.sh
+
+# ===== MkDocs =====
+site/
