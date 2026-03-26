@@ -176,16 +176,13 @@ for i in "${!ALL_NODES[@]}"; do
         echo -e "  🚀 Rust Node $id..."
     fi
     tmux new-session -d -s "${RUST_SESSION[$i]}" -c "$METANODE_ROOT" \
-        "ulimit -n 100000; export RUST_LOG=info,consensus_core=debug; export DB_WRITE_BUFFER_SIZE_MB=256; export DB_WAL_SIZE_MB=256; export METANODE_STATE_SOCK='/tmp/metanode-state-'$id'.sock'; $BINARY start --config ${RUST_CONFIG[$i]} >> \"$LOG_DIR/node_$id/rust.log\" 2>&1"
+        "ulimit -n 100000; export RUST_LOG=info,consensus_core=debug; export DB_WRITE_BUFFER_SIZE_MB=256; export DB_WAL_SIZE_MB=256; $BINARY start --config ${RUST_CONFIG[$i]} >> \"$LOG_DIR/node_$id/rust.log\" 2>&1"
     sleep 1
 done
 sleep 3
 
-# Wait for Rust State sockets to be ready before starting Go
-for i in "${!ALL_NODES[@]}"; do
-    id=${ALL_NODES[$i]}
-    wait_for_socket "/tmp/metanode-state-$id.sock" "Rust JMT State $id" 120
-done
+# NOTE: JMT State is now embedded in Go via FFI (no IPC socket needed).
+# Rust no longer serves state over socket.
 
 # ==============================================================================
 # STEP 5: START GO MASTERS + SUBS (all 5 nodes)
