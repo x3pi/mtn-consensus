@@ -397,7 +397,7 @@ else
 fi
 
 # Verify Rust storage is clean
-if [ -d "$RUST_STORAGE" ] && [ "$(ls -A "$RUST_STORAGE" 2>/dev/null)" ]; then
+if [ -d "$RUST_STORAGE" ] && [ "$(ls -A "$RUST_STORAGE" 2>/dev/null | grep -v 'jmt_state')" ]; then
     echo -e "${RED}  ❌ Rust storage vẫn còn dữ liệu cũ!${NC}"
     VALIDATION_OK=false
 else
