@@ -45,6 +45,8 @@ mysten-common = { path = "../crates/mysten-common" }
 typed-store = { path = "../crates/typed-store" }
 libmdbx = { version = "0.6", features = ["lifetimed-bytes"] }
 sha2 = "0.10"
+jmt = "0.12"
+borsh = "1.5"
 
 # Protocol
 meta-protocol-config = { path = "../crates/meta-protocol-config" }
