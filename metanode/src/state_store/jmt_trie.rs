@@ -333,6 +333,12 @@ impl JmtStateTrie {
         Ok(new_root.0)
     }
 
+    /// Get all key-value pairs from the flat value store.
+    /// Used for state replication to sub-nodes (GetCommitBatch equivalent).
+    pub fn get_all(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.tree_store.store.prefix_scan(JMT_VALUE_PREFIX)
+    }
+
     /// Verify a Merkle proof for a key-value pair against a root hash.
     /// Static method — can be called without tree instance (e.g., light client).
     pub fn verify_proof(
