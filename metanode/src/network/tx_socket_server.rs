@@ -144,8 +144,8 @@ impl TxSocketServer {
         client: Arc<dyn TransactionSubmitter>,
         node: Option<Arc<Mutex<ConsensusNode>>>,
         is_transitioning: Option<Arc<AtomicBool>>,
-        pending_transactions_queue: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
-        storage_path: Option<std::path::PathBuf>,
+        _pending_transactions_queue: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
+        _storage_path: Option<std::path::PathBuf>,
         peer_rpc_addresses: Vec<String>,
         peer_discovery_addresses: Option<Arc<RwLock<Vec<String>>>>,
         tx_recycler: Option<Arc<TxRecycler>>,
@@ -321,83 +321,20 @@ impl TxSocketServer {
             );
             let transactions_to_submit = individual_txs;
 
-            // LOCK-FREE CHECK: Fast path - check is_transitioning BEFORE touching the lock
-            // FIX: Queue TXs instead of rejecting — Go-sub doesn't retry, rejection = permanent loss
+            // LOCK-FREE CHECK: Fast path - reject during epoch transition.
+            // Go's channel_sender.go has built-in retry logic (30x × 2s) for
+            // "epoch transition" errors, so returning an error is safe and simple.
             if let Some(ref transitioning) = is_transitioning {
                 if transitioning.load(Ordering::SeqCst) {
-                    warn!("⚡ [TX FLOW] Epoch transition in progress. Queueing {} transactions (LOCK-FREE).", transactions_to_submit.len());
-
-                    // TRULY LOCK-FREE PATH: Use direct access to queue if available
-                    if let (Some(ref queue), Some(ref path)) =
-                        (&pending_transactions_queue, &storage_path)
+                    warn!("⚡ [TX FLOW] Epoch transition in progress. Rejecting {} transactions (Go will retry).", transactions_to_submit.len());
+                    let error_response = r#"{"success":false,"error":"epoch transition in progress, please retry"}"#;
+                    if let Err(e) =
+                        Self::send_response_string(&mut stream, error_response).await
                     {
-                        for tx_data in &transactions_to_submit {
-                            if let Err(e) =
-                                crate::node::queue::queue_transaction(queue, path, tx_data.clone())
-                                    .await
-                            {
-                                error!("❌ [TX FLOW] Failed to queue TX during transition (lock-free): {}", e);
-                            }
-                        }
-
-                        let success_response = format!(
-                            r#"{{"success":true,"queued":true,"message":"Queued {} TXs during epoch transition (lock-free)"}}"#,
-                            transactions_to_submit.len()
-                        );
-                        if let Err(e) =
-                            Self::send_response_string(&mut stream, &success_response).await
-                        {
-                            error!("❌ [TX FLOW] Failed to send queue response: {}", e);
-                            return Err(e.into());
-                        }
-                        return Ok(());
-                    } else if let Some(ref node_arc) = node {
-                        // Fallback to locking node if direct queue access is not available
-                        match tokio::time::timeout(
-                            std::time::Duration::from_millis(100), // reduced timeout
-                            node_arc.lock(),
-                        )
-                        .await
-                        {
-                            Ok(node_guard) => {
-                                if let Err(e) = node_guard
-                                    .queue_transactions_for_next_epoch(
-                                        transactions_to_submit.clone(),
-                                    )
-                                    .await
-                                {
-                                    error!(
-                                        "❌ [TX FLOW] Failed to queue TXs during transition: {}",
-                                        e
-                                    );
-                                }
-                                drop(node_guard);
-                                let success_response = format!(
-                                    r#"{{"success":true,"queued":true,"message":"Queued {} TXs during epoch transition"}}"#,
-                                    transactions_to_submit.len()
-                                );
-                                if let Err(e) =
-                                    Self::send_response_string(&mut stream, &success_response).await
-                                {
-                                    error!("❌ [TX FLOW] Failed to send queue response: {}", e);
-                                    return Err(e.into());
-                                }
-                                return Ok(());
-                            }
-                            Err(_) => {
-                                // Lock timeout during transition — add to pending queue directly
-                                warn!("⏳ [TX FLOW] Lock timeout during transition. Storing {} TXs in memory for retry.", transactions_to_submit.len());
-                                let error_response = r#"{"success":false,"error":"Node busy (epoch transition in progress), transactions will be retried"}"#;
-                                if let Err(e) =
-                                    Self::send_response_string(&mut stream, error_response).await
-                                {
-                                    error!("❌ [TX FLOW] Failed to send timeout response: {}", e);
-                                    return Err(e.into());
-                                }
-                                continue;
-                            }
-                        }
+                        error!("❌ [TX FLOW] Failed to send epoch transition response: {}", e);
+                        return Err(e.into());
                     }
+                    continue;
                 }
             }
 
@@ -521,46 +458,15 @@ impl TxSocketServer {
                             .map_or(false, |flag| flag.load(Ordering::SeqCst));
 
                         if is_epoch_transition {
-                            // During epoch transition, we must NOT submit directly
-                            warn!("⏳ [TX FLOW] Lock timeout (200ms) during epoch transition. Queueing {} transactions.",
+                            // During epoch transition, reject — Go will retry (30x × 2s)
+                            warn!("⏳ [TX FLOW] Lock timeout (200ms) during epoch transition. Rejecting {} TXs (Go will retry).",
                                 transactions_to_submit.len());
-
-                            // Try to queue via pending_transactions_queue (lock-free path)
-                            if let (Some(ref queue), Some(ref path)) =
-                                (&pending_transactions_queue, &storage_path)
+                            let error_response = r#"{"success":false,"error":"epoch transition in progress, please retry"}"#;
+                            if let Err(e) =
+                                Self::send_response_string(&mut stream, error_response).await
                             {
-                                for tx_data in &transactions_to_submit {
-                                    if let Err(e) = crate::node::queue::queue_transaction(
-                                        queue,
-                                        path,
-                                        tx_data.clone(),
-                                    )
-                                    .await
-                                    {
-                                        error!(
-                                            "❌ [TX FLOW] Failed to queue TX during transition: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                                let success_response = format!(
-                                    r#"{{"success":true,"queued":true,"message":"Queued {} TXs during epoch transition (lock-free)"}}"#,
-                                    transactions_to_submit.len()
-                                );
-                                if let Err(e) =
-                                    Self::send_response_string(&mut stream, &success_response).await
-                                {
-                                    error!("❌ [TX FLOW] Failed to send queue response: {}", e);
-                                    return Err(e.into());
-                                }
-                            } else {
-                                let error_response = r#"{"success":false,"error":"Node busy (epoch transition), please retry"}"#;
-                                if let Err(e) =
-                                    Self::send_response_string(&mut stream, error_response).await
-                                {
-                                    error!("❌ [TX FLOW] Failed to send timeout response: {}", e);
-                                    return Err(e.into());
-                                }
+                                error!("❌ [TX FLOW] Failed to send epoch transition response: {}", e);
+                                return Err(e.into());
                             }
                             continue;
                         }
@@ -588,38 +494,15 @@ impl TxSocketServer {
             // Race condition is handled by the lock-free is_transitioning flag.
             if let Some(ref transitioning) = is_transitioning {
                 if transitioning.load(Ordering::SeqCst) {
-                    // Epoch transition started between initial check and now
-                    warn!("⚠️ [RACE CONDITION] Epoch transition detected via atomic flag before submission. Queueing {} TXs.",
+                    // Epoch transition started between initial check and now — reject, Go will retry
+                    warn!("⚠️ [RACE CONDITION] Epoch transition detected before submission. Rejecting {} TXs (Go will retry).",
                         transactions_to_submit.len());
-                    if let (Some(ref queue), Some(ref path)) =
-                        (&pending_transactions_queue, &storage_path)
+                    let error_response = r#"{"success":false,"error":"epoch transition in progress, please retry"}"#;
+                    if let Err(e) =
+                        Self::send_response_string(&mut stream, error_response).await
                     {
-                        for tx_data in &transactions_to_submit {
-                            if let Err(e) =
-                                crate::node::queue::queue_transaction(queue, path, tx_data.clone())
-                                    .await
-                            {
-                                error!("❌ [TX FLOW] Failed to queue TX: {}", e);
-                            }
-                        }
-                        let success_response = format!(
-                            r#"{{"success":true,"queued":true,"message":"Queued {} TXs (transition detected before submission)"}}"#,
-                            transactions_to_submit.len()
-                        );
-                        if let Err(e) =
-                            Self::send_response_string(&mut stream, &success_response).await
-                        {
-                            error!("❌ [TX FLOW] Failed to send queue response: {}", e);
-                            return Err(e.into());
-                        }
-                    } else {
-                        let error_response = r#"{"success":false,"error":"Epoch transition in progress, please retry"}"#;
-                        if let Err(e) =
-                            Self::send_response_string(&mut stream, error_response).await
-                        {
-                            error!("❌ [TX FLOW] Failed to send error response: {}", e);
-                            return Err(e.into());
-                        }
+                        error!("❌ [TX FLOW] Failed to send epoch transition response: {}", e);
+                        return Err(e.into());
                     }
                     continue;
                 }
@@ -782,44 +665,16 @@ impl TxSocketServer {
                                 );
                             }
                         } else if err_str.contains("shutting down") || err_str.contains("channel closed") {
-                            // CRITICAL FIX: Epoch transition closed the consensus channel.
-                            // Queue TXs for next epoch instead of dropping them permanently.
+                            // Epoch transition closed the consensus channel.
+                            // Return error — Go will retry after transition completes (30x × 2s).
                             warn!(
-                                "♻️ [TX FLOW] Consensus shutting down during sub-batch {} submission. Queueing {} TXs for next epoch.",
+                                "♻️ [TX FLOW] Consensus shutting down during sub-batch {} submission. Rejecting {} TXs (Go will retry).",
                                 chunk_idx + 1, chunk_len
                             );
-                            if let (Some(ref queue), Some(ref path)) =
-                                (&pending_transactions_queue, &storage_path)
-                            {
-                                let mut queued_count = 0usize;
-                                for tx_data in &chunk_vec {
-                                    match crate::node::queue::queue_transaction(
-                                        queue, path, tx_data.clone(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(_) => queued_count += 1,
-                                        Err(e) => {
-                                            error!("❌ [TX FLOW] Failed to queue TX during epoch transition: {}", e);
-                                        }
-                                    }
-                                }
-                                info!(
-                                    "♻️ [TX FLOW] Queued {}/{} TXs from sub-batch {} for next epoch",
-                                    queued_count, chunk_len, chunk_idx + 1
-                                );
-                            } else {
-                                error!(
-                                    "❌ [TX FLOW] Cannot queue TXs — no pending_transactions_queue available. {} TXs LOST.",
-                                    chunk_len
-                                );
-                            }
                             all_succeeded = false;
-                            last_error = format!(
-                                "Epoch transition: queued {} TXs for next epoch",
-                                chunk_len
-                            );
-                            // Don't break — try remaining sub-batches (they'll likely also need queuing)
+                            last_error = "epoch transition in progress, please retry".to_string();
+                            // Break — all remaining sub-batches will also fail
+                            break;
                         } else {
                             all_succeeded = false;
                             last_error = err_str;
