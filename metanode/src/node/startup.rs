@@ -15,6 +15,9 @@ use crate::network::peer_rpc::PeerRpcServer;
 use crate::network::rpc::RpcServer;
 use crate::network::tx_socket_server::TxSocketServer;
 use crate::node::ConsensusNode;
+use crate::state_store::ipc::StateIpcServer;
+use crate::state_store::jmt_trie::JmtStateTrie;
+use crate::state_store::mdbx_store::MdbxStore;
 
 /// Startup configuration and initialization
 pub struct StartupConfig {
@@ -42,6 +45,7 @@ pub struct InitializedNode {
     pub node: Arc<Mutex<ConsensusNode>>,
     pub rpc_server_handle: Option<tokio::task::JoinHandle<()>>,
     pub uds_server_handle: Option<tokio::task::JoinHandle<()>>,
+    pub state_ipc_handle: Option<tokio::task::JoinHandle<()>>,
     #[allow(dead_code)]
     pub peer_rpc_server_handle: Option<tokio::task::JoinHandle<()>>,
     pub node_config: NodeConfig,
@@ -188,6 +192,45 @@ impl InitializedNode {
             info!("Unix Domain Socket server available at {}", socket_path);
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // JMT State IPC Server — provides Rust JMT+MDBX state engine over UDS
+        // Go EVM connects here to read/write state using JMT backend
+        // ═══════════════════════════════════════════════════════════════════════
+        let state_ipc_handle;
+        {
+            let state_socket_path = format!("/tmp/metanode-state-{}.sock", node_config.node_id);
+            let state_db_path = format!("{}/jmt_state", node_config.storage_path.display());
+
+            // Create MDBX store directory
+            std::fs::create_dir_all(&state_db_path).unwrap_or_else(|e| {
+                warn!("⚠️ [JMT] Failed to create state DB dir {}: {}", state_db_path, e);
+            });
+
+            match MdbxStore::open(std::path::Path::new(&state_db_path), 1) {
+                Ok(store) => {
+                    let trie = Arc::new(JmtStateTrie::new(store));
+                    let ipc_server = StateIpcServer::new(
+                        state_socket_path.clone(),
+                        trie.clone(),
+                    );
+
+                    state_ipc_handle = Some(tokio::spawn(async move {
+                        if let Err(e) = ipc_server.start().await {
+                            error!("📦 [JMT-IPC] State IPC server error: {}", e);
+                        }
+                    }));
+                    info!(
+                        "📦 [JMT] State IPC server available at {} (DB: {})",
+                        state_socket_path, state_db_path
+                    );
+                }
+                Err(e) => {
+                    error!("❌ [JMT] Failed to open MDBX at {}: {}", state_db_path, e);
+                    state_ipc_handle = None;
+                }
+            }
+        }
+
         if let Some(peer_port) = node_config.peer_rpc_port {
             if peer_port > 0 {
                 let (executor_client_for_peer, shared_index_for_peer) = {
@@ -228,6 +271,7 @@ impl InitializedNode {
             node,
             rpc_server_handle,
             uds_server_handle,
+            state_ipc_handle,
             peer_rpc_server_handle,
             node_config,
         })

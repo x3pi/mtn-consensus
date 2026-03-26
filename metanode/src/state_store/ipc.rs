@@ -32,7 +32,6 @@ use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, error, info, warn};
 
 use super::jmt_trie::JmtStateTrie;
-use super::mdbx_store::MdbxStore;
 
 // Command bytes
 const CMD_GET: u8 = 0x01;
