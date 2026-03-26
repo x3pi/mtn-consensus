@@ -163,31 +163,9 @@ else
 fi
 
 # ==============================================================================
-# STEP 4: START RUST METANODES (all 5 nodes)
+# STEP 4: START GO MASTERS FIRST (they must be ready before Rust connects)
 # ==============================================================================
-echo -e "${BLUE}[4/5] 🦀 Starting Rust metanodes (nodes 0-4)...${NC}"
-cd "$METANODE_ROOT"
-
-for i in "${!ALL_NODES[@]}"; do
-    id=${ALL_NODES[$i]}
-    if [ "$id" -eq 4 ]; then
-        echo -e "  🚀 Rust Node $id ${CYAN}(SyncOnly)${NC}..."
-    else
-        echo -e "  🚀 Rust Node $id..."
-    fi
-    tmux new-session -d -s "${RUST_SESSION[$i]}" -c "$METANODE_ROOT" \
-        "ulimit -n 100000; export RUST_LOG=info,consensus_core=debug; export DB_WRITE_BUFFER_SIZE_MB=256; export DB_WAL_SIZE_MB=256; $BINARY start --config ${RUST_CONFIG[$i]} >> \"$LOG_DIR/node_$id/rust.log\" 2>&1"
-    sleep 1
-done
-sleep 3
-
-# NOTE: JMT State is now embedded in Go via FFI (no IPC socket needed).
-# Rust no longer serves state over socket.
-
-# ==============================================================================
-# STEP 5: START GO MASTERS + SUBS (all 5 nodes)
-# ==============================================================================
-echo -e "${BLUE}[5/5] 🐹 Starting Go processes (nodes 0-4)...${NC}"
+echo -e "${BLUE}[4/6] 🐹 Starting Go Masters (nodes 0-4)...${NC}"
 cd "$GO_SIMPLE_ROOT"
 
 for i in "${!ALL_NODES[@]}"; do
@@ -205,16 +183,37 @@ for i in "${!ALL_NODES[@]}"; do
         echo -e "  🚀 Go Master $id..."
     fi
     tmux new-session -d -s "${GO_MASTER_SESSION[$i]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && export METANODE_STATE_SOCK='/tmp/metanode-state-'$id'.sock' && export METANODE_JMT_STATE_PATH='$METANODE_ROOT/config/storage/node_'$id'/jmt_state' && ./simple_chain -config=${GO_MASTER_CONFIG[$i]} $PPROF_ARG >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && export METANODE_JMT_STATE_PATH='$METANODE_ROOT/config/storage/node_'$id'/jmt_state' && ./simple_chain -config=${GO_MASTER_CONFIG[$i]} $PPROF_ARG >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
     sleep 2
 done
 
-# Wait for Go Master sockets (which Rust needs to connect its executor client)
+# Wait for Go Master sockets (Rust needs these to connect its executor client)
 for i in "${!ALL_NODES[@]}"; do
     wait_for_socket "${GO_MASTER_SOCKET[$i]}" "Go Master ${ALL_NODES[$i]}" 120
 done
 
+# ==============================================================================
+# STEP 5: START RUST METANODES (after Go Masters are ready)
+# ==============================================================================
+echo -e "${BLUE}[5/6] 🦀 Starting Rust metanodes (nodes 0-4)...${NC}"
+cd "$METANODE_ROOT"
+
+for i in "${!ALL_NODES[@]}"; do
+    id=${ALL_NODES[$i]}
+    if [ "$id" -eq 4 ]; then
+        echo -e "  🚀 Rust Node $id ${CYAN}(SyncOnly)${NC}..."
+    else
+        echo -e "  🚀 Rust Node $id..."
+    fi
+    tmux new-session -d -s "${RUST_SESSION[$i]}" -c "$METANODE_ROOT" \
+        "ulimit -n 100000; export RUST_LOG=info,consensus_core=debug; export DB_WRITE_BUFFER_SIZE_MB=256; export DB_WAL_SIZE_MB=256; $BINARY start --config ${RUST_CONFIG[$i]} >> \"$LOG_DIR/node_$id/rust.log\" 2>&1"
+    sleep 1
+done
+sleep 3
+
 # Start Go Subs
+echo -e "${BLUE}[6/6] 🐹 Starting Go Subs (nodes 0-4)...${NC}"
+cd "$GO_SIMPLE_ROOT"
 for i in "${!ALL_NODES[@]}"; do
     id=${ALL_NODES[$i]}; DATA="${GO_DATA_DIR[$i]}"
     XAPIAN="sample/$DATA/data-write/data/xapian_node"
@@ -225,7 +224,7 @@ for i in "${!ALL_NODES[@]}"; do
         echo -e "  🚀 Go Sub $id..."
     fi
     tmux new-session -d -s "${GO_SUB_SESSION[$i]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && export METANODE_STATE_SOCK='/tmp/metanode-state-'$id'.sock' && export METANODE_JMT_STATE_PATH='$METANODE_ROOT/config/storage/node_'$id'/jmt_state' && ./simple_chain -config=${GO_SUB_CONFIG[$i]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && export METANODE_JMT_STATE_PATH='$METANODE_ROOT/config/storage/node_'$id'/jmt_state' && ./simple_chain -config=${GO_SUB_CONFIG[$i]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
     sleep 1
 done
 sleep 3
