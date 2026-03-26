@@ -43,6 +43,8 @@ const JMT_NODE_PREFIX: &[u8] = b"jn:";
 const JMT_VALUE_PREFIX: &[u8] = b"jv:";
 /// Prefix for versioned values (JMT value history).
 const JMT_VERSIONED_VALUE_PREFIX: &[u8] = b"vv:";
+/// Prefix for mapping KeyHash to original key (needed for GetAll).
+const JMT_KEY_MAPPING_PREFIX: &[u8] = b"jk:";
 
 /// MdbxTreeStore adapts MdbxStore to implement JMT's TreeReader/TreeWriter traits.
 /// This is the bridge between JMT's in-memory tree operations and persistent MDBX storage.
@@ -70,6 +72,14 @@ impl MdbxTreeStore {
     pub(crate) fn encode_value_key(key_hash: &KeyHash) -> Vec<u8> {
         let mut buf = Vec::with_capacity(JMT_VALUE_PREFIX.len() + 32);
         buf.extend_from_slice(JMT_VALUE_PREFIX);
+        buf.extend_from_slice(key_hash.0.as_ref());
+        buf
+    }
+
+    /// Encode a key mapping (KeyHash -> Original Key)
+    pub(crate) fn encode_key_mapping(key_hash: &KeyHash) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(JMT_KEY_MAPPING_PREFIX.len() + 32);
+        buf.extend_from_slice(JMT_KEY_MAPPING_PREFIX);
         buf.extend_from_slice(key_hash.0.as_ref());
         buf
     }
@@ -299,17 +309,20 @@ impl JmtStateTrie {
         self.tree_store
             .write_node_batch(&update_batch.node_batch)?;
 
-        // 5. Persist flat key-value pairs for O(1) reads
-        let flat_pairs: Vec<(Vec<u8>, Vec<u8>)> = keys
-            .iter()
-            .zip(values.iter())
-            .map(|(key, value)| {
-                let key_hash = Self::hash_key(key);
-                let db_key = MdbxTreeStore::encode_value_key(&key_hash);
-                let db_value = value.as_deref().unwrap_or(&[]).to_vec();
-                (db_key, db_value)
-            })
-            .collect();
+        // 5. Persist flat key-value pairs for O(1) reads AND key hashes mapping
+        let mut flat_pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(keys.len() * 2);
+        for (key, value) in keys.iter().zip(values.iter()) {
+            let key_hash = Self::hash_key(key);
+            
+            // Value storage
+            let db_key = MdbxTreeStore::encode_value_key(&key_hash);
+            let db_value = value.as_deref().unwrap_or(&[]).to_vec();
+            flat_pairs.push((db_key, db_value));
+            
+            // Reverse key mapping (hash -> original key)
+            let mapping_key = MdbxTreeStore::encode_key_mapping(&key_hash);
+            flat_pairs.push((mapping_key, key.to_vec()));
+        }
 
         let flat_refs: Vec<(&[u8], &[u8])> = flat_pairs
             .iter()
@@ -336,7 +349,23 @@ impl JmtStateTrie {
     /// Get all key-value pairs from the flat value store.
     /// Used for state replication to sub-nodes (GetCommitBatch equivalent).
     pub fn get_all(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        self.tree_store.store.prefix_scan(JMT_VALUE_PREFIX)
+        // Iterate over the key mappings (jk:) instead of (jv:) so we get original keys
+        let mappings = self.tree_store.store.prefix_scan(JMT_KEY_MAPPING_PREFIX)?;
+        let mut results = Vec::with_capacity(mappings.len());
+        
+        for (stripped_key_hash, original_key) in mappings {
+            // stripped_key_hash is exactly the 32-byte key hash (prefix is stripped by prefix_scan)
+            let mut db_value_key = Vec::with_capacity(JMT_VALUE_PREFIX.len() + 32);
+            db_value_key.extend_from_slice(JMT_VALUE_PREFIX);
+            db_value_key.extend_from_slice(&stripped_key_hash);
+            
+            if let Some(value) = self.tree_store.store.get(&db_value_key)? {
+                if !value.is_empty() {
+                    results.push((original_key, value));
+                }
+            }
+        }
+        Ok(results)
     }
 
     /// Verify a Merkle proof for a key-value pair against a root hash.
@@ -366,7 +395,8 @@ mod tests {
 
     fn create_test_trie() -> (JmtStateTrie, TempDir) {
         let dir = TempDir::new().expect("Failed to create temp dir");
-        let store = MdbxStore::open(dir.path(), 1).expect("Failed to open MDBX");
+        let env = crate::state_store::mdbx_store::MdbxEnv::open(dir.path(), 1).expect("Failed to open MDBX");
+        let store = env.open_store("test").expect("Failed to open store");
         let trie = JmtStateTrie::new(store);
         (trie, dir)
     }
@@ -438,8 +468,10 @@ mod tests {
         // Same key-value set must produce same root hash (fork safety)
         let dir1 = TempDir::new().unwrap();
         let dir2 = TempDir::new().unwrap();
-        let trie1 = JmtStateTrie::new(MdbxStore::open(dir1.path(), 1).unwrap());
-        let trie2 = JmtStateTrie::new(MdbxStore::open(dir2.path(), 1).unwrap());
+        let env1 = crate::state_store::mdbx_store::MdbxEnv::open(dir1.path(), 1).unwrap();
+        let env2 = crate::state_store::mdbx_store::MdbxEnv::open(dir2.path(), 1).unwrap();
+        let trie1 = JmtStateTrie::new(env1.open_store("test").unwrap());
+        let trie2 = JmtStateTrie::new(env2.open_store("test").unwrap());
 
         let keys = vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()];
         let values = vec![

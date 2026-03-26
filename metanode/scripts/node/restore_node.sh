@@ -308,6 +308,16 @@ if [ -d "$SNAP_DIR/back_up_write" ]; then
     cp -a "$SNAP_DIR/back_up_write/"* "$NODE_DATA/back_up_write/" 2>/dev/null || true
 fi
 
+# Copy JMT State (MDBX)
+echo "  📁 Mapping JMT State dir..."
+if [ -d "$SNAP_DIR/jmt_state" ]; then
+    mkdir -p "$METANODE_ROOT/config/storage/node_$NODE_ID/jmt_state"
+    cp -a "$SNAP_DIR/jmt_state/"* "$METANODE_ROOT/config/storage/node_$NODE_ID/jmt_state/" 2>/dev/null || true
+    echo -e "${GREEN}  ✅ JMT State dir copied${NC}"
+else
+    echo -e "${YELLOW}  ⚠️  jmt_state/ not in snapshot${NC}"
+fi
+
 # CRITICAL: Copy epoch_data_backup.json — without this, Go starts at epoch 0
 echo "  📁 Copying epoch data..."
 EPOCH_RESTORED=false
@@ -415,7 +425,7 @@ cd "$GO_SIMPLE_ROOT"
 DATA="${GO_DATA_DIR[$NODE_ID]}"
 XAPIAN_MASTER="sample/$DATA/data/data/xapian_node"
 tmux new-session -d -s "${GO_MASTER_SESSION[$NODE_ID]}" -c "$GO_SIMPLE_ROOT" \
-    "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN_MASTER' && ./simple_chain -config=${GO_MASTER_CONFIG[$NODE_ID]} >> \"$LOG_DIR/node_$NODE_ID/go-master-stdout.log\" 2>&1"
+    "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN_MASTER' && export METANODE_STATE_SOCK='/tmp/metanode-state-'$NODE_ID'.sock' && export METANODE_JMT_STATE_PATH='$METANODE_ROOT/config/storage/node_'$NODE_ID'/jmt_state' && ./simple_chain -config=${GO_MASTER_CONFIG[$NODE_ID]} >> \"$LOG_DIR/node_$NODE_ID/go-master-stdout.log\" 2>&1"
 echo -e "${GREEN}    🚀 Go Master started (${GO_MASTER_SESSION[$NODE_ID]})${NC}"
 
 # 5b. Wait for Go Master socket
@@ -426,7 +436,7 @@ wait_for_socket "${GO_MASTER_SOCKET[$NODE_ID]}" "Go Master $NODE_ID" 120
 echo -e "${CYAN}  [5c] Go Sub...${NC}"
 XAPIAN_SUB="sample/$DATA/data-write/data/xapian_node"
 tmux new-session -d -s "${GO_SUB_SESSION[$NODE_ID]}" -c "$GO_SIMPLE_ROOT" \
-    "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN_SUB' && ./simple_chain -config=${GO_SUB_CONFIG[$NODE_ID]} >> \"$LOG_DIR/node_$NODE_ID/go-sub-stdout.log\" 2>&1"
+    "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN_SUB' && export METANODE_STATE_SOCK='/tmp/metanode-state-'$NODE_ID'.sock' && export METANODE_JMT_STATE_PATH='$METANODE_ROOT/config/storage/node_'$NODE_ID'/jmt_state' && ./simple_chain -config=${GO_SUB_CONFIG[$NODE_ID]} >> \"$LOG_DIR/node_$NODE_ID/go-sub-stdout.log\" 2>&1"
 echo -e "${GREEN}    🚀 Go Sub started (${GO_SUB_SESSION[$NODE_ID]})${NC}"
 
 # 5d. Wait for Go to load snapshot state — verify block height

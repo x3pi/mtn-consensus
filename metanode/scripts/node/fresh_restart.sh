@@ -169,9 +169,30 @@ else
 fi
 
 # ==============================================================================
-# STEP 4: START GO MASTERS + SUBS
+# STEP 4: START RUST METANODES
 # ==============================================================================
-echo -e "${BLUE}[4/5] 🐹 Starting Go processes...${NC}"
+echo -e "${BLUE}[4/5] 🦀 Starting Rust metanodes...${NC}"
+cd "$METANODE_ROOT"
+
+for i in "${!NODES[@]}"; do
+    id=${NODES[$i]}
+    echo -e "  🚀 Rust Node $id..."
+    tmux new-session -d -s "${RUST_SESSION[$i]}" -c "$METANODE_ROOT" \
+        "ulimit -n 100000; export RUST_LOG=info,consensus_core=debug; export DB_WRITE_BUFFER_SIZE_MB=256; export DB_WAL_SIZE_MB=256; export METANODE_STATE_SOCK='/tmp/metanode-state-'$id'.sock'; $BINARY start --config ${RUST_CONFIG[$i]} >> \"$LOG_DIR/node_$id/rust.log\" 2>&1"
+    sleep 1
+done
+sleep 3
+
+# Wait for Rust State sockets to be ready before starting Go
+for i in "${!NODES[@]}"; do
+    id=${NODES[$i]}
+    wait_for_socket "/tmp/metanode-state-$id.sock" "Rust JMT State $id" 120
+done
+
+# ==============================================================================
+# STEP 5: START GO MASTERS + SUBS
+# ==============================================================================
+echo -e "${BLUE}[5/5] 🐹 Starting Go processes...${NC}"
 cd "$GO_SIMPLE_ROOT"
 
 for i in "${!NODES[@]}"; do
@@ -185,7 +206,7 @@ for i in "${!NODES[@]}"; do
     
     echo -e "  🚀 Go Master $id..."
     tmux new-session -d -s "${GO_MASTER_SESSION[$i]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && ./simple_chain -config=${GO_MASTER_CONFIG[$i]} $PPROF_ARG >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && export METANODE_STATE_SOCK='/tmp/metanode-state-'$id'.sock' && export METANODE_JMT_STATE_PATH='$METANODE_ROOT/config/storage/node_'$id'/jmt_state' && ./simple_chain -config=${GO_MASTER_CONFIG[$i]} $PPROF_ARG >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
     sleep 2
 done
 
@@ -201,22 +222,7 @@ for i in "${!NODES[@]}"; do
     
     echo -e "  🚀 Go Sub $id..."
     tmux new-session -d -s "${GO_SUB_SESSION[$i]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && ./simple_chain -config=${GO_SUB_CONFIG[$i]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
-    sleep 1
-done
-sleep 3
-
-# ==============================================================================
-# STEP 5: START RUST METANODES
-# ==============================================================================
-echo -e "${BLUE}[5/5] 🦀 Starting Rust metanodes...${NC}"
-cd "$METANODE_ROOT"
-
-for i in "${!NODES[@]}"; do
-    id=${NODES[$i]}
-    echo -e "  🚀 Rust Node $id..."
-    tmux new-session -d -s "${RUST_SESSION[$i]}" -c "$METANODE_ROOT" \
-        "ulimit -n 100000; export RUST_LOG=info,consensus_core=debug; export DB_WRITE_BUFFER_SIZE_MB=256; export DB_WAL_SIZE_MB=256; $BINARY start --config ${RUST_CONFIG[$i]} >> \"$LOG_DIR/node_$id/rust.log\" 2>&1"
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && export METANODE_STATE_SOCK='/tmp/metanode-state-'$id'.sock' && export METANODE_JMT_STATE_PATH='$METANODE_ROOT/config/storage/node_'$id'/jmt_state' && ./simple_chain -config=${GO_SUB_CONFIG[$i]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
     sleep 1
 done
 sleep 3

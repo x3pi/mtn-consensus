@@ -10,9 +10,6 @@ use tracing::{info, warn};
 
 use super::traits::StateStore;
 
-/// Table name for state key-value storage in MDBX.
-const STATE_TABLE: &str = "state";
-
 /// MdbxStore is a high-performance key-value store backed by MDBX.
 ///
 /// MDBX uses memory-mapped I/O for zero-copy reads and B+tree structure
@@ -24,18 +21,20 @@ const STATE_TABLE: &str = "state";
 /// - No WAL → no maintenance, no crash recovery needed
 /// - Wait-free parallel reads
 /// - Copy-on-write for atomic writes
-pub struct MdbxStore {
+/// MdbxEnv manages the single MDBX environment for the process.
+/// It allows creating multiple isolated MdbxStore tables.
+pub struct MdbxEnv {
     db: Arc<Database<NoWriteMap>>,
 }
 
-impl MdbxStore {
-    /// Open or create an MDBX database at the given path.
-    ///
-    /// # Arguments
-    /// * `path` - Directory path for the MDBX data file
-    /// * `max_size_gb` - Maximum database size in GB (MDBX pre-allocates virtual address space)
+pub struct MdbxStore {
+    pub(crate) db: Arc<Database<NoWriteMap>>,
+    pub(crate) table_name: String,
+}
+
+impl MdbxEnv {
+    /// Open the MDBX environment at the given path.
     pub fn open(path: &Path, max_size_gb: usize) -> Result<Self> {
-        // Create directory if it doesn't exist
         std::fs::create_dir_all(path)
             .with_context(|| format!("Failed to create MDBX directory: {}", path.display()))?;
 
@@ -57,15 +56,8 @@ impl MdbxStore {
         )
         .with_context(|| format!("Failed to open MDBX at {}", path.display()))?;
 
-        // Ensure the state table exists
-        {
-            let tx = db.begin_rw_txn()?;
-            tx.create_table(Some(STATE_TABLE), TableFlags::default())?;
-            tx.commit()?;
-        }
-
         info!(
-            "📦 [MDBX] Opened database at {} (max_size={}GB)",
+            "📦 [MDBX] Opened environment at {} (max_size={}GB)",
             path.display(),
             max_size_gb
         );
@@ -73,13 +65,33 @@ impl MdbxStore {
         Ok(Self { db: Arc::new(db) })
     }
 
+    /// Open or create a specific table store within the environment.
+    pub fn open_store(&self, table_name: &str) -> Result<MdbxStore> {
+        // Ensure the table exists
+        {
+            let tx = self.db.begin_rw_txn()?;
+            tx.create_table(Some(table_name), TableFlags::default())?;
+            tx.commit()?;
+        }
+
+        info!("📦 [MDBX] Opened table store: {}", table_name);
+
+        Ok(MdbxStore {
+            db: self.db.clone(),
+            table_name: table_name.to_string(),
+        })
+    }
+}
+
+impl MdbxStore {
     /// Get database statistics (page size, depth, entries, etc.)
     pub fn stats(&self) -> Result<String> {
         let tx = self.db.begin_ro_txn()?;
-        let table = tx.open_table(Some(STATE_TABLE))?;
+        let table = tx.open_table(Some(self.table_name.as_str()))?;
         let stat = tx.table_stat(&table)?;
         Ok(format!(
-            "MDBX stats: entries={}, depth={}, page_size={}, branch_pages={}, leaf_pages={}, overflow_pages={}",
+            "MDBX stats ({}): entries={}, depth={}, page_size={}, branch_pages={}, leaf_pages={}, overflow_pages={}",
+            self.table_name,
             stat.entries(),
             stat.depth(),
             stat.page_size(),
@@ -93,7 +105,7 @@ impl MdbxStore {
 impl StateStore for MdbxStore {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let tx = self.db.begin_ro_txn()?;
-        let table = tx.open_table(Some(STATE_TABLE))?;
+        let table = tx.open_table(Some(self.table_name.as_str()))?;
 
         match tx.get::<Vec<u8>>(&table, key) {
             Ok(Some(value)) => Ok(Some(value)),
@@ -105,7 +117,7 @@ impl StateStore for MdbxStore {
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
         let tx = self.db.begin_rw_txn()?;
-        let table = tx.open_table(Some(STATE_TABLE))?;
+        let table = tx.open_table(Some(self.table_name.as_str()))?;
         tx.put(&table, key, value, WriteFlags::default())?;
         tx.commit()?;
         Ok(())
@@ -113,7 +125,7 @@ impl StateStore for MdbxStore {
 
     fn delete(&self, key: &[u8]) -> Result<()> {
         let tx = self.db.begin_rw_txn()?;
-        let table = tx.open_table(Some(STATE_TABLE))?;
+        let table = tx.open_table(Some(self.table_name.as_str()))?;
         match tx.del(&table, key, None) {
             Ok(_) => {}
             Err(libmdbx::Error::NotFound) => {} // Key doesn't exist, that's fine
@@ -129,7 +141,7 @@ impl StateStore for MdbxStore {
         }
 
         let tx = self.db.begin_rw_txn()?;
-        let table = tx.open_table(Some(STATE_TABLE))?;
+        let table = tx.open_table(Some(self.table_name.as_str()))?;
 
         for (key, value) in pairs {
             tx.put(&table, *key, *value, WriteFlags::default())?;
@@ -141,7 +153,7 @@ impl StateStore for MdbxStore {
 
     fn prefix_scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let tx = self.db.begin_ro_txn()?;
-        let table = tx.open_table(Some(STATE_TABLE))?;
+        let table = tx.open_table(Some(self.table_name.as_str()))?;
         let mut cursor = tx.cursor(&table)?;
         let mut results = Vec::new();
 
@@ -180,6 +192,7 @@ impl Clone for MdbxStore {
     fn clone(&self) -> Self {
         Self {
             db: self.db.clone(),
+            table_name: self.table_name.clone(),
         }
     }
 }

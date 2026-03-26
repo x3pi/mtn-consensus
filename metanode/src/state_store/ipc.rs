@@ -42,6 +42,7 @@ const CMD_ROOT_HASH: u8 = 0x05;
 const CMD_VERSION: u8 = 0x06;
 const CMD_GET_ALL: u8 = 0x07;
 const CMD_RESET: u8 = 0x08;
+const CMD_INIT: u8 = 0x09;
 
 // Response status
 const STATUS_OK: u8 = 0x00;
@@ -63,13 +64,13 @@ const STATUS_ERROR: u8 = 0x01;
 /// ```
 pub struct StateIpcServer {
     socket_path: String,
-    trie: Arc<JmtStateTrie>,
+    env: Arc<crate::state_store::mdbx_store::MdbxEnv>,
 }
 
 impl StateIpcServer {
     /// Create a new State IPC server.
-    pub fn new(socket_path: String, trie: Arc<JmtStateTrie>) -> Self {
-        Self { socket_path, trie }
+    pub fn new(socket_path: String, env: Arc<crate::state_store::mdbx_store::MdbxEnv>) -> Self {
+        Self { socket_path, env }
     }
 
     /// Start the UDS server. Runs until cancelled.
@@ -85,14 +86,14 @@ impl StateIpcServer {
             self.socket_path
         );
 
-        let trie = self.trie;
+        let env = self.env;
 
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
-                    let trie = trie.clone();
+                    let env = env.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(stream, trie).await {
+                        if let Err(e) = Self::handle_connection(stream, env).await {
                             warn!("📦 [JMT-IPC] Connection error: {}", e);
                         }
                     });
@@ -107,16 +108,42 @@ impl StateIpcServer {
     /// Handle a single client connection (persistent, multiplexed).
     async fn handle_connection(
         mut stream: UnixStream,
-        trie: Arc<JmtStateTrie>,
+        env: Arc<crate::state_store::mdbx_store::MdbxEnv>,
     ) -> Result<()> {
-        info!("📦 [JMT-IPC] New client connected");
+        info!("📦 [JMT-IPC] New client connected, awaiting INIT...");
+
+        // 1. First command must be CMD_INIT to establish namespace
+        let init_cmd = stream.read_u8().await?;
+        if init_cmd != CMD_INIT {
+            return Err(anyhow::anyhow!("Expected CMD_INIT (0x09), got 0x{:02x}", init_cmd));
+        }
+
+        let ns_len = stream.read_u32().await? as usize;
+        let mut ns_payload = vec![0u8; ns_len];
+        if ns_len > 0 {
+            stream.read_exact(&mut ns_payload).await?;
+        }
+
+        let namespace = String::from_utf8(ns_payload).unwrap_or_else(|_| "default".to_string());
+        
+        let store = env.open_store(&namespace)?;
+        let trie = Arc::new(JmtStateTrie::new(store));
+
+        let initial_root = trie.root_hash();
+
+        // Acknowledge INIT with root hash
+        stream.write_u8(STATUS_OK).await?;
+        stream.write_u32(32).await?;
+        stream.write_all(&initial_root).await?;
+
+        info!("📦 [JMT-IPC] Client initialized for namespace '{}', root={}", namespace, hex::encode(&initial_root[..8]));
 
         loop {
             // Read command byte
             let cmd = match stream.read_u8().await {
                 Ok(c) => c,
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    debug!("📦 [JMT-IPC] Client disconnected");
+                    debug!("📦 [JMT-IPC] Client disconnected ({})", namespace);
                     return Ok(());
                 }
                 Err(e) => return Err(e.into()),
@@ -283,7 +310,7 @@ impl StateIpcServer {
         Ok(buf)
     }
 
-    fn handle_reset(trie: &JmtStateTrie, payload: &[u8]) -> Result<Vec<u8>> {
+    fn handle_reset(_trie: &JmtStateTrie, payload: &[u8]) -> Result<Vec<u8>> {
         if payload.len() < 40 {
             return Err(anyhow::anyhow!("RESET: need 8 bytes version + 32 bytes root_hash"));
         }

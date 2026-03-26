@@ -170,6 +170,16 @@ else
     echo -e "${YELLOW}    ⚠️  back_up_write/ not in snapshot${NC}"
 fi
 
+# 5d. Move JMT State (MDBX) -> Rust config/storage/node_X/jmt_state/
+if [ -d "$DOWNLOAD_DIR/jmt_state" ]; then
+    mkdir -p "$METANODE_ROOT/config/storage/node_$DST_NODE/jmt_state"
+    cp -a "$DOWNLOAD_DIR/jmt_state/"* "$METANODE_ROOT/config/storage/node_$DST_NODE/jmt_state/" 2>/dev/null || true
+    SIZE=$(du -sh "$METANODE_ROOT/config/storage/node_$DST_NODE/jmt_state" 2>/dev/null | cut -f1)
+    echo -e "${GREEN}    ✅ jmt_state/ → $SIZE${NC}"
+else
+    echo -e "${YELLOW}    ⚠️  jmt_state/ not in snapshot${NC}"
+fi
+
 # Show restored sizes
 echo ""
 echo -e "${GREEN}  📊 Restored data:${NC}"

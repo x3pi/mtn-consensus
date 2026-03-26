@@ -7,7 +7,8 @@ mod state_store_tests {
 
     fn create_test_store() -> (MdbxStore, TempDir) {
         let dir = TempDir::new().expect("Failed to create temp dir");
-        let store = MdbxStore::open(dir.path(), 1).expect("Failed to open MDBX");
+        let env = crate::state_store::mdbx_store::MdbxEnv::open(dir.path(), 1).expect("Failed to open MDBX");
+        let store = env.open_store("test").expect("Failed to open store");
         (store, dir)
     }
 

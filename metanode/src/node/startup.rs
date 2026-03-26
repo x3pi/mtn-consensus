@@ -81,6 +81,51 @@ impl InitializedNode {
             registry
         };
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // JMT State IPC Server — provides Rust JMT+MDBX state engine over UDS
+        // Go EVM connects here to read/write state using JMT backend
+        // MUST BE STARTED BEFORE ConsensusNode to prevent Genesis initialization deadlock
+        // ═══════════════════════════════════════════════════════════════════════
+        let mut state_ipc_handle = None;
+        let state_socket_path = std::env::var("METANODE_STATE_SOCK")
+            .unwrap_or_else(|_| format!("/tmp/metanode-state-{}.sock", node_config.node_id));
+        let state_db_path = std::env::var("METANODE_JMT_STATE_PATH")
+            .unwrap_or_else(|_| format!("{}/jmt_state", node_config.storage_path.display()));
+        let jmt_socket_info = Some((state_socket_path, state_db_path));
+
+        if let Some((state_socket_path, state_db_path)) = jmt_socket_info {
+            // Create MDBX store directory
+            std::fs::create_dir_all(&state_db_path).unwrap_or_else(|e| {
+                warn!("⚠️ [JMT] Failed to create state DB dir {}: {}", state_db_path, e);
+            });
+
+            match crate::state_store::mdbx_store::MdbxEnv::open(std::path::Path::new(&state_db_path), 50) {
+                Ok(env) => {
+                    let ipc_server = StateIpcServer::new(
+                        state_socket_path.clone(),
+                        Arc::new(env),
+                    );
+
+                    state_ipc_handle = Some(tokio::spawn(async move {
+                        if let Err(e) = ipc_server.start().await {
+                            error!("📦 [JMT-IPC] State IPC server error: {}", e);
+                        }
+                    }));
+                    info!(
+                        "📦 [JMT] State IPC server available at {} (DB: {})",
+                        state_socket_path, state_db_path
+                    );
+
+                    // Wait a tiny bit to ensure Unix socket binds successfully before Go connects
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                Err(e) => {
+                    error!("❌ [JMT] Failed to open MDBX at {}: {}", state_db_path, e);
+                    state_ipc_handle = None;
+                }
+            }
+        }
+
         // Create the ConsensusNode wrapped in a Mutex for safe concurrent access
         let node = Arc::new(Mutex::new(
             ConsensusNode::new_with_registry_and_service(node_config.clone(), registry).await?,
@@ -192,44 +237,7 @@ impl InitializedNode {
             info!("Unix Domain Socket server available at {}", socket_path);
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // JMT State IPC Server — provides Rust JMT+MDBX state engine over UDS
-        // Go EVM connects here to read/write state using JMT backend
-        // ═══════════════════════════════════════════════════════════════════════
-        let state_ipc_handle;
-        {
-            let state_socket_path = format!("/tmp/metanode-state-{}.sock", node_config.node_id);
-            let state_db_path = format!("{}/jmt_state", node_config.storage_path.display());
-
-            // Create MDBX store directory
-            std::fs::create_dir_all(&state_db_path).unwrap_or_else(|e| {
-                warn!("⚠️ [JMT] Failed to create state DB dir {}: {}", state_db_path, e);
-            });
-
-            match MdbxStore::open(std::path::Path::new(&state_db_path), 1) {
-                Ok(store) => {
-                    let trie = Arc::new(JmtStateTrie::new(store));
-                    let ipc_server = StateIpcServer::new(
-                        state_socket_path.clone(),
-                        trie.clone(),
-                    );
-
-                    state_ipc_handle = Some(tokio::spawn(async move {
-                        if let Err(e) = ipc_server.start().await {
-                            error!("📦 [JMT-IPC] State IPC server error: {}", e);
-                        }
-                    }));
-                    info!(
-                        "📦 [JMT] State IPC server available at {} (DB: {})",
-                        state_socket_path, state_db_path
-                    );
-                }
-                Err(e) => {
-                    error!("❌ [JMT] Failed to open MDBX at {}: {}", state_db_path, e);
-                    state_ipc_handle = None;
-                }
-            }
-        }
+        // StateIpcServer initialization moved to the top to prevent deadlock
 
         if let Some(peer_port) = node_config.peer_rpc_port {
             if peer_port > 0 {
