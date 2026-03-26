@@ -10,6 +10,7 @@ mod config;
 mod consensus;
 mod network;
 mod node;
+pub mod state_store;
 mod types;
 
 use config::NodeConfig;
