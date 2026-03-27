@@ -394,7 +394,7 @@ impl CommitProcessor {
                                     }
                                 }
                                 
-                                // NEW: We MUST break here! This epoch is over. Any remaining commits in the channel 
+                                // We MUST break here! This epoch is over. Any remaining commits in the channel 
                                 // belong to the old epoch (empty trailing commits) and must NOT be sent to Go,
                                 // otherwise Go will increment LastGlobalExecIndex and cause a hash mismatch for the new epoch.
                                 info!("🛑 [COMMIT PROCESSOR] Halting processing for current epoch after EndOfEpoch transaction.");
@@ -443,6 +443,7 @@ impl CommitProcessor {
                                             warn!("❌ Failed to trigger epoch transition from pending system transaction: {}", e);
                                         }
                                     }
+
                                     info!("🛑 [COMMIT PROCESSOR] Halting processing for current epoch after EndOfEpoch transaction in PENDING commit.");
                                     should_break = true;
                                     break;
