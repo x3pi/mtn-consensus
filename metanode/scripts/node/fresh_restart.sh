@@ -34,15 +34,15 @@ GO_SIMPLE_ROOT="$GO_PROJECT_ROOT/cmd/simple_chain"
 LOG_DIR="$METANODE_ROOT/logs"
 BINARY="$METANODE_ROOT/target/release/metanode"
 
-NODES=(0 1 2 3)
-GO_MASTER_CONFIG=("config-master-node0.json" "config-master-node1.json" "config-master-node2.json" "config-master-node3.json")
-GO_SUB_CONFIG=("config-sub-node0.json" "config-sub-node1.json" "config-sub-node2.json" "config-sub-node3.json")
-GO_DATA_DIR=("node0" "node1" "node2" "node3")
-GO_MASTER_SESSION=("go-master-0" "go-master-1" "go-master-2" "go-master-3")
-GO_SUB_SESSION=("go-sub-0" "go-sub-1" "go-sub-2" "go-sub-3")
-RUST_SESSION=("metanode-0" "metanode-1" "metanode-2" "metanode-3")
-GO_MASTER_SOCKET=("/tmp/rust-go-node0-master.sock" "/tmp/rust-go-node1-master.sock" "/tmp/rust-go-node2-master.sock" "/tmp/rust-go-node3-master.sock")
-RUST_CONFIG=("config/node_0.toml" "config/node_1.toml" "config/node_2.toml" "config/node_3.toml")
+NODES=(0 1 2 3 4)
+GO_MASTER_CONFIG=("config-master-node0.json" "config-master-node1.json" "config-master-node2.json" "config-master-node3.json" "config-master-node4.json")
+GO_SUB_CONFIG=("config-sub-node0.json" "config-sub-node1.json" "config-sub-node2.json" "config-sub-node3.json" "config-sub-node4.json")
+GO_DATA_DIR=("node0" "node1" "node2" "node3" "node4")
+GO_MASTER_SESSION=("go-master-0" "go-master-1" "go-master-2" "go-master-3" "go-master-4")
+GO_SUB_SESSION=("go-sub-0" "go-sub-1" "go-sub-2" "go-sub-3" "go-sub-4")
+RUST_SESSION=("metanode-0" "metanode-1" "metanode-2" "metanode-3" "metanode-4")
+GO_MASTER_SOCKET=("/tmp/rust-go-node0-master.sock" "/tmp/rust-go-node1-master.sock" "/tmp/rust-go-node2-master.sock" "/tmp/rust-go-node3-master.sock" "/tmp/rust-go-node4-master.sock")
+RUST_CONFIG=("config/node_0.toml" "config/node_1.toml" "config/node_2.toml" "config/node_3.toml" "config/node_4.toml")
 
 ulimit -n 100000 || true
 
