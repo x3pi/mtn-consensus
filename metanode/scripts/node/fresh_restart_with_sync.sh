@@ -80,7 +80,20 @@ echo -e "${BLUE}[1/5] 🛑 Stop all processes...${NC}"
 pkill -f "simple_chain" 2>/dev/null || true
 pkill -f "metanode start" 2>/dev/null || true
 pkill -f "metanode run" 2>/dev/null || true
-sleep 3
+
+# Smart wait: poll up to 15s for processes to exit gracefully
+MAX_WAIT=15
+for i in $(seq 1 $MAX_WAIT); do
+    if ! pgrep -f "simple_chain" > /dev/null 2>&1 && ! pgrep -f "metanode start" > /dev/null 2>&1; then
+        echo -e "${GREEN}  ✅ All processes exited gracefully in ${i}s${NC}"
+        break
+    fi
+    if [ "$i" -eq "$MAX_WAIT" ]; then
+        echo -e "${YELLOW}  ⚠️ Processes still running after ${MAX_WAIT}s, sending SIGKILL...${NC}"
+    fi
+    sleep 1
+done
+
 for id in "${ALL_NODES[@]}"; do
     tmux kill-session -t "go-master-$id" 2>/dev/null || true
     tmux kill-session -t "go-sub-$id" 2>/dev/null || true
