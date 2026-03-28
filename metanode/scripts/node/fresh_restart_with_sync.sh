@@ -115,7 +115,7 @@ else
     # Rust
     echo "  🦀 Building Rust metanode..."
     export PATH="/home/abc/protoc3/bin:$PATH"
-    cd "$METANODE_ROOT" && cargo build --release --bin metanode 2>&1 | tail -3
+    cd "$METANODE_ROOT" && cargo build --release --bin metanode
     echo -e "${GREEN}  ✅ Rust binary ready${NC}"
     
     # C++ MVM
@@ -124,10 +124,10 @@ else
     if [ -d "$MVM_ROOT/c_mvm" ]; then
         mkdir -p "$MVM_ROOT/c_mvm/build" && cd "$MVM_ROOT/c_mvm/build"
         [ ! -f Makefile ] && cmake ../
-        make -j$(nproc) install 2>&1 | tail -1
+        make -j$(nproc) install > /dev/null
         mkdir -p "$MVM_ROOT/linker/build" && cd "$MVM_ROOT/linker/build"
         [ ! -f Makefile ] && cmake ..
-        make -j$(nproc) install 2>&1 | tail -1
+        make -j$(nproc) install > /dev/null
         echo -e "${GREEN}  ✅ C++ MVM ready${NC}"
     else
         echo -e "${YELLOW}  ⚠️ C++ MVM not found, skipping${NC}"
@@ -135,9 +135,12 @@ else
     
     # Go
     echo "  🐹 Building Go simple_chain..."
-    cd "$GO_SIMPLE_ROOT" && GOTOOLCHAIN=go1.23.5 go build -o simple_chain . 2>&1 | tail -3
+    cd "$GO_SIMPLE_ROOT" && GOTOOLCHAIN=go1.23.5 go build -v -o simple_chain .
     echo -e "${GREEN}  ✅ Go binary ready${NC}"
 fi
+
+# Reset tx_sender cache automatically on every restart to prevent nonce mismatches
+rm -f "$GO_PROJECT_ROOT/cmd/tool/tx_sender/data.json" 2>/dev/null || true
 
 # ==============================================================================
 # STEP 3: CLEAN DATA
@@ -196,7 +199,7 @@ for i in "${!ALL_NODES[@]}"; do
         echo -e "  🚀 Go Master $id..."
     fi
     tmux new-session -d -s "${GO_MASTER_SESSION[$i]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && ./simple_chain -config=${GO_MASTER_CONFIG[$i]} $PPROF_ARG >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && exec ./simple_chain -config=${GO_MASTER_CONFIG[$i]} $PPROF_ARG >> \"$LOG_DIR/node_$id/go-master-stdout.log\" 2>&1"
     sleep 2
 done
 
@@ -216,7 +219,7 @@ for i in "${!ALL_NODES[@]}"; do
         echo -e "  🚀 Go Sub $id..."
     fi
     tmux new-session -d -s "${GO_SUB_SESSION[$i]}" -c "$GO_SIMPLE_ROOT" \
-        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && ./simple_chain -config=${GO_SUB_CONFIG[$i]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
+        "ulimit -n 100000; export GOTOOLCHAIN=go1.23.5 && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='$XAPIAN' && exec ./simple_chain -config=${GO_SUB_CONFIG[$i]} >> \"$LOG_DIR/node_$id/go-sub-stdout.log\" 2>&1"
     sleep 1
 done
 sleep 3
