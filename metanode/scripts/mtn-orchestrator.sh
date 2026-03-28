@@ -362,10 +362,11 @@ cmd_start() {
     local fresh=false
     local build_go=false
     local build_rust=false
+    local build_evm=false
     for arg in "$@"; do
         case "$arg" in
             --fresh) fresh=true ;;
-            --build) build_go=true; build_rust=true ;;
+            --build) build_go=true; build_rust=true; build_evm=true ;;
         esac
     done
 
@@ -376,6 +377,10 @@ cmd_start() {
     echo -e "${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
 
     # Build processes
+    if $build_evm; then
+        log_info "🛠  Đang build EVM (C++ MVM)..."
+        (cd "$BASE_DIR/mtn-simple-2025/pkg/mvm" && chmod +x build.sh && ./build.sh) || exit 1
+    fi
     if $build_go; then
         log_info "🛠  Đang build Go (simple_chain)..."
         (cd "$GO_DIR" && go build -o simple_chain .) || exit 1
