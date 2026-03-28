@@ -67,6 +67,7 @@ Tắt:       Rust Consensus → Go Sub → Go Master
 ```
 
 **Hành động:**
+
 1. Dừng tất cả session cũ (nếu có)
 2. **Xóa toàn bộ dữ liệu**: Rust storage + Go data/backup
 3. Go Master khởi tạo **genesis block** (deploy system contracts)
@@ -84,6 +85,7 @@ Tắt:       Rust Consensus → Go Sub → Go Master
 ```
 
 **Hành động:**
+
 1. Go Master load block cuối cùng từ PebbleDB
 2. Go Sub sync state từ Master
 3. Xóa `executor_state` của Rust (tránh recovery gap)
@@ -91,6 +93,7 @@ Tắt:       Rust Consensus → Go Sub → Go Master
 5. Rust bắt đầu đồng thuận từ vị trí Go
 
 **Log mong đợi (Go Master)**:
+
 ```
 Using existing block (not init genesis)
 ✅ [STARTUP] Initialized LastGlobalExecIndex from last block header: gei=XXXX (block=#YY)
@@ -151,14 +154,21 @@ pgrep -f "metanode start" && echo "WARN: Rust orphans!" || echo "OK"
 
 Tương đương: `stop` → chờ 3s → `start`
 
-### Restart xóa dữ liệu
+### Restart xóa dữ liệu và Tự động Build Code mới
 
 ```bash
 ./mtn-orchestrator.sh restart --fresh
 ```
 
-Tương đương: `stop` → chờ 3s → `start --fresh`
+Tương đương: `stop` → xóa sạch dữ liệu → `start` (mặc định không build lại code để tiết kiệm thời gian khởi động).
 
+Nếu bạn vừa sửa source code và muốn **Build lại toàn bộ dự án (cả Go lẫn Rust)** trước khi chạy:
+
+```bash
+./mtn-orchestrator.sh restart --fresh --build
+```
+
+> 💡 **Mẹo**: Lệnh `cargo build` của Rust và `go build` của Go đều được thiết kế theo cơ chế **incremental compilation** (build tăng dần). Nên kể cả khi bạn thêm cờ `--build`, nếu code Rust/Go không bị thay đổi thì quá trình vượt qua bước build vẫn sẽ cực kỳ nhanh do không bị compile lại từ đầu. Gần như có thể dùng `--build` một cách thoải mái.
 ---
 
 ## Quản lý từng Node
@@ -185,32 +195,23 @@ Tương đương: `stop` → chờ 3s → `start --fresh`
 
 ## Cơ chế Crash Safety
 
-### 1. PebbleDB Full Flush
+*(Chống lệch block / lệch hash khi restart)*
 
-- Mỗi 10 giây, Go flush **toàn bộ memtable → SST files** (không chỉ WAL)
-- Đảm bảo dữ liệu tồn tại trên disk ngay cả khi process bị kill
+Cơ chế này giải quyết triệt để lỗi lệch block/hash (Gap detected in block sequence) bằng chiến thuật phối hợp: **"Rust phải quên đi quá khứ, còn Go không bao giờ được quên block cuối"**.
 
-### 2. Last Block Sync Save
+### 1. Phía Go: Lưu giữ block cuối cùng một cách "Tuyệt đối" (Atomic Save)
 
-- Khi shutdown, Go ghi block cuối cùng **đồng bộ** xuống disk
-- Sử dụng `pebble.Sync` thay vì async batch write
-- File backup: `back_up/last_block_backup.json` (dự phòng)
+- **PebbleDB Full Flush**: Khi mạng đang chạy, Go tự động flush toàn bộ memtable → SST files mỗi 10 giây (không chỉ WAL). Đảm bảo dữ liệu bám chặt vào ổ cứng ngay cả khi crash.
+- **Quy trình Shutdown an toàn (Drain & Flush)**: Khi chạy script `./mtn-orchestrator.sh stop`, hệ thống sẽ:
+  1. Ngắt Rust Consensus và đợi 10 giây (Drain pipeline) để Go Master nhai nốt 100% số block còn kẹt trong hàng đợi.
+  2. Khóa cửa (chạy `StopWait()`), kích hoạt `SaveLastBlockSync()` ghi đồng bộ cứng ngắc đúng cái block cuối cùng xuất ra file `back_up/last_block_backup.json` và chốt thẳng PebbleDB ra đĩa. Go sẽ không bao giờ chết bất đắc kỳ tử để mất block.
+- **Safety Guard (Chống Genesis Re-init)**: Mở mạng lên mà có data nhưng mất chìa khóa last_block thì báo 🚨 **REFUSE** ngay lập tức, từ chối chạy tàn phá database.
 
-### 3. Safety Guard — Chống Genesis Re-init
+### 2. Phía Rust: Ép buộc "quên" đi trí nhớ cũ của Executor State
 
-Khi Go Master khởi động, nếu **không tìm thấy block cuối cùng**:
-
-| Tình huống | Kiểm tra | Hành động |
-|:-----------|:---------|:----------|
-| Fresh start | Không có SST files trong `account_state/` | ✅ Khởi tạo genesis bình thường |
-| Crash/corrupt | Có SST files nhưng mất block key | 🚨 **REFUSE** — không xóa state, yêu cầu operator xử lý |
-
-### 4. Rust Storage Cleanup
-
-- Mỗi lần `start` hoặc `restart`, orchestrator **xóa toàn bộ Rust storage** (`config/storage/node_*`)
-- Bao gồm: DAG commits, executor_state, persisted indices
-- Tránh lỗi "Gap detected in block sequence" do stale DAG commits sau epoch GC
-- An toàn vì Rust luôn query Go Master để lấy vị trí hiện tại và rebuild consensus từ peers
+- **Vấn đề cũ**: Rust lưu giữ file `executor_state/last_sent_index.bin` để nhớ GEI cuối cùng gửi cho Go. Sau sự kiện Garbage Collection của DAG, chỉ số GEI cũ này trong Rust không còn khớp với Go, dẫn đến nổ chain nổ gap khi restart.
+- **Rust Setup Cleanup**: Trong code khởi động của `mtn-orchestrator.sh`, nó sẽ tự động chạy lệnh **xóa thẳng tay `executor_state`** của từng node Rust.
+- **Tác dụng**: Bị mất file trí nhớ, Rust buộc phải đi **hỏi ngược lại Go Master** ngay khi khởi động: *"Hiện tại ông đang đến GEI bao nhiêu để tôi cấp block mới?"*. Cứ thế nó sẽ xuất phát đồng thuận **từ đúng vị trí khớp nối**, vĩnh viễn không còn gặp lại lỗi Gap hay lệch Hash khi bật tắt máy.
 
 ---
 
@@ -295,6 +296,7 @@ go run . -loop
 ```
 
 Output mẫu:
+
 ```
 ╔═══════════════════════════════════════════════════════╗
 ║  Node  │ Rust Consensus │ Go Master │ Go Sub │ Sockets ║
@@ -337,11 +339,13 @@ cat mtn-simple-2025/cmd/simple_chain/sample/node0/back_up/last_block_backup.json
 
 | Lệnh | Mô tả |
 |:------|:------|
-| `start --fresh` | Xóa hết, khởi động mới hoàn toàn |
+| `start --fresh` | Xóa hết, khởi động mới hoàn toàn (Tự động compile Go) |
 | `start` | Khởi động giữ dữ liệu cũ |
 | `stop` | Tắt an toàn (flush disk) |
 | `restart` | Tắt rồi khởi động (giữ data) |
-| `restart --fresh` | Tắt rồi khởi động mới |
+| `restart --fresh` | Khởi động mới (Xoá sạch số liệu cũ, không tự build) |
+| `restart --fresh --build` | Khởi động mới và kiểm tra/Build lại cả Go lẫn Rust |
+| `start --build` | Khởi động giữ data cũ nhưng có Build lại code |
 | `status` | Hiển thị trạng thái cluster |
 | `logs <N> [layer]` | Xem log node N |
 | `stop-node <N>` | Tắt 1 node |

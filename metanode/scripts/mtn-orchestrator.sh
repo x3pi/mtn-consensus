@@ -191,6 +191,7 @@ start_go_master() {
     cmd+="export GOTOOLCHAIN=go1.23.5 && "
     cmd+="export GOMEMLIMIT=4GiB && "
     cmd+="export XAPIAN_BASE_PATH='${xapian_path}' && "
+    cmd+="export MVM_LOG_DIR='${log_dir}' && "
     cmd+="exec ./simple_chain -config=${config} ${pprof_flag} "
     cmd+=">> \"${log_file}\" 2>&1"
 
@@ -223,6 +224,7 @@ start_go_sub() {
     cmd+="export GOTOOLCHAIN=go1.23.5 && "
     cmd+="export GOMEMLIMIT=4GiB && "
     cmd+="export XAPIAN_BASE_PATH='${xapian_path}' && "
+    cmd+="export MVM_LOG_DIR='${log_dir}' && "
     cmd+="exec ./simple_chain -config=${config} "
     cmd+=">> \"${log_file}\" 2>&1"
 
@@ -358,11 +360,12 @@ cleanup_all_sockets() {
 
 cmd_start() {
     local fresh=false
-    local keep_data=false
+    local build_go=false
+    local build_rust=false
     for arg in "$@"; do
         case "$arg" in
-            --fresh)     fresh=true ;;
-            --keep-data) keep_data=true ;;
+            --fresh) fresh=true ;;
+            --build) build_go=true; build_rust=true ;;
         esac
     done
 
@@ -371,6 +374,16 @@ cmd_start() {
     echo -e "${BOLD}║  🚀 KHỞI ĐỘNG CLUSTER METANODE (${NUM_NODES} nodes)               ║${NC}"
     echo -e "${BOLD}║  Thứ tự: Go Master → Go Sub → Rust Consensus           ║${NC}"
     echo -e "${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
+
+    # Build processes
+    if $build_go; then
+        log_info "🛠  Đang build Go (simple_chain)..."
+        (cd "$GO_DIR" && go build -o simple_chain .) || exit 1
+    fi
+    if $build_rust; then
+        log_info "🛠  Đang build Rust (metanode)..."
+        (cd "$RUST_DIR" && cargo +nightly build --release --bin metanode) || exit 1
+    fi
 
     # Kiểm tra binary tồn tại
     if [ ! -f "$GO_BIN" ]; then
@@ -418,6 +431,8 @@ cmd_start() {
             rm -rf "$GO_DIR/sample/node${i}/data-write"
             rm -rf "$GO_DIR/sample/node${i}/back_up_write"
         done
+        log_step "Xóa logs..."
+        rm -rf "$LOG_BASE"/node_* 2>/dev/null || true
         log_info "✅ Dọn sạch hoàn tất"
     fi
 
