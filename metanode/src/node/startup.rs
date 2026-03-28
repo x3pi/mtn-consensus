@@ -507,6 +507,21 @@ impl InitializedNode {
                             }
                         }
                     }
+                    Ok(_status) if matches!(*cm.state.read().await, crate::node::catchup::CatchupState::BehindRustLocal { .. }) => {
+                        let state = cm.state.read().await.clone();
+                        if let crate::node::catchup::CatchupState::BehindRustLocal { target_block, current_block } = state {
+                            warn!("🔄 [STARTUP] Go is behind local Rust storage! Fast-forwarding directly from local DB ({} -> {})...", current_block, target_block);
+                            let storage_path = std::path::Path::new(&self.node_config.storage_path);
+                            match cm.sync_blocks_from_local_rust(storage_path, current_block, target_block).await {
+                                Ok(synced) => {
+                                    info!("✅ [STARTUP] Local rust fast-forward complete: {} blocks synced directly.", synced);
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ [STARTUP] Local rust fast-forward failed: {}. Will retry or fallback...", e);
+                                }
+                            }
+                        }
+                    }
                     Ok(status) if status.block_gap > 10 => {
                         // ═══════════════════════════════════════════════════════
                         // SNAPSHOT RESTORE BLOCK GAP FIX: Epoch matches, but Go

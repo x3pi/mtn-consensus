@@ -415,18 +415,17 @@ impl ConsensusNode {
             executor_client.clone()
         };
 
-        // Fetch epoch boundary data with fallback chain
-        let (current_epoch, epoch_timestamp_ms, boundary_block, validators, epoch_duration_from_go) =
+        let (current_epoch, epoch_timestamp_ms, boundary_block, validators, epoch_duration_from_go, boundary_gei) =
             match peer_executor_client
                 .get_epoch_boundary_data(current_epoch)
                 .await
             {
-                Ok((epoch, timestamp, boundary, vals, epoch_dur, _boundary_gei)) => {
+                Ok((epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)) => {
                     info!(
-                        "✅ [STARTUP] Got epoch boundary data for epoch {} from Go (epoch_duration={}s)",
-                        epoch, epoch_dur
+                        "✅ [STARTUP] Got epoch boundary data for epoch {} from Go (epoch_duration={}s, boundary_gei={})",
+                        epoch, epoch_dur, boundary_gei_val
                     );
-                    (epoch, timestamp, boundary, vals, epoch_dur)
+                    (epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)
                 }
                 Err(e) => {
                     warn!(
@@ -454,8 +453,8 @@ impl ConsensusNode {
                             ).await {
                                 Ok(boundary) => {
                                     info!(
-                                        "✅ [STARTUP] Got epoch {} boundary from peer {}: {} validators, boundary_block={}",
-                                        current_epoch, peer_addr, boundary.validators.len(), boundary.boundary_block
+                                        "✅ [STARTUP] Got epoch {} boundary from peer {}: {} validators, boundary_block={}, boundary_gei={}",
+                                        current_epoch, peer_addr, boundary.validators.len(), boundary.boundary_block, boundary.boundary_gei
                                     );
                                     peer_boundary = Some(boundary);
                                     break;
@@ -485,13 +484,13 @@ impl ConsensusNode {
                                     p2p_address: String::new(),
                                 }
                             }).collect();
-                            (current_epoch, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64)
+                            (current_epoch, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64, boundary.boundary_gei)
                         } else {
                             warn!("⚠️ [STARTUP] No peers returned epoch {} boundary. Falling back to local Go epoch {}.", current_epoch, local_epoch);
                             // Fall through to local Go fallback below
                             match executor_client.get_epoch_boundary_data(local_epoch).await {
-                                Ok((epoch, timestamp, boundary, vals, epoch_dur, _boundary_gei)) => {
-                                    (epoch, timestamp, boundary, vals, epoch_dur)
+                                Ok((epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)) => {
+                                    (epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)
                                 }
                                 Err(e2) => {
                                     return Err(anyhow::anyhow!(
@@ -509,12 +508,12 @@ impl ConsensusNode {
                         );
 
                         match executor_client.get_epoch_boundary_data(local_epoch).await {
-                            Ok((epoch, timestamp, boundary, vals, epoch_dur, _boundary_gei)) => {
+                            Ok((epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)) => {
                                 info!(
-                                    "✅ [STARTUP] Got epoch boundary data for local epoch {} (epoch_duration={}s)",
-                                    epoch, epoch_dur
+                                    "✅ [STARTUP] Got epoch boundary data for local epoch {} (epoch_duration={}s, boundary_gei={})",
+                                    epoch, epoch_dur, boundary_gei_val
                                 );
-                                (epoch, timestamp, boundary, vals, epoch_dur)
+                                (epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)
                             }
                             Err(e2) => {
                                 warn!(
@@ -524,7 +523,7 @@ impl ConsensusNode {
                                 // Try local Go first
                                 match executor_client.get_validators_at_block(0).await {
                                     Ok((genesis_validators, _genesis_epoch, _)) => {
-                                        (0u64, 0u64, 0u64, genesis_validators, 900u64)
+                                        (0u64, 0u64, 0u64, genesis_validators, 900u64, 0u64)
                                     }
                                     Err(e3) => {
                                         // LOCAL GO FAILED — query peers for epoch 0
@@ -570,7 +569,7 @@ impl ConsensusNode {
                                                         p2p_address: String::new(),
                                                     }
                                                 }).collect();
-                                                (0u64, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64)
+                                                (0u64, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64, boundary.boundary_gei)
                                             } else {
                                                 return Err(anyhow::anyhow!(
                                                     "Failed to fetch genesis validators from both local Go and peers. Local: {}, No peers returned data.",
@@ -592,8 +591,8 @@ impl ConsensusNode {
             };
 
         info!(
-            "📊 [STARTUP] Using epoch boundary data: epoch={}, boundary_block={}, epoch_timestamp={}ms, validators={}",
-            current_epoch, boundary_block, epoch_timestamp_ms, validators.len()
+            "📊 [STARTUP] Using epoch boundary data: epoch={}, boundary_block={}, epoch_timestamp={}ms, validators={}, boundary_gei={}",
+            current_epoch, boundary_block, epoch_timestamp_ms, validators.len(), boundary_gei
         );
 
         if validators.is_empty() {
@@ -635,10 +634,10 @@ impl ConsensusNode {
             );
         }
 
-        let epoch_base_exec_index = boundary_block;
+        let epoch_base_exec_index = boundary_gei;
         info!(
-            "✅ [STARTUP] Using epoch_base={} from Go boundary_block (epoch={})",
-            epoch_base_exec_index, current_epoch
+            "✅ [STARTUP] Using epoch_base={} from Go boundary_gei (epoch={}, boundary_block={})",
+            epoch_base_exec_index, current_epoch, boundary_block
         );
 
         // Recovery check
@@ -702,7 +701,7 @@ impl ConsensusNode {
     }
 
     /// Determines the effective last global execution index from local Go, peers, and persisted state.
-    /// Returns (effective_index, is_lagging).
+    /// Returns (effective_index (GEI), is_lagging).
     async fn calculate_last_global_exec_index(
         config: &NodeConfig,
         executor_client: &Arc<ExecutorClient>,
@@ -714,6 +713,7 @@ impl ConsensusNode {
         }
 
         let (local_go_block, _go_ready) = executor_client.get_last_block_number().await.unwrap_or((0, false));
+        let local_go_gei = executor_client.get_last_global_exec_index().await.unwrap_or(0);
         let storage_path = &config.storage_path;
 
         let (persisted_index, persisted_commit) =
@@ -728,7 +728,7 @@ impl ConsensusNode {
 
         if peer_last_block > 0 {
             info!(
-                "📊 [STARTUP] Sync Check: LocalGo={}, Peer={}, Persisted=({}, commit={}) (from {})",
+                "📊 [STARTUP] Sync Check: LocalGoBlock={}, PeerBlock={}, PersistedGEI=({}, commit={}) (from {})",
                 local_go_block, peer_last_block, persisted_index, persisted_commit, best_socket
             );
 
@@ -737,8 +737,8 @@ impl ConsensusNode {
             if !sources_match {
                 warn!("⚠️ [STARTUP] INDEX DISCREPANCY DETECTED:");
                 warn!(
-                    "   LocalGo={}, Peer={}, Persisted={}",
-                    local_go_block, peer_last_block, persisted_index
+                    "   LocalGoBlock={}, PeerBlock={}, PersistedGEI={}, LocalGEI={}",
+                    local_go_block, peer_last_block, persisted_index, local_go_gei
                 );
                 warn!("   This may indicate network partition or stale data.");
             }
@@ -746,7 +746,8 @@ impl ConsensusNode {
             if local_go_block > peer_last_block + 5 {
                 warn!("🚨 [STARTUP] STALE CHAIN DETECTED: Local ({}) is ahead of Peer ({})! Forcing resync from Peer.", 
                        local_go_block, peer_last_block);
-                (peer_last_block, false)
+                // In recovery we just use the local GEI anyway because Go Master blocks handles actual rollback if needed
+                (local_go_gei, false)
             } else if local_go_block < peer_last_block.saturating_sub(5) {
                 let lag = peer_last_block - local_go_block;
                 info!(
@@ -754,24 +755,24 @@ impl ConsensusNode {
                     local_go_block, peer_last_block, lag, local_go_block
                 );
                 // Flag as lagging if behind by more than 50 blocks
-                (local_go_block, lag > 50)
+                (local_go_gei, lag > 50)
             } else {
                 info!(
-                    "✅ [STARTUP] Local and Peer are in sync (Local={}, Peer={}). Using Local Go as authoritative.",
-                    local_go_block, peer_last_block
+                    "✅ [STARTUP] Local and Peer are in sync (LocalBlock={}, PeerBlock={}). Using Local Go GEI: {} as authoritative.",
+                    local_go_block, peer_last_block, local_go_gei
                 );
-                (local_go_block, false)
+                (local_go_gei, false)
             }
         } else {
-            if persisted_index > local_go_block {
-                warn!("⚠️ [STARTUP] Persisted Index {} > Local Go {}. Go is behind (possible rollback/crash). Using Local Go {} to force resync/replay.", 
-                    persisted_index, local_go_block, local_go_block);
+            if persisted_index > local_go_gei {
+                warn!("⚠️ [STARTUP] Persisted Index (GEI) {} > Local Go GEI {}. Go is behind (possible rollback/crash). Using Local Go GEI {} to force resync/replay.", 
+                    persisted_index, local_go_gei, local_go_gei);
             }
             info!(
-                "📊 [STARTUP] No peer reference, using Local Go Last Block: {}",
-                local_go_block
+                "📊 [STARTUP] No peer reference, using Local Go Last GEI: {} (Block: {})",
+                local_go_gei, local_go_block
             );
-            (local_go_block, false)
+            (local_go_gei, false)
         }
     }
 

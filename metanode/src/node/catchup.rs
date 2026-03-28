@@ -32,6 +32,11 @@ pub enum CatchupState {
         target_commit: u64,
         current_commit: u64,
     },
+    /// Go is behind local Rust storage
+    BehindRustLocal {
+        target_block: u64,
+        current_block: u64,
+    },
     /// Caught up, ready to participate in consensus
     Ready,
 }
@@ -60,13 +65,13 @@ pub struct SyncStatus {
 /// Manager for node catchup synchronization
 pub struct CatchupManager {
     /// Client to communicate with Go Master
-    executor_client: Arc<ExecutorClient>,
+    pub executor_client: Arc<ExecutorClient>,
     /// Own Go Master socket (for fallback/identity)
     _own_socket: String,
     /// WAN peer RPC addresses (e.g., "192.168.1.100:19000")
     peer_rpc_addresses: Vec<String>,
     /// Current catchup state
-    state: RwLock<CatchupState>,
+    pub state: RwLock<CatchupState>,
 }
 
 /// Threshold for considering node caught up (within N blocks of network)
@@ -128,6 +133,36 @@ impl CatchupManager {
         };
 
         // 2. Get Network State from Peers (TCP-based only)
+        let rust_stored_block = match &self.executor_client.storage_path {
+            Some(path) => {
+                crate::node::executor_client::block_store::get_max_stored_gei(path)
+                    .await
+                    .unwrap_or(None)
+                    .unwrap_or(local_go_last_block)
+            }
+            None => local_go_last_block,
+        };
+
+        if local_go_last_block < rust_stored_block {
+            info!("⚠️ [SYNC STATUS] Go is behind LOCAL Rust DB! (Go: {}, Rust: {}). Fast-forward mandatory.", local_go_last_block, rust_stored_block);
+            let state = CatchupState::BehindRustLocal {
+                target_block: rust_stored_block,
+                current_block: local_go_last_block,
+            };
+            *self.state.write().await = state;
+            
+            return Ok(SyncStatus {
+                go_epoch: local_go_epoch,
+                go_last_block: local_go_last_block,
+                epoch_match: true,
+                commit_gap: 0,
+                block_gap: rust_stored_block - local_go_last_block,
+                network_block_height: rust_stored_block,
+                network_commit: rust_stored_block,
+                ready: false,
+            });
+        }
+
         let (network_epoch, network_block, _best_peer, network_commit) = if !self
             .peer_rpc_addresses
             .is_empty()
@@ -142,7 +177,12 @@ impl CatchupManager {
                         "✅ [CATCHUP] WAN peer query success: epoch={}, block={}, global_exec_index={}, peer={}",
                         res.0, res.1, res.3, res.2
                     );
-                    res
+                    (
+                        res.0,
+                        std::cmp::max(res.1, rust_stored_block), // Ensure network_block is at least rust_stored_block
+                        res.2,
+                        std::cmp::max(res.3, rust_stored_block), // Ensure network_commit is at least rust_stored_block
+                    )
                 }
                 Err(e) => {
                     warn!(
@@ -151,9 +191,9 @@ impl CatchupManager {
                     );
                     (
                         local_go_epoch,
-                        local_go_last_block,
+                        std::cmp::max(local_go_last_block, rust_stored_block),
                         "local".to_string(),
-                        local_last_commit,
+                        std::cmp::max(local_last_commit, rust_stored_block),
                     )
                 }
             }
@@ -161,9 +201,9 @@ impl CatchupManager {
             // No peers configured (single node?), assume we are the network
             (
                 local_go_epoch,
-                local_go_last_block,
+                std::cmp::max(local_go_last_block, rust_stored_block),
                 "local".to_string(),
-                local_last_commit,
+                std::cmp::max(local_last_commit, rust_stored_block),
             )
         };
 
@@ -232,17 +272,13 @@ impl CatchupManager {
         Ok(status)
     }
 
-    /// Actively fetch missing blocks from peers and write them to local Go.
+    /// Actively fetch missing blocks (prefers local Rust DB first, then peers) and write them to local Go.
     /// This closes the block gap that passive polling can never close.
     pub async fn sync_blocks_from_peers(
         &self,
         go_last_block: u64,
         network_block: u64,
     ) -> Result<u64> {
-        if self.peer_rpc_addresses.is_empty() {
-            return Err(anyhow::anyhow!("No peer_rpc_addresses configured"));
-        }
-
         let missing_from = go_last_block + 1;
         if missing_from > network_block {
             info!(
@@ -250,6 +286,32 @@ impl CatchupManager {
                 go_last_block, network_block
             );
             return Ok(0);
+        }
+
+        // 1. Try Local Rust first! This is a fast path and supports offline/single node recovery.
+        if let Some(ref path) = self.executor_client.storage_path {
+            let rust_max = crate::node::executor_client::block_store::get_max_stored_gei(path)
+                .await
+                .unwrap_or(None)
+                .unwrap_or(0);
+                
+            if rust_max >= missing_from {
+                let fetch_to = std::cmp::min(network_block, rust_max);
+                match self.sync_blocks_from_local_rust(path, go_last_block, fetch_to).await {
+                    Ok(synced) if synced > 0 => {
+                        info!("🚀 [CATCHUP SYNC] Synced {} blocks from FAST local Rust DB", synced);
+                        return Ok(synced);
+                    }
+                    _ => {
+                        warn!("⚠️ [CATCHUP SYNC] Local Rust DB fetch yielded 0 blocks or failed. Falling back to WAN peers...");
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback to WAN peers if local Rust doesn't have it
+        if self.peer_rpc_addresses.is_empty() {
+            return Err(anyhow::anyhow!("No local blocks and no peer_rpc_addresses configured"));
         }
 
         info!(
@@ -390,5 +452,84 @@ impl CatchupManager {
                 }
             }
         }
+    }
+
+    /// Actively fetch missing blocks from LOCAL Rust storage and write them to local Go.
+    /// This is critical when a Master node restarts and Go rolls back, but Rust has the commits locally
+    /// and there are no peers to fetch them from.
+    pub async fn sync_blocks_from_local_rust(
+        &self,
+        storage_path: &std::path::Path,
+        go_last_block: u64,
+        rust_last_block: u64,
+    ) -> Result<u64> {
+        let missing_from = go_last_block + 1;
+        if missing_from > rust_last_block {
+            info!(
+                "✅ [LOCAL CATCHUP] No blocks to fetch (go={} >= rust={})",
+                go_last_block, rust_last_block
+            );
+            return Ok(0);
+        }
+
+        info!(
+            "🔄 [LOCAL CATCHUP] Fetching local Rust blocks {} to {} for Go executor",
+            missing_from,
+            rust_last_block
+        );
+
+        let blocks = crate::node::executor_client::block_store::load_executable_blocks_range(
+            storage_path,
+            missing_from,
+            rust_last_block,
+        ).await?;
+
+        if blocks.is_empty() {
+            warn!("⚠️ [LOCAL CATCHUP] Loaded 0 blocks from Rust local DB");
+            return Ok(0);
+        }
+
+        let fetched_count = blocks.len() as u64;
+        info!(
+            "✅ [LOCAL CATCHUP] Loaded {} blocks from Rust DB. Syncing to local Go via consensus stream...",
+            fetched_count
+        );
+
+        use prost::Message;
+        let mut synced = 0;
+        let mut last_block = 0;
+
+        for (gei, data) in blocks {
+            // Decode the ExecutableBlock to extract epoch and commit_index
+            match crate::node::executor_client::proto::ExecutableBlock::decode(data.as_slice()) {
+                Ok(exec_block) => {
+                    let epoch = exec_block.epoch;
+                    let commit_index = exec_block.commit_index;
+                    
+                    match self.executor_client.send_block_data(&data, gei, epoch, commit_index).await {
+                        Ok(_) => {
+                            synced += 1;
+                            last_block = gei;
+                        }
+                        Err(e) => {
+                            warn!("⚠️ [LOCAL CATCHUP] Failed to send local block {} to Go: {}", gei, e);
+                            return Err(anyhow::anyhow!("Failed to send local block {}: {}", gei, e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️ [LOCAL CATCHUP] Failed to decode local block {}: {}", gei, e);
+                    // Continue to next block instead of failing completely? 
+                    // No, if a block is corrupted, we must stop, otherwise we create a gap
+                    return Err(anyhow::anyhow!("Failed to decode local block {}: {}", gei, e));
+                }
+            }
+        }
+
+        info!(
+            "✅ [LOCAL CATCHUP] Synced {} blocks from local Rust to Go (last: {})",
+            synced, last_block
+        );
+        Ok(synced)
     }
 }
