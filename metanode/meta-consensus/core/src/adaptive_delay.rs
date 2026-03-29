@@ -147,6 +147,8 @@ impl AdaptiveDelayState {
         };
 
         // Calculate adaptive delay
+        let adaptive_delay_ms = 0; // Disabled for local testing
+        /*
         let adaptive_delay_ms = if lead > SEVERE_LEAD_THRESHOLD
             || lead_percentage > SEVERE_LEAD_PERCENTAGE
             || (rate_diff_ratio > 0.2 && lead > MODERATE_LEAD_THRESHOLD)
@@ -166,6 +168,7 @@ impl AdaptiveDelayState {
             // Normal: no extra delay
             0
         };
+        */
 
         // Update current adaptive delay
         *self.current_adaptive_delay_ms.write() = adaptive_delay_ms;
