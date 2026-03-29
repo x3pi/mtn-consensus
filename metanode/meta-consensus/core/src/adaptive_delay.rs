@@ -78,6 +78,7 @@ pub(crate) struct AdaptiveDelayState {
     /// Quorum commit rate tracker
     quorum_rate_tracker: Arc<RwLock<CommitRateTracker>>,
     /// Base delay from config
+    #[allow(dead_code)]
     base_delay_ms: u64,
     /// Whether adaptive delay is enabled
     enabled: bool,
@@ -126,10 +127,15 @@ impl AdaptiveDelayState {
         let quorum_rate = self.quorum_rate_tracker.read().rate();
 
         // Thresholds for adaptive delay
+        #[allow(dead_code)]
         const MODERATE_LEAD_THRESHOLD: u32 = 50; // Ahead by 50 commits
+        #[allow(dead_code)]
         const SEVERE_LEAD_THRESHOLD: u32 = 100; // Ahead by 100 commits
+        #[allow(dead_code)]
         const MODERATE_LEAD_PERCENTAGE: f64 = 5.0; // Ahead by 5%
+        #[allow(dead_code)]
         const SEVERE_LEAD_PERCENTAGE: f64 = 10.0; // Ahead by 10%
+        #[allow(dead_code)]
         const MIN_RATE_DIFF: f64 = 0.1; // Minimum rate difference to trigger delay (10% faster)
 
         // Calculate lead percentage
