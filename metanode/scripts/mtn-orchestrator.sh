@@ -366,7 +366,8 @@ cmd_start() {
     for arg in "$@"; do
         case "$arg" in
             --fresh) fresh=true ;;
-            --build) build_go=true; build_rust=true; build_evm=true ;;
+            --build) build_go=true; build_rust=true ;;
+            --build-all) build_go=true; build_rust=true; build_evm=true ;;
         esac
     done
 
@@ -819,7 +820,7 @@ cmd_help() {
     echo -e "${BOLD}MTN Orchestrator — Quản lý cluster Metanode${NC}"
     echo ""
     echo -e "  ${CYAN}Toàn bộ cluster:${NC}"
-    echo -e "    ${BOLD}start${NC}   [--fresh]         Khởi động cluster (Master→Sub→Rust)"
+    echo -e "    ${BOLD}start${NC}   [--fresh] [--build] [--build-all]  Khởi động cluster (Master→Sub→Rust)"
     echo -e "    ${BOLD}stop${NC}                      Dừng an toàn (Rust→Sub→Master)"
     echo -e "    ${BOLD}restart${NC} [--fresh]         Stop rồi start"
     echo -e "    ${BOLD}status${NC}                    Xem trạng thái tất cả node"

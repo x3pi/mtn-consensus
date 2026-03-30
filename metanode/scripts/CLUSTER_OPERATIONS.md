@@ -162,13 +162,19 @@ Tương đương: `stop` → chờ 3s → `start`
 
 Tương đương: `stop` → xóa sạch dữ liệu → `start` (mặc định không build lại code để tiết kiệm thời gian khởi động).
 
-Nếu bạn vừa sửa source code và muốn **Build lại toàn bộ dự án (cả Go lẫn Rust)** trước khi chạy:
+Nếu bạn vừa sửa source code và muốn **Build lại dự án (Go và Rust)** trước khi chạy:
 
 ```bash
 ./mtn-orchestrator.sh restart --fresh --build
 ```
 
-> 💡 **Mẹo**: Lệnh `cargo build` của Rust và `go build` của Go đều được thiết kế theo cơ chế **incremental compilation** (build tăng dần). Nên kể cả khi bạn thêm cờ `--build`, nếu code Rust/Go không bị thay đổi thì quá trình vượt qua bước build vẫn sẽ cực kỳ nhanh do không bị compile lại từ đầu. Gần như có thể dùng `--build` một cách thoải mái.
+Nếu bạn có thay đổi liên quan đến C++ EVM precompile và muốn **Build lại toàn bộ (C++ EVM, Go và Rust)**:
+
+```bash
+./mtn-orchestrator.sh restart --fresh --build-all
+```
+
+> 💡 **Mẹo**: Các lệnh build (`cargo build`, `go build`, `make`) đều được thiết kế theo cơ chế **incremental compilation** (build tăng dần). Nên kể cả khi bạn thêm cờ `--build` hoặc `--build-all`, nếu code không bị thay đổi thì quá trình vượt qua bước build vẫn sẽ cực kỳ nhanh do không bị compile lại từ đầu. Gần như có thể dùng cờ này một cách thoải mái.
 ---
 
 ## Quản lý từng Node
@@ -344,8 +350,10 @@ cat mtn-simple-2025/cmd/simple_chain/sample/node0/back_up/last_block_backup.json
 | `stop` | Tắt an toàn (flush disk) |
 | `restart` | Tắt rồi khởi động (giữ data) |
 | `restart --fresh` | Khởi động mới (Xoá sạch số liệu cũ, không tự build) |
-| `restart --fresh --build` | Khởi động mới và kiểm tra/Build lại cả Go lẫn Rust |
-| `start --build` | Khởi động giữ data cũ nhưng có Build lại code |
+| `restart --fresh --build` | Khởi động mới và kiểm tra/Build lại Go và Rust |
+| `restart --fresh --build-all` | Khởi động mới và kiểm tra/Build lại toàn bộ (EVM, Go, Rust) |
+| `start --build` | Khởi động giữ data cũ nhưng có Build lại Go và Rust |
+| `start --build-all` | Khởi động giữ data cũ nhưng có Build lại toàn bộ (EVM, Go, Rust) |
 | `status` | Hiển thị trạng thái cluster |
 | `logs <N> [layer]` | Xem log node N |
 | `stop-node <N>` | Tắt 1 node |
