@@ -168,7 +168,7 @@ impl TxSocketServer {
                             return Ok(());
                         }
                     }
-                    // For other errors, send error response and continue
+                    // For other errors, send error response and close connection to prevent desync
                     error!(
                         "❌ [TX FLOW] Failed to read length-prefixed frame from UDS: {}",
                         e
@@ -183,7 +183,8 @@ impl TxSocketServer {
                         error!("❌ [TX FLOW] Failed to send error response: {}", send_err);
                         return Err(send_err.into());
                     }
-                    continue; // Tiếp tục xử lý request tiếp theo
+                    info!("🔌 [TX FLOW] Closing connection due to frame read error (Go will reconnect)");
+                    return Ok(()); // Đóng connection để Go client reconnect, tránh lỗi out-of-sync
                 }
             };
 

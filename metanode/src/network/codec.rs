@@ -4,8 +4,8 @@
 use anyhow::Result;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-/// Maximum transaction size allowed (10MB)
-const MAX_FRAME_SIZE: usize = 10 * 1024 * 1024;
+/// Maximum transaction size allowed (100MB to support up to 50k transactions in a single batch)
+const MAX_FRAME_SIZE: usize = 100 * 1024 * 1024;
 
 /// Read a length-prefixed frame from an async reader.
 /// Format: [4 bytes length (big-endian)][length bytes of data]
