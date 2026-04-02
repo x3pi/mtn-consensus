@@ -453,6 +453,7 @@ pub fn start_unified_epoch_monitor(
                     match node_guard.transition_to_epoch_from_system_tx(
                         new_epoch,
                         epoch_timestamp_ms,
+                        boundary_block,
                         synced_global_exec_index,
                         &config_clone,
                     ).await {

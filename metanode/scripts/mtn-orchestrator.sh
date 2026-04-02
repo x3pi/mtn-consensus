@@ -13,7 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Script nằm ở: mtn-consensus/metanode/scripts/
 # BASE_DIR = thư mục cha chứa cả mtn-consensus và mtn-simple-2025
-BASE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+BASE_DIR="/home/abc/chain-n"
 GO_DIR="$BASE_DIR/mtn-simple-2025/cmd/simple_chain"
 RUST_DIR="$BASE_DIR/mtn-consensus/metanode"
 RUST_BIN="$RUST_DIR/target/release/metanode"

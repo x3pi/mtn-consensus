@@ -45,11 +45,16 @@ pub async fn perform_block_recovery_check(
     // global_exec_index = epoch_base + commit_index
     // commit_index = global_exec_index - epoch_base
     let start_global = go_last_block + 1;
-    let start_commit_index = if start_global > epoch_base_exec_index {
-        (start_global - epoch_base_exec_index) as u32
-    } else {
-        1 // Fallback to 1 if calculation underflows (shouldn't happen if logic is correct)
-    };
+    if start_global <= epoch_base_exec_index {
+        info!(
+            "⚠️ [RECOVERY] Go Master (GEI {}) is behind the current epoch base (GEI {}). \
+            Deferring recovery to Go's network sync mechanism.",
+            go_last_block, epoch_base_exec_index
+        );
+        return Ok(());
+    }
+
+    let start_commit_index = (start_global - epoch_base_exec_index) as u32;
 
     info!(
         "🔍 [RECOVERY] Scanning for commits starting from commit_index={} (global={})",
