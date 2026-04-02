@@ -290,12 +290,25 @@ impl ExecutorClient {
                 global_exec_index, commit_index, epoch, total_tx, buffer.len());
         }
 
-        // CRITICAL: Always try to flush buffer after adding commit
-        if let Err(e) = self.flush_buffer().await {
-            warn!(
-                "⚠️  [SEQUENTIAL-BUFFER] Failed to flush buffer after adding commit: {}",
-                e
-            );
+        // CRITICAL: Flush buffer iteratively after adding commit.
+        // Loop ensures we drain all consecutive blocks without recursion (C5 fix).
+        loop {
+            if let Err(e) = self.flush_buffer().await {
+                warn!(
+                    "⚠️  [SEQUENTIAL-BUFFER] Failed to flush buffer after adding commit: {}",
+                    e
+                );
+                break;
+            }
+            // Check if there are more consecutive blocks to flush
+            let has_more = {
+                let buffer = self.send_buffer.lock().await;
+                let next_expected = self.next_expected_index.lock().await;
+                buffer.contains_key(&*next_expected)
+            };
+            if !has_more {
+                break;
+            }
         }
 
         Ok(())
@@ -584,14 +597,21 @@ impl ExecutorClient {
             }
         }
 
-        // If buffer still has consecutive blocks, recurse to flush remaining
+        // ═══════════════════════════════════════════════════════════════════
+        // STABILITY FIX (C5): Iterative flush instead of recursive Box::pin.
+        // Previously: `Box::pin(self.flush_buffer()).await` — each recursion
+        // allocates a new pinned Future on the heap. With 50K+ buffered blocks
+        // (snapshot restore), this could exhaust memory or stack.
+        // Now: signal the outer loop to continue flushing.
+        // ═══════════════════════════════════════════════════════════════════
         {
             let buffer = self.send_buffer.lock().await;
             let next_expected = self.next_expected_index.lock().await;
             if buffer.contains_key(&*next_expected) {
                 drop(buffer);
                 drop(next_expected);
-                return Box::pin(self.flush_buffer()).await;
+                // Signal caller to re-invoke flush_buffer (handled by flush_buffer_loop)
+                return Ok(());
             }
         }
 

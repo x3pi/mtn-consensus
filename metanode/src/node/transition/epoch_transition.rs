@@ -163,14 +163,43 @@ pub async fn transition_to_epoch_from_system_tx(
     let executor_client =
         committee_source.create_executor_client(&config.executor_send_socket_path);
 
-    // Evaluate if boundary_timestamp_ms is provided to avoid huge diff
+    // ═══════════════════════════════════════════════════════════════════
+    // FORK-SAFETY FIX (C4): Ensure provisional_timestamp is DETERMINISTIC.
+    //
+    // Previously, if boundary_timestamp_ms == 0, the code used SystemTime::now()
+    // which returns different values on different nodes → epoch boundary mismatch → fork.
+    //
+    // Fix: Query Go's epoch boundary data for a deterministic timestamp.
+    // This timestamp is derived from consensus-certified block headers and is
+    // identical across all nodes that have synced to the same block height.
+    // ═══════════════════════════════════════════════════════════════════
     let provisional_timestamp = if boundary_timestamp_ms > 0 {
         boundary_timestamp_ms
     } else {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
+        warn!(
+            "⚠️ [EPOCH TRANSITION] boundary_timestamp_ms is 0 for epoch {}. Querying Go for deterministic fallback.",
+            new_epoch
+        );
+        // Query Go for a deterministic timestamp from the previous epoch's boundary data
+        // This is consensus-derived and identical across all nodes
+        let prev_epoch = if new_epoch > 0 { new_epoch - 1 } else { 0 };
+        match executor_client.get_epoch_boundary_data(prev_epoch).await {
+            Ok((_epoch, stored_ts, _boundary, _, _, _)) if stored_ts > 0 => {
+                info!(
+                    "✅ [EPOCH TRANSITION] Using Go epoch {} boundary timestamp {} ms as provisional",
+                    prev_epoch, stored_ts
+                );
+                stored_ts
+            }
+            _ => {
+                // Last resort: use non-zero sentinel. system_transaction_provider
+                // will correct this from Go's boundary data later when committee is fetched.
+                warn!(
+                    "⚠️ [EPOCH TRANSITION] Cannot get Go boundary timestamp. Using 1 ms (minimum sentinel).",
+                );
+                1 // Non-zero sentinel: prevents zero-timestamp panic in Go layer
+            }
+        }
     };
 
     node.system_transaction_provider

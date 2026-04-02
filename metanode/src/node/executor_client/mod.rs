@@ -11,7 +11,7 @@
 //! - `block_sending`: Block sending + protobuf conversion
 //! - `transition_handoff`: Epoch transition handoff APIs
 
-mod block_sending;
+pub(crate) mod block_sending;
 pub mod block_store;
 mod block_sync;
 pub mod connection_pool;

@@ -509,34 +509,34 @@ impl CommitProcessor {
     ) {
         let has_end_of_epoch = subdag.extract_end_of_epoch_transaction().is_some();
 
-        let mut queued_count = 0;
+        // ═══════════════════════════════════════════════════════════════════
+        // PERFORMANCE FIX (H3): Collect all TXs first, then acquire lock ONCE.
+        // Previously, the mutex was locked/unlocked per transaction (10K+ cycles
+        // for large commits), causing significant overhead under high throughput.
+        // ═══════════════════════════════════════════════════════════════════
+        let mut tx_batch: Vec<Vec<u8>> = Vec::new();
         let mut skipped_count = 0;
 
-        for (block_idx, block) in subdag.blocks.iter().enumerate() {
-            for (tx_idx, tx) in block.transactions().iter().enumerate() {
+        for block in subdag.blocks.iter() {
+            for tx in block.transactions() {
                 let tx_data = tx.data();
 
                 // Skip EndOfEpoch system transactions - they are epoch-specific
                 if has_end_of_epoch && Self::is_end_of_epoch_transaction(tx_data) {
-                    info!("ℹ️  [TX FLOW] Skipping EndOfEpoch system transaction in failed commit {} (epoch-specific, cannot be queued for next epoch)", commit_index);
                     skipped_count += 1;
                     continue;
                 }
 
-                // Queue the transaction for next epoch
-                let mut queue = pending_transactions_queue.lock().await;
-                queue.push(tx_data.to_vec());
-                queued_count += 1;
-
-                let tx_hash = crate::types::tx_hash::calculate_transaction_hash(tx_data);
-                let tx_hash_hex = hex::encode(&tx_hash[..8]);
-
-                info!("📦 [TX FLOW] Queued failed transaction from commit {} block {} tx {}: hash={} (size={})",
-                    commit_index, block_idx, tx_idx, tx_hash_hex, tx_data.len());
+                tx_batch.push(tx_data.to_vec());
             }
         }
 
-        if queued_count > 0 {
+        // Single lock acquisition for entire batch
+        if !tx_batch.is_empty() {
+            let queued_count = tx_batch.len();
+            let mut queue = pending_transactions_queue.lock().await;
+            queue.extend(tx_batch);
+
             info!("✅ [TX FLOW] Queued {} transactions from failed commit {} (global_exec_index={}, epoch={}) for next epoch",
                 queued_count, commit_index, global_exec_index, epoch);
         }
@@ -547,13 +547,16 @@ impl CommitProcessor {
         }
     }
 
+    /// Detect if a transaction is an EndOfEpoch system transaction using
+    /// proper BCS deserialization (canonical check).
+    ///
+    /// FORK-SAFETY FIX (C3): Previously used `String::from_utf8_lossy().contains("EndOfEpoch")`
+    /// which is heuristic and could produce false positives on user TXs containing
+    /// that substring. Now uses the same BCS deserialization as
+    /// `CommittedSubDag::extract_end_of_epoch_transaction()` for consistency.
     fn is_end_of_epoch_transaction(tx_data: &[u8]) -> bool {
-        if tx_data.len() < 10 {
-            return false;
-        }
-        let data_str = String::from_utf8_lossy(tx_data);
-        data_str.contains("EndOfEpoch")
-            || data_str.contains("epoch") && data_str.contains("transition")
+        consensus_core::SystemTransaction::from_bytes(tx_data)
+            .map_or(false, |sys_tx| sys_tx.is_end_of_epoch())
     }
 
     async fn process_commit(
@@ -906,18 +909,43 @@ impl CommitProcessor {
                         // Track committed transaction hashes to prevent duplicates during epoch transitions
                         // CRITICAL: Only track when commit is actually processed, not just submitted
                         //
-                        // FIX 2026-02-06: Use try_lock() to avoid deadlock with transition handler
-                        // The transition handler may hold the node lock while waiting for Go to sync.
-                        // If we block here, CommitProcessor stalls and Go never gets more commits = DEADLOCK.
-                        // If lock is unavailable, skip tracking - next commit will retry.
+                        // FIX C1: When try_lock() fails (transition handler holds node lock),
+                        // spawn a deferred task to retry tracking after a short backoff.
+                        // Previously, we simply skipped tracking, which could cause tx_recycler
+                        // to resubmit already-committed TXs in the new epoch.
                         if let Some(node_arc) = crate::node::get_transition_handler_node().await {
                             // Use try_lock() instead of lock().await to avoid blocking
                             let node_guard = match node_arc.try_lock() {
                                 Ok(guard) => guard,
                                 Err(_) => {
-                                    // Lock held by transition handler - skip TX tracking to avoid deadlock
-                                    trace!("⏭️ [TX TRACKING] Skipping tracking for commit {} - node lock held by transition handler", commit_index);
-                                    break geis_consumed; // Exit the retry loop, commit was sent successfully
+                                    // Lock held by transition handler — defer tracking to a background task
+                                    trace!("⏭️ [TX TRACKING] Deferring tracking for commit {} — node lock held by transition handler", commit_index);
+                                    let node_arc_clone = node_arc.clone();
+                                    let subdag_blocks: Vec<Vec<Vec<u8>>> = subdag.blocks.iter()
+                                        .map(|b| b.transactions().iter().map(|tx| tx.data().to_vec()).collect())
+                                        .collect();
+                                    let deferred_commit_index = commit_index;
+                                    tokio::spawn(async move {
+                                        // Wait for transition handler to release lock
+                                        tokio::time::sleep(Duration::from_millis(500)).await;
+                                        if let Ok(guard) = node_arc_clone.try_lock() {
+                                            let mut hashes_guard = guard.committed_transaction_hashes.lock().await;
+                                            let mut count = 0;
+                                            for block_txs in &subdag_blocks {
+                                                for tx_data in block_txs {
+                                                    let tx_hash = crate::types::tx_hash::calculate_transaction_hash(tx_data);
+                                                    hashes_guard.insert(tx_hash);
+                                                    count += 1;
+                                                }
+                                            }
+                                            if count > 0 {
+                                                info!("💾 [TX TRACKING DEFERRED] Successfully tracked {} hashes for commit #{} after backoff", count, deferred_commit_index);
+                                            }
+                                        } else {
+                                            warn!("⚠️ [TX TRACKING DEFERRED] Still cannot acquire lock for commit #{}. TX tracking skipped.", deferred_commit_index);
+                                        }
+                                    });
+                                    break geis_consumed; // Exit retry loop, commit was sent successfully
                                 }
                             };
                             let mut hashes_guard =
