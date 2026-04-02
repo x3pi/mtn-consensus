@@ -385,17 +385,53 @@ if [ -f "$GENESIS" ]; then
             "validator $V p2p_address → /ip4/${V_IP}/tcp/${GENESIS_P2P_PORTS[$V]}"
     done
 
-    # epoch_timestamp_ms: rounded down to the previous hour boundary
-    # This ensures multiple runs within the same hour produce the same timestamp
-    CURRENT_EPOCH_SEC=$(( $(date +%s) / 3600 * 3600 ))
-    CURRENT_TS_MS="${CURRENT_EPOCH_SEC}000"
-    DISPLAY_TIME=$(date -d "@${CURRENT_EPOCH_SEC}" '+%Y-%m-%d %H:%M:%S')
-    safe_sed "$GENESIS" \
-        "s|\"epoch_timestamp_ms\": [0-9]*|\"epoch_timestamp_ms\": ${CURRENT_TS_MS}|" \
-        "epoch_timestamp_ms → ${CURRENT_TS_MS} (${DISPLAY_TIME})"
+    # LƯU Ý QUAN TRỌNG:
+    # Đã xoá logic sửa epoch_timestamp_ms tại từng máy!
+    # File genesis.json phải dùng chung MỘT Timestamp DUY NHẤT được đồng bộ từ Máy Build gốc (Local).
+    # Tuyệt đối không để mỗi máy tự chạy lệnh sinh TIMESTAMP (date +%s) vì sẽ gây sai số và làm sai mã Hash Genesis, khiến các Node từ chối kết nối chéo với nhau.
 else
     echo -e "  ${YELLOW}⚠️  genesis.json không tồn tại${NC}"
 fi
+
+# ─── Generate Setup Scripts ──────────────────────────────────────────────────
+echo -e "\n${BOLD}═══ Generate Setup Scripts (setup_node_{0..4}.sh) ═══${NC}"
+
+for N in $(seq 0 $((NODE_COUNT - 1))); do
+    SETUP_SCRIPT="$SCRIPT_DIR/setup_node_${N}.sh"
+    if $DRY_RUN; then
+        echo -e "  ${CYAN}[DRY] Sẽ tạo file $(basename $SETUP_SCRIPT)${NC}"
+    else
+        cat <<EOF > "$SETUP_SCRIPT"
+#!/bin/bash
+# ==========================================================
+# Script tự động cài đặt môi trường cho NODE $N
+# Chạy trên máy ảo/máy chủ có IP: ${IPS[$N]}
+# ==========================================================
+set -e
+
+echo -e "\e[1;36m[1/3] Cài đặt đồng bộ thời gian (Chrony)...\e[0m"
+sudo apt update && sudo apt install chrony -y
+sudo systemctl enable --now chrony
+
+echo -e "\n\e[1;36m[2/3] Cấu hình Firewall (UFW)...\e[0m"
+# Rust Consensus P2P
+sudo ufw allow ${CONSENSUS_PORTS[$N]}/tcp
+# Peer Discovery Go Master
+sudo ufw allow ${PEER_RPC_PORTS[$N]}/tcp
+# Go User RPC
+sudo ufw allow ${GO_RPC_PORTS[$N]}/tcp
+# Go Internal P2P (Primary, Worker)
+sudo ufw allow ${GENESIS_PRIMARY_PORTS[$N]:-4000}/tcp
+sudo ufw allow ${GENESIS_WORKER_PORTS[$N]:-4012}/tcp
+sudo ufw allow ${GENESIS_P2P_PORTS[$N]:-9000}/tcp
+
+echo -e "\n\e[1;32m✅ Setup hệ thống hoàn tất cho Máy Node $N.\e[0m"
+echo -e "\e[1;33mTiếp theo:\e[0m Bạn hãy copy file binary và config sang máy này rồi chạy."
+EOF
+        chmod +x "$SETUP_SCRIPT"
+        echo -e "  ${GREEN}✅ Đã tạo file setup_node_${N}.sh${NC}"
+    fi
+done
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo ""

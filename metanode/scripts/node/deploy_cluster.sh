@@ -23,21 +23,59 @@ NC='\033[0m'
 
 # Paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/deploy.env"
-
-# Load config
-if [ ! -f "$ENV_FILE" ]; then
-    echo -e "${RED}❌ deploy.env not found at $ENV_FILE${NC}"
-    exit 1
-fi
-source "$ENV_FILE"
 
 # ─── Parse Arguments ────────────────────────────────────────────────
+# Support --env <file> to specify a custom env file
+# Or set ENV_FILE=deploy-3machines.env before running
 DO_BUILD=false
 DO_PUSH=false
 DO_IPS=false
 DO_START=false
 DO_STOP=false
+KEEP_DATA=false
+CUSTOM_ENV=""
+ONLY_NODE=""
+
+# Parse args into array for safe indexed access
+ARGS=("$@")
+for i in "${!ARGS[@]}"; do
+    arg="${ARGS[$i]}"
+    case "$arg" in
+        --env=*) CUSTOM_ENV="${arg#--env=}" ;;
+        --env)
+            next=$((i+1))
+            if [ "$next" -lt "${#ARGS[@]}" ]; then
+                CUSTOM_ENV="${ARGS[$next]}"
+            fi ;;
+        --only-node=*) ONLY_NODE="${arg#--only-node=}" ;;
+        --only-node)
+            next=$((i+1))
+            if [ "$next" -lt "${#ARGS[@]}" ]; then
+                ONLY_NODE="${ARGS[$next]}"
+            fi ;;
+    esac
+done
+
+# Resolve env file path
+if [ -n "${CUSTOM_ENV:-}" ]; then
+    # If relative path, resolve relative to SCRIPT_DIR
+    [[ "$CUSTOM_ENV" != /* ]] && CUSTOM_ENV="$SCRIPT_DIR/$CUSTOM_ENV"
+    ENV_FILE="$CUSTOM_ENV"
+elif [ -n "${ENV_FILE:-}" ] && [[ "${ENV_FILE}" != /* ]]; then
+    ENV_FILE="$SCRIPT_DIR/${ENV_FILE}"
+else
+    ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/deploy.env}"
+fi
+
+echo -e "${CYAN}  📋 Using config: $ENV_FILE${NC}"
+
+# Load config
+if [ ! -f "$ENV_FILE" ]; then
+    echo -e "${RED}❌ Config not found: $ENV_FILE${NC}"
+    echo -e "${YELLOW}  Usage: ./deploy_cluster.sh --env deploy-3machines.env --all${NC}"
+    exit 1
+fi
+source "$ENV_FILE"
 
 if [ $# -eq 0 ] || [[ "$*" == *"--all"* ]]; then
     DO_BUILD=true; DO_PUSH=true; DO_IPS=true; DO_START=true
@@ -47,6 +85,7 @@ fi
 [[ "$*" == *"--ips"* ]] && DO_IPS=true
 [[ "$*" == *"--start"* ]] && DO_START=true
 [[ "$*" == *"--stop"* ]] && DO_STOP=true
+[[ "$*" == *"--keep-data"* ]] && KEEP_DATA=true
 
 # ─── Helper Functions ───────────────────────────────────────────────
 
@@ -94,6 +133,9 @@ get_nodes_for_server() {
     local server="$1"
     local nodes=""
     for node_id in "${!NODE_SERVER[@]}"; do
+        if [ -n "$ONLY_NODE" ] && [ "$node_id" != "$ONLY_NODE" ]; then
+            continue
+        fi
         if [ "${NODE_SERVER[$node_id]}" == "$server" ]; then
             nodes="$nodes $node_id"
         fi
@@ -138,20 +180,33 @@ if $DO_STOP; then
     log_step "Stopping cluster on all servers"
     for server in $SERVERS; do
         nodes=$(get_nodes_for_server "$server")
+        if [ -z "$nodes" ]; then continue; fi
         log_info "Stopping nodes [$nodes] on $server..."
-        ssh_cmd "$server" "
-            pkill -f 'simple_chain' 2>/dev/null || true
-            pkill -f 'metanode start' 2>/dev/null || true
-            sleep 3
-            for id in $nodes; do
-                tmux kill-session -t go-master-\$id 2>/dev/null || true
-                tmux kill-session -t go-sub-\$id 2>/dev/null || true
-                tmux kill-session -t metanode-\$id 2>/dev/null || true
-            done
-            pkill -9 -f 'simple_chain' 2>/dev/null || true
-            pkill -9 -f 'metanode start' 2>/dev/null || true
-            rm -f /tmp/executor*.sock /tmp/rust-go-*.sock /tmp/metanode-tx-*.sock 2>/dev/null || true
-        " 2>/dev/null || true
+        
+        if [ -n "$ONLY_NODE" ]; then
+            ssh_cmd "$server" "
+                for id in $nodes; do
+                    tmux kill-session -t go-master-\$id 2>/dev/null || true
+                    tmux kill-session -t go-sub-\$id 2>/dev/null || true
+                    tmux kill-session -t metanode-\$id 2>/dev/null || true
+                    rm -f /tmp/executor*-node\${id}*.sock /tmp/rust-go-node\${id}*.sock /tmp/metanode-tx-node\${id}*.sock 2>/dev/null || true
+                done
+            " 2>/dev/null || true
+        else
+            ssh_cmd "$server" "
+                pkill -f 'simple_chain' 2>/dev/null || true
+                pkill -f 'metanode start' 2>/dev/null || true
+                sleep 3
+                for id in $nodes; do
+                    tmux kill-session -t go-master-\$id 2>/dev/null || true
+                    tmux kill-session -t go-sub-\$id 2>/dev/null || true
+                    tmux kill-session -t metanode-\$id 2>/dev/null || true
+                done
+                pkill -9 -f 'simple_chain' 2>/dev/null || true
+                pkill -9 -f 'metanode start' 2>/dev/null || true
+                rm -f /tmp/executor*.sock /tmp/rust-go-*.sock /tmp/metanode-tx-*.sock 2>/dev/null || true
+            " 2>/dev/null || true
+        fi
         log_ok "$server stopped"
     done
     # If only --stop, exit here
@@ -207,20 +262,33 @@ if $DO_PUSH || $DO_START; then
     log_step "Phase 2: Stopping existing cluster"
     for server in $SERVERS; do
         nodes=$(get_nodes_for_server "$server")
+        if [ -z "$nodes" ]; then continue; fi
         log_info "Stopping nodes [$nodes] on $server..."
-        ssh_cmd "$server" "
-            pkill -f 'simple_chain' 2>/dev/null || true
-            pkill -f 'metanode start' 2>/dev/null || true
-            sleep 3
-            for id in $nodes; do
-                tmux kill-session -t go-master-\$id 2>/dev/null || true
-                tmux kill-session -t go-sub-\$id 2>/dev/null || true
-                tmux kill-session -t metanode-\$id 2>/dev/null || true
-            done
-            pkill -9 -f 'simple_chain' 2>/dev/null || true
-            pkill -9 -f 'metanode start' 2>/dev/null || true
-            rm -f /tmp/executor*.sock /tmp/rust-go-*.sock /tmp/metanode-tx-*.sock 2>/dev/null || true
-        " 2>/dev/null || true
+        
+        if [ -n "$ONLY_NODE" ]; then
+            ssh_cmd "$server" "
+                for id in $nodes; do
+                    tmux kill-session -t go-master-\$id 2>/dev/null || true
+                    tmux kill-session -t go-sub-\$id 2>/dev/null || true
+                    tmux kill-session -t metanode-\$id 2>/dev/null || true
+                    rm -f /tmp/executor*-node\${id}*.sock /tmp/rust-go-node\${id}*.sock /tmp/metanode-tx-node\${id}*.sock 2>/dev/null || true
+                done
+            " 2>/dev/null || true
+        else
+            ssh_cmd "$server" "
+                pkill -f 'simple_chain' 2>/dev/null || true
+                pkill -f 'metanode start' 2>/dev/null || true
+                sleep 3
+                for id in $nodes; do
+                    tmux kill-session -t go-master-\$id 2>/dev/null || true
+                    tmux kill-session -t go-sub-\$id 2>/dev/null || true
+                    tmux kill-session -t metanode-\$id 2>/dev/null || true
+                done
+                pkill -9 -f 'simple_chain' 2>/dev/null || true
+                pkill -9 -f 'metanode start' 2>/dev/null || true
+                rm -f /tmp/executor*.sock /tmp/rust-go-*.sock /tmp/metanode-tx-*.sock 2>/dev/null || true
+            " 2>/dev/null || true
+        fi
         log_ok "$server stopped"
     done
 fi
@@ -231,12 +299,13 @@ fi
 if $DO_PUSH; then
     log_step "Phase 3: Creating remote directories + pushing files"
 
-    GO_MASTER_CONFIGS=("config-master-node0.json" "config-master-node1.json" "config-master-node2.json" "config-master-node3.json")
-    GO_SUB_CONFIGS=("config-sub-node0.json" "config-sub-node1.json" "config-sub-node2.json" "config-sub-node3.json")
-    RUST_CONFIGS=("config/node_0.toml" "config/node_1.toml" "config/node_2.toml" "config/node_3.toml")
+    GO_MASTER_CONFIGS=("config-master-node0.json" "config-master-node1.json" "config-master-node2.json" "config-master-node3.json" "config-master-node4.json")
+    GO_SUB_CONFIGS=("config-sub-node0.json" "config-sub-node1.json" "config-sub-node2.json" "config-sub-node3.json" "config-sub-node4.json")
+    RUST_CONFIGS=("config/node_0.toml" "config/node_1.toml" "config/node_2.toml" "config/node_3.toml" "config/node_4.toml")
 
     for server in $SERVERS; do
         nodes=$(get_nodes_for_server "$server")
+        if [ -z "$nodes" ]; then continue; fi
         log_info "Deploying to $server (nodes: [$nodes])..."
 
         # Create directory structure on remote
@@ -310,16 +379,41 @@ if $DO_IPS; then
     fi
 
     for server in $SERVERS; do
-        log_info "Updating IPs on $server..."
+        nodes=$(get_nodes_for_server "$server")
+        if [ -z "$nodes" ]; then continue; fi
+        log_info "Updating IPs and Network Setup (Firewall/NTP) on $server..."
+        
+        # Build commands to execute setup scripts for the specific nodes running on this server
+        SETUP_CMDS=""
+        for id in $nodes; do
+            SETUP_CMDS="${SETUP_CMDS}
+            if [ -f setup_node_${id}.sh ]; then
+                echo '  🛠 Executing setup_node_${id}.sh...'
+                chmod +x setup_node_${id}.sh
+                if [ \"\${SSH_AUTH:-key}\" == \"password\" ] && [ -n \"\${SSH_PASSWORD:-}\" ]; then
+                    echo \"\${SSH_PASSWORD}\" | sudo -S bash setup_node_${id}.sh || true
+                else
+                    sudo bash setup_node_${id}.sh || true
+                fi
+            fi"
+        done
+
         ssh_cmd "$server" "
             cd '${REMOTE_SCRIPTS}'
             if [ -f update_ips.sh ]; then
+                # Sinh ra file setup_node_{0..4}.sh
                 bash update_ips.sh $IP_ARGS
+                
+                # Pass SSH vars down to the remote shell for sudo -S
+                SSH_AUTH='${SSH_AUTH:-}'
+                SSH_PASSWORD='${SSH_PASSWORD:-}'
+                
+                $SETUP_CMDS
             else
                 echo 'update_ips.sh not found, skipping'
             fi
         "
-        log_ok "IPs updated on $server"
+        log_ok "IPs and Setup completed on $server"
     done
 else
     log_info "Phase 4: Skipped (use --ips to enable)"
@@ -329,15 +423,24 @@ fi
 # PHASE 5: Start nodes on remote servers
 # ═══════════════════════════════════════════════════════════════════
 if $DO_START; then
-    log_step "Phase 5: Clean data + start nodes"
+    if $KEEP_DATA; then
+        log_step "Phase 5: Start nodes (KEEPING DATA)"
+    else
+        log_step "Phase 5: Clean data + start nodes"
 
-    # Clean node data on each server
-    for server in $SERVERS; do
+        # Clean node data on each server
+        for server in $SERVERS; do
         nodes=$(get_nodes_for_server "$server")
+        if [ -z "$nodes" ]; then continue; fi
         log_info "Cleaning data for nodes [$nodes] on $server..."
 
         ssh_cmd "$server" "
             cd '${REMOTE_GO_SIMPLE}'
+
+            # Xóa toàn bộ folder logs cũ
+            echo '  🗑  Xóa logs cũ...'
+            rm -rf '${REMOTE_METANODE}/logs' 2>/dev/null || true
+
             for id in $nodes; do
                 DATA=\"node\${id}\"
                 rm -rf \"sample/\${DATA}/data\" 2>/dev/null || true
@@ -345,7 +448,6 @@ if $DO_START; then
                 rm -rf \"sample/\${DATA}/back_up\" 2>/dev/null || true
                 rm -rf \"sample/\${DATA}/back_up_write\" 2>/dev/null || true
                 rm -rf \"${REMOTE_METANODE}/config/storage/node_\${id}\" 2>/dev/null || true
-                rm -rf \"${REMOTE_METANODE}/logs/node_\${id}\" 2>/dev/null || true
                 mkdir -p \"sample/\${DATA}/data/data/xapian_node\"
                 mkdir -p \"sample/\${DATA}/data-write/data/xapian_node\"
                 mkdir -p \"sample/\${DATA}/back_up\"
@@ -356,13 +458,14 @@ if $DO_START; then
             rm -f /tmp/executor*.sock /tmp/rust-go-*.sock /tmp/metanode-tx-*.sock 2>/dev/null || true
             rm -f /tmp/epoch_data_backup*.json 2>/dev/null || true
         "
-        log_ok "Data cleaned on $server"
-    done
+        log_ok "Data + logs cleaned on $server"
+        done
+    fi
 
     # ─── Start Go Masters ───────────────────────────────────────────
     log_step "Phase 5a: Starting Go Masters"
 
-    GO_MASTER_CONFIGS=("config-master-node0.json" "config-master-node1.json" "config-master-node2.json" "config-master-node3.json")
+    GO_MASTER_CONFIGS=("config-master-node0.json" "config-master-node1.json" "config-master-node2.json" "config-master-node3.json" "config-master-node4.json")
 
     for server in $SERVERS; do
         nodes=$(get_nodes_for_server "$server")
@@ -376,7 +479,7 @@ if $DO_START; then
                 cd '${REMOTE_GO_SIMPLE}'
                 LOG_DIR='${REMOTE_METANODE}/logs'
                 tmux new-session -d -s 'go-master-${id}' -c '${REMOTE_GO_SIMPLE}' \
-                    \"ulimit -n 100000; export GOTOOLCHAIN=${GO_TOOLCHAIN} && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='${XAPIAN}' && ./simple_chain -config=${GO_MASTER_CONFIGS[$id]} ${PPROF_ARG} >> \\\"\${LOG_DIR}/node_${id}/go-master-stdout.log\\\" 2>&1\"
+                    \"ulimit -n 100000; export GOTOOLCHAIN=${GO_TOOLCHAIN} && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='${XAPIAN}' && export MVM_LOG_DIR=\\\"\${LOG_DIR}/node_${id}\\\" && ./simple_chain -config=${GO_MASTER_CONFIGS[$id]} ${PPROF_ARG} >> \\\"\${LOG_DIR}/node_${id}/go-master-stdout.log\\\" 2>&1\"
             "
             log_ok "Go Master $id started"
         done
@@ -408,7 +511,7 @@ if $DO_START; then
     # ─── Start Go Subs ──────────────────────────────────────────────
     log_step "Phase 5c: Starting Go Subs"
 
-    GO_SUB_CONFIGS=("config-sub-node0.json" "config-sub-node1.json" "config-sub-node2.json" "config-sub-node3.json")
+    GO_SUB_CONFIGS=("config-sub-node0.json" "config-sub-node1.json" "config-sub-node2.json" "config-sub-node3.json" "config-sub-node4.json")
 
     for server in $SERVERS; do
         nodes=$(get_nodes_for_server "$server")
@@ -420,7 +523,7 @@ if $DO_START; then
                 cd '${REMOTE_GO_SIMPLE}'
                 LOG_DIR='${REMOTE_METANODE}/logs'
                 tmux new-session -d -s 'go-sub-${id}' -c '${REMOTE_GO_SIMPLE}' \
-                    \"ulimit -n 100000; export GOTOOLCHAIN=${GO_TOOLCHAIN} && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='${XAPIAN}' && ./simple_chain -config=${GO_SUB_CONFIGS[$id]} >> \\\"\${LOG_DIR}/node_${id}/go-sub-stdout.log\\\" 2>&1\"
+                    \"ulimit -n 100000; export GOTOOLCHAIN=${GO_TOOLCHAIN} && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='${XAPIAN}' && export MVM_LOG_DIR=\\\"\${LOG_DIR}/node_${id}\\\" && ./simple_chain -config=${GO_SUB_CONFIGS[$id]} >> \\\"\${LOG_DIR}/node_${id}/go-sub-stdout.log\\\" 2>&1\"
             "
             log_ok "Go Sub $id started"
             sleep 1
@@ -432,7 +535,7 @@ if $DO_START; then
     # ─── Start Rust Metanodes ───────────────────────────────────────
     log_step "Phase 5d: Starting Rust Metanodes"
 
-    RUST_CONFIGS=("config/node_0.toml" "config/node_1.toml" "config/node_2.toml" "config/node_3.toml")
+    RUST_CONFIGS=("config/node_0.toml" "config/node_1.toml" "config/node_2.toml" "config/node_3.toml" "config/node_4.toml")
 
     for server in $SERVERS; do
         nodes=$(get_nodes_for_server "$server")
@@ -472,11 +575,13 @@ for server in $SERVERS; do
 done
 
 echo ""
-echo -e "${GREEN}  📝 Commands:${NC}"
-echo -e "     Full deploy:   ${CYAN}./deploy_cluster.sh --all${NC}"
-echo -e "     Build only:    ${CYAN}./deploy_cluster.sh --build${NC}"
-echo -e "     Push only:     ${CYAN}./deploy_cluster.sh --push --ips${NC}"
-echo -e "     Start only:    ${CYAN}./deploy_cluster.sh --start${NC}"
-echo -e "     Stop cluster:  ${CYAN}./deploy_cluster.sh --stop${NC}"
-echo -e "     Check status:  ${CYAN}./deploy_status.sh${NC}"
+echo -e "    📝 Commands:"
+echo -e "       Full deploy:   ${CYAN}./deploy_cluster.sh --all${NC}"
+echo -e "       Start keep db: ${CYAN}./deploy_cluster.sh --start --keep-data${NC}"
+echo -e "       Stop/Start 1 node: ${CYAN}./deploy_cluster.sh --stop --only-node 4${NC}"
+echo -e "       Build only:    ${CYAN}./deploy_cluster.sh --build${NC}"
+echo -e "       Push only:     ${CYAN}./deploy_cluster.sh --push --ips${NC}"
+echo -e "       Start only:    ${CYAN}./deploy_cluster.sh --start${NC}"
+echo -e "       Stop cluster:  ${CYAN}./deploy_cluster.sh --stop${NC}"
+echo -e "       Check status:  ${CYAN}./deploy_status.sh${NC}"
 echo ""
