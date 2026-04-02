@@ -147,110 +147,10 @@ pub async fn transition_to_epoch_from_system_tx(
     let new_epoch = final_epoch;
     let synced_global_exec_index = final_boundary;
 
-    {
-        info!(
-            "📤 [ADVANCE EPOCH FIRST] Notifying Go about epoch {} BEFORE fetching committee (boundary: {}, synced: {})",
-            new_epoch, boundary_block_from_tx, synced_global_exec_index
-        );
+    // Removed eager `advance_epoch` call previously here. We now sequence epoch transition properly.
 
-        // CRITICAL FIX: Query Go's last_block_number FIRST to get the actual block boundary
-        // Go's block number ≠ global_exec_index (GEI counts ALL commits, blockNumber counts only non-empty)
-        // Using GEI as boundary causes Go to fail looking up the block → falls back to non-deterministic timestamp
-        let go_boundary_block_tuple = match early_executor_client.get_last_block_number().await {
-            Ok(block_num) => {
-                info!(
-                    "✅ [ADVANCE EPOCH FIRST] Got Go's last_block_number={} (GEI was {})",
-                    block_num.0, synced_global_exec_index
-                );
-                block_num
-            }
-            Err(e) => {
-                warn!(
-                    "⚠️ [ADVANCE EPOCH FIRST] Failed to get Go's last_block_number: {}. Using synced_global_exec_index={} as fallback.",
-                    e, synced_global_exec_index
-                );
-                (synced_global_exec_index, false) // fallback (may still cause the old bug but better than crashing)
-            }
-        };
-
-        // Extract the actual block number
-        let go_boundary_block = go_boundary_block_tuple.0;
-
-        // CRITICAL FIX: Use timestamp=0 as placeholder. The correct timestamp will be
-        // derived from Go's boundary block header via get_epoch_boundary_data() later.
-        // Previously used SystemTime::now() which differed by 1ms between nodes,
-        // causing different Genesis block hashes and permanent network partition.
-        let provisional_timestamp: u64 = 0;
-
-        match early_executor_client
-            .advance_epoch(new_epoch, provisional_timestamp, go_boundary_block, synced_global_exec_index)
-            .await
-        {
-            Ok(_) => {
-                info!(
-                    "✅ [ADVANCE EPOCH FIRST] Go notified about epoch {} (boundary=go_block_{}, gei={}). Committee fetch should now work.",
-                    new_epoch, go_boundary_block, synced_global_exec_index
-                );
-
-                // Save checkpoint: Go has been notified
-                if let Err(e) = checkpoint_manager
-                    .checkpoint_advance_epoch(
-                        new_epoch,
-                        synced_global_exec_index,
-                        provisional_timestamp,
-                        go_boundary_block,
-                    )
-                    .await
-                {
-                    warn!("⚠️ Failed to save checkpoint: {}", e);
-                }
-            }
-            Err(e) => {
-                // Go now accepts advance_epoch even when sync is incomplete
-                // So this error path is for other unexpected errors
-                warn!(
-                    "⚠️ [ADVANCE EPOCH FIRST] Failed to notify Go about epoch {}: {}. Continuing anyway.",
-                    new_epoch, e
-                );
-                // Continue to fetch_committee - Go may still work
-            }
-        }
-    }
-
-    // =============================================================================
-    // STEP 0: ROLE-FIRST CHECK (MUST BE FIRST!)
-    // =============================================================================
-    // Determine node's role for the new epoch BEFORE any other operations.
-    // This ensures we know whether to setup Validator or SyncOnly infrastructure.
-    // NOTE: Go now has epoch boundary data from advance_epoch call above.
-    // =============================================================================
-    let own_protocol_pubkey = node.protocol_keypair.public();
-    let (target_role, needs_mode_change) = determine_role_and_check_transition(
-        new_epoch,
-        &node.node_mode,
-        &own_protocol_pubkey,
-        config,
-    )
-    .await?;
-
-    info!(
-        "📋 [ROLE-FIRST] Epoch {} transition: target_role={:?}, needs_mode_change={}, current_mode={:?}",
-        new_epoch, target_role, needs_mode_change, node.node_mode
-    );
-
-    node.close_user_certs().await;
-
-    // [FIX 2026-02-11]: MOVED UP - Setup clients and state needed for sync check
-    // Check executor read is enabled
-    if !config.executor_read_enabled {
-        anyhow::bail!("Executor read disabled");
-    }
-
-    // UNIFIED COMMITTEE SOURCE: Use CommitteeSource for fork-safe committee fetching
-    // This ensures BOTH SyncOnly and Validator modes use the same logic
     let committee_source = crate::node::committee_source::CommitteeSource::discover(config).await?;
 
-    // Validate epoch consistency
     if !committee_source.validate_epoch(new_epoch) {
         warn!(
             "⚠️ [TRANSITION] Epoch mismatch detected. Expected={}, Source={}. Proceeding with source epoch.",
@@ -261,58 +161,18 @@ pub async fn transition_to_epoch_from_system_tx(
     let executor_client =
         committee_source.create_executor_client(&config.executor_send_socket_path);
 
-    // =============================================================================
-    // GO-AUTHORITATIVE EPOCH BOUNDARY FIX (2026-02-01)
-    // =============================================================================
-    // PROBLEM: Old logic compared synced_global_exec_index (from EndOfEpoch tx) with
-    //          Go's get_epoch_boundary_data(new_epoch) which returns boundary_block=0
-    //          for epoch 1 (Go hasn't stored it yet). This caused verification failure.
-    //
-    // SOLUTION: Use Go Master's actual last_block_number as the authoritative boundary.
-    //           Go knows what blocks it has committed, so this is the source of truth.
-    //           All nodes query the same Go Master → consistent boundary across cluster.
-    // =============================================================================
-
-    let go_last_block = executor_client
-        .get_last_block_number()
-        .await
-        .map(|(bn, _)| bn)
-        .map_err(|e| anyhow::anyhow!("Cannot get Go Master's last_block_number: {}", e))?;
-
-    info!(
-        "📊 [GO-AUTHORITATIVE] Using Go Master's last_block={} as epoch boundary (EndOfEpoch tx had: {})",
-        go_last_block, synced_global_exec_index
-    );
-
-    // Use Go's value as the authoritative synced_global_exec_index
-    // NOTE: This shadowing might affect target_commit_index calculation, but if we sync below, it will be correct.
-    let _synced_global_exec_index = go_last_block;
-
-    // =============================================================================
-    // SIMPLIFIED: Timestamp is NOT in EndOfEpoch anymore!
-    // We only have boundary_block_from_tx. Timestamp will be fetched from Go AFTER
-    // Go advances epoch (Go derives it from boundary block header).
-    // Use provisional value here; will be updated after get_epoch_boundary_data.
-    // =============================================================================
-    let epoch_timestamp_provisional: u64 = if boundary_block_from_tx > 0 {
-        // Provisional: Use current time as placeholder until we get real timestamp from Go
-        info!(
-            "📝 [EPOCH TIMESTAMP] Will derive timestamp from boundary block {} after Go advance",
-            boundary_block_from_tx
-        );
+    let provisional_timestamp: u64 = if boundary_block_from_tx > 0 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64
     } else {
-        // Epoch 0 - use genesis timestamp (handled separately)
-        info!("ℹ️ [EPOCH TIMESTAMP] Epoch 0 uses genesis timestamp from config");
         0
     };
 
-    // NOTE: epoch_timestamp_provisional is temporary - will be replaced after Go advance
+    // NOTE: provisional_timestamp is temporary - will be replaced after Go advance
     // with definitive timestamp from get_epoch_boundary_data
-    let epoch_timestamp_to_use = epoch_timestamp_provisional;
+    let epoch_timestamp_to_use = provisional_timestamp;
 
     node.system_transaction_provider
         .update_epoch(new_epoch, epoch_timestamp_to_use)
@@ -377,9 +237,6 @@ pub async fn transition_to_epoch_from_system_tx(
 
     // ═══════════════════════════════════════════════════════════════
     // DISK CLEANUP: Remove old epoch directories beyond epochs_to_keep.
-    // LegacyEpochStoreManager prunes in-memory stores, but the on-disk
-    // epoch directories were never cleaned up — causing unbounded growth.
-    // Each node controls its own retention via epochs_to_keep config.
     // ═══════════════════════════════════════════════════════════════
     if config.epochs_to_keep > 0 {
         let keep_from = if new_epoch > config.epochs_to_keep as u64 {
@@ -406,7 +263,6 @@ pub async fn transition_to_epoch_from_system_tx(
                                             epoch, e
                                         );
                                     }
-                                    // Also remove from in-memory legacy store if present
                                     node.legacy_store_manager.remove_store(epoch);
                                 }
                             }
@@ -421,10 +277,6 @@ pub async fn transition_to_epoch_from_system_tx(
     node.current_epoch = new_epoch;
     node.current_commit_index.store(0, Ordering::SeqCst);
 
-    // CRITICAL: Use max(synced_index, synced_global_exec_index) as epoch base.
-    // synced_index comes from stop_authority_and_poll_go() which may return 0
-    // on non-executor nodes. synced_global_exec_index comes from catch_up_to_network_epoch()
-    // which correctly returns the boundary block (e.g., 1624 for epoch 5).
     let effective_synced = std::cmp::max(synced_index, synced_global_exec_index);
     if effective_synced > synced_index {
         info!(
@@ -438,27 +290,21 @@ pub async fn transition_to_epoch_from_system_tx(
     }
     node.last_global_exec_index = effective_synced;
 
-    // =========================================================================
-    // MEMORY LEAK FIX: Clear committed_transaction_hashes on epoch transition
-    // This HashSet grows ~1.1GB/hour at 10K TPS (32 bytes per TX hash).
-    // It's only needed for dedup during epoch transitions, so clearing it
-    // when the new epoch starts is safe — old epoch's hashes are irrelevant.
-    // =========================================================================
+    // MEMORY LEAK FIX
     {
         let mut hashes = node.committed_transaction_hashes.lock().await;
         let old_count = hashes.len();
         hashes.clear();
-        hashes.shrink_to_fit(); // Release allocated memory back to OS
+        hashes.shrink_to_fit();
         if old_count > 0 {
             info!(
-                "🧹 [MEMORY CLEANUP] Cleared {} committed_transaction_hashes from previous epoch (freed ~{}KB)",
-                old_count, (old_count * 32) / 1024
+                "🧹 [MEMORY CLEANUP] Cleared {} committed_transaction_hashes from previous epoch",
+                old_count
             );
         }
     }
     node.update_execution_lock_epoch(new_epoch).await;
 
-    // EPOCH STATE LOG: Comprehensive state dump for debugging transitions
     info!(
         "📊 [EPOCH STATE UPDATED] epoch={}, last_global_exec_index={}, commit_index={}, mode={:?}",
         node.current_epoch,
@@ -467,33 +313,34 @@ pub async fn transition_to_epoch_from_system_tx(
         node.node_mode
     );
 
-    // CRITICAL FIX: Use Go's block_number (NOT synced_global_exec_index/GEI) for advance_epoch.
-    // GEI counts ALL commits (including empty), block_number counts only non-empty blocks.
-    // Go uses block_number for its epoch boundary storage, so we must use the same metric.
+    // =============================================================================
+    // GO-AUTHORITATIVE EPOCH BOUNDARY & ADVANCE EPOCH
+    // =============================================================================
     let go_boundary_for_advance_tuple = match executor_client.get_last_block_number().await {
         Ok(bn) => {
             info!(
-                "✅ [EPOCH ADVANCE] Got Go's last_block_number={} (GEI was {})",
-                bn.0, synced_global_exec_index
+                "✅ [EPOCH ADVANCE] Got Go's deterministic last_block_number={} (GEI was {})",
+                bn.0, effective_synced
             );
             bn
         }
         Err(e) => {
             warn!(
-                "⚠️ [EPOCH ADVANCE] Failed to get Go's last_block_number: {}. Using go_last_block={} as fallback.",
-                e, go_last_block
+                "⚠️ [EPOCH ADVANCE] Failed to get Go's last_block_number: {}. Using effective_synced={} as fallback.",
+                e, effective_synced
             );
-            (go_last_block, false) // Fallback to value queried earlier (line 256)
+            (effective_synced, false)
         }
     };
     let go_boundary_for_advance = go_boundary_for_advance_tuple.0;
 
     info!(
         "📤 [EPOCH ADVANCE] Notifying Go about epoch {} transition (boundary: go_block_{}, gei={})",
-        new_epoch, go_boundary_for_advance, synced_global_exec_index
+        new_epoch, go_boundary_for_advance, effective_synced
     );
+    // Advance Go's Epoch explicitly using the boundary block retrieved AFTER execution halt
     if let Err(e) = executor_client
-        .advance_epoch(new_epoch, epoch_timestamp_to_use, go_boundary_for_advance, synced_global_exec_index)
+        .advance_epoch(new_epoch, provisional_timestamp, go_boundary_for_advance, effective_synced)
         .await
     {
         warn!(
@@ -502,67 +349,63 @@ pub async fn transition_to_epoch_from_system_tx(
         );
     }
 
+    if let Err(e) = checkpoint_manager
+        .checkpoint_advance_epoch(
+            new_epoch,
+            effective_synced,
+            provisional_timestamp,
+            go_boundary_for_advance,
+        )
+        .await
+    {
+        warn!("⚠️ Failed to save checkpoint: {}", e);
+    }
+
     // =============================================================================
-    // POST-TRANSITION: GET TIMESTAMP FROM GO (Block Header Derived)
-    // UNIFIED TIMESTAMP: All nodes must use Go's timestamp from boundary block header
-    // This ensures deterministic, identical timestamps across all nodes
+    // STEP ROLE-FIRST: Determine node's role for the new epoch
     // =============================================================================
-    let mut epoch_timestamp_to_use = epoch_timestamp_to_use; // Make mutable to allow update
-                                                             // Store epoch boundary block for later use in Validator Priority check
-    let mut epoch_boundary_block: u64 = synced_index; // Default to synced_index if get_epoch_boundary_data fails
+    // Now that Go's epoch has advanced and boundary is stored, we can successfully
+    // query the NEW epoch committee to determine our mode for this new epoch!
+    let own_protocol_pubkey = node.protocol_keypair.public();
+    let (target_role, needs_mode_change) = determine_role_and_check_transition(
+        new_epoch,
+        &node.node_mode,
+        &own_protocol_pubkey,
+        config,
+    )
+    .await?;
+
+    info!(
+        "📋 [ROLE-FIRST] Epoch {} transition: target_role={:?}, needs_mode_change={}, current_mode={:?}",
+        new_epoch, target_role, needs_mode_change, node.node_mode
+    );
+
+    node.close_user_certs().await;
+
+    // Fetch the unified timestamp and committee from Go!
+    // We already advanced the epoch up above, so now Go will deterministically
+    // reply with the unified block timestamp when fetching the committee.
+    let epoch_boundary_block: u64 = go_boundary_for_advance;
+
     match executor_client.get_epoch_boundary_data(new_epoch).await {
-        Ok((stored_epoch, stored_timestamp, stored_boundary, _validators, _, _)) => {
-            // Save the authoritative epoch boundary block
-            epoch_boundary_block = stored_boundary;
-            // Validate boundary block matches what we sent
-            // CRITICAL FIX: Compare stored_boundary (Go's block_number) with go_boundary_for_advance
-            // (also block_number), NOT with synced_global_exec_index (GEI) — they are different metrics
+        Ok((stored_epoch, _stored_timestamp, stored_boundary, _, _, _)) => {
             if stored_boundary != go_boundary_for_advance {
                 error!(
                     "🚨 [BOUNDARY MISMATCH] Go stored boundary={} but we sent go_block_{}! Potential block skip! (gei={})",
-                    stored_boundary, go_boundary_for_advance, synced_global_exec_index
+                    stored_boundary, go_boundary_for_advance, effective_synced
                 );
             } else {
                 info!(
-                    "✅ [CONTINUITY VERIFIED] Go confirmed epoch {} boundary: block={}, timestamp={}",
-                    stored_epoch, stored_boundary, stored_timestamp
-                );
-            }
-
-            // UNIFIED TIMESTAMP: Use Go's timestamp (derived from block header)
-            // This replaces SystemTx timestamp to ensure all nodes use the SAME value
-            if stored_timestamp > 0 {
-                if stored_timestamp != epoch_timestamp_to_use {
-                    info!(
-                        "🔄 [UNIFIED TIMESTAMP] Updating timestamp: SystemTx={} → Go(block header)={}",
-                        epoch_timestamp_to_use, stored_timestamp
-                    );
-                    epoch_timestamp_to_use = stored_timestamp;
-
-                    // Also update system_transaction_provider with unified timestamp
-                    node.system_transaction_provider
-                        .update_epoch(new_epoch, epoch_timestamp_to_use)
-                        .await;
-                }
-                info!(
-                    "✅ [UNIFIED TIMESTAMP] Using Go's block-header-derived timestamp for epoch {}: {} ms",
-                    new_epoch, epoch_timestamp_to_use
+                    "✅ [CONTINUITY VERIFIED] Go confirmed epoch {} boundary: block={}",
+                    stored_epoch, stored_boundary
                 );
             }
         }
         Err(e) => {
-            // Go might not have stored it yet - this is expected for epoch 0→1
-            warn!(
-                "⚠️ [VALIDATION SKIP] Cannot verify boundary storage: {}. Using SystemTx timestamp as fallback.",
-                e
-            );
+            warn!("⚠️ [VALIDATION SKIP] Cannot verify boundary storage: {}", e);
         }
     }
 
-    // NOTE: Peer timestamp consensus is NO LONGER needed
-    // All nodes process the same EndOfEpoch SystemTx → all get the same timestamp
-
-    // Prepare DB
     let db_path = node
         .storage_path
         .join("epochs")
@@ -573,18 +416,24 @@ pub async fn transition_to_epoch_from_system_tx(
     }
     std::fs::create_dir_all(&db_path)?;
 
-    // Fetch committee from unified source FOR THE NEW EPOCH
-    // CRITICAL: Pass new_epoch to ensure we get the correct validator set
     info!(
-        "📋 [COMMITTEE] Fetching committee for epoch {} from {} (epoch={}, block={})",
+        "📋 [COMMITTEE] Fetching committee for epoch {} from {} (epoch={})",
         new_epoch,
         committee_source.socket_path,
-        committee_source.epoch,
-        committee_source.last_block
+        committee_source.epoch
     );
-    let committee = committee_source
-        .fetch_committee(&config.executor_send_socket_path, new_epoch)
+    let (committee, epoch_timestamp_to_use) = committee_source
+        .fetch_committee_with_timestamp(&config.executor_send_socket_path, new_epoch)
         .await?;
+
+    info!(
+        "✅ [UNIFIED TIMESTAMP] Using Go's block-header-derived timestamp for epoch {}: {} ms",
+        new_epoch, epoch_timestamp_to_use
+    );
+
+    node.system_transaction_provider
+        .update_epoch(new_epoch, epoch_timestamp_to_use)
+        .await;
 
     // Clone committee for later use in Validator Priority check
     // (original committee will be moved into ConsensusAuthority::start())

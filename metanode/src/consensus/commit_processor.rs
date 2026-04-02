@@ -594,10 +594,10 @@ impl CommitProcessor {
                         error!("🚨 [FATAL] epoch_eth_addresses STILL EMPTY after {} retries! Committee not loaded.", max_retries);
                         error!("🚨 [FATAL] Cannot process commit #{} (global_exec_index={}) without valid committee data!", 
                             commit_index, global_exec_index);
-                        error!(
-                            "🚨 [HALTING] Cannot continue without committee data. Node will exit."
+                        anyhow::bail!(
+                            "Committee data empty after {} retries — cannot process commit #{} (GEI={}). Node requires restart.",
+                            max_retries, commit_index, global_exec_index
                         );
-                        std::process::exit(1);
                     }
                     warn!(
                         "⏳ [LEADER] epoch_eth_addresses empty, waiting for committee... retry {}/{}",
@@ -624,8 +624,7 @@ impl CommitProcessor {
                             addrs
                         } else {
                             error!("🚨 [FATAL] No committees available in cache!");
-                            error!("🚨 [HALTING] No committee data available. Node will exit.");
-                            std::process::exit(1);
+                            anyhow::bail!("No committee data available in cache — cannot determine leader for epoch {}.", epoch);
                         }
                     }
                 } else {
@@ -638,10 +637,7 @@ impl CommitProcessor {
                         addrs
                     } else {
                         error!("🚨 [FATAL] No committees available in cache!");
-                        error!(
-                            "🚨 [HALTING] No committee data available (epoch 0). Node will exit."
-                        );
-                        std::process::exit(1);
+                        anyhow::bail!("No committee data available in cache (epoch 0) — cannot determine leader.");
                     }
                 };
 
@@ -659,8 +655,10 @@ impl CommitProcessor {
                         );
                         error!("🚨 [FATAL] Committee size mismatch - expected at least {} validators but have {}!",
                             leader_author_index + 1, committee_size);
-                        error!("🚨 [HALTING] Committee data inconsistent — leader index out of range. Node will exit.");
-                        std::process::exit(1);
+                        anyhow::bail!(
+                            "Committee size mismatch: leader_index {} >= committee_size {} after {} retries for epoch {}.",
+                            leader_author_index, committee_size, max_retries, epoch
+                        );
                     }
 
                     warn!(
@@ -731,8 +729,10 @@ impl CommitProcessor {
                             "🚨 [FATAL] eth_address at index {} has invalid length {} (expected 20) after {} retries!",
                             leader_author_index, addr.len(), max_retries
                         );
-                        error!("🚨 [HALTING] Invalid ETH address in committee — cannot determine leader safely. Node will exit.");
-                        std::process::exit(1);
+                        anyhow::bail!(
+                            "Invalid ETH address length {} at index {} after {} retries — committee data corrupted.",
+                            addr.len(), leader_author_index, max_retries
+                        );
                     }
 
                     warn!(
