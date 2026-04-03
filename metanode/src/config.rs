@@ -318,7 +318,7 @@ impl NodeConfig {
                 metrics_port: 9100 + idx as u16,
                 speed_multiplier: 1.0, // Default: normal speed
                 leader_timeout_ms: None,
-                min_round_delay_ms: None,
+                min_round_delay_ms: Some(200), // Enforce 200ms delay to create fat blocks (Anti-Fork performance tuning)
                 time_based_epoch_change: true, // Enabled by default
                 epoch_duration_seconds: None,  // DEPRECATED: loaded from Go via protobuf now
                 max_clock_drift_seconds: 5,

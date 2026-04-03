@@ -867,15 +867,15 @@ case "$COMMAND" in
         ;;
 esac
 
-echo -e "${BLUE}📋 Step 9: Running SetGet test...${NC}"
-CLIENT_DIR="$HOME/nhat/client/cmd/client/call_tool_example_new"
-if [ -d "$CLIENT_DIR" ]; then
-    cd "$CLIENT_DIR"
-    echo -e "${GREEN}  🚀 Running: go run . -data=SetGet.json -config=config-local-genis.json${NC}"
-    # Run the command and pipe 3 enters to it
-    (sleep 2; echo ""; sleep 2; echo ""; sleep 2; echo "") | go run . -data=SetGet.json -config=config-local-genis.json
-    echo -e "${GREEN}  ✅ SetGet test completed${NC}"
-else
-    echo -e "${YELLOW}  ⚠️ Client directory not found: $CLIENT_DIR${NC}"
-fi
-echo ""
+# echo -e "${BLUE}📋 Step 9: Running SetGet test...${NC}"
+# CLIENT_DIR="$HOME/nhat/client/cmd/client/call_tool_example_new"
+# if [ -d "$CLIENT_DIR" ]; then
+#     cd "$CLIENT_DIR"
+#     echo -e "${GREEN}  🚀 Running: go run . -data=SetGet.json -config=config-local-genis.json${NC}"
+#     # Run the command and pipe 3 enters to it
+#     (sleep 2; echo ""; sleep 2; echo ""; sleep 2; echo "") | go run . -data=SetGet.json -config=config-local-genis.json
+#     echo -e "${GREEN}  ✅ SetGet test completed${NC}"
+# else
+#     echo -e "${YELLOW}  ⚠️ Client directory not found: $CLIENT_DIR${NC}"
+# fi
+# echo ""

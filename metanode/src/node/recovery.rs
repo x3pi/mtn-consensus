@@ -1,9 +1,12 @@
 // Copyright (c) MetaNode Team
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::node::executor_client::block_sending::MAX_TXS_PER_GO_BLOCK;
 use crate::node::executor_client::ExecutorClient;
 use anyhow::Result;
-use consensus_core::{storage::rocksdb_store::RocksDBStore, storage::Store, CommitAPI};
+use consensus_core::{
+    storage::rocksdb_store::RocksDBStore, storage::Store, BlockAPI, CommitAPI,
+};
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -42,14 +45,19 @@ pub async fn perform_block_recovery_check(
     let recovery_store = Arc::new(RocksDBStore::new(db_path_str));
 
     // Calculate start commit index
-    // global_exec_index = epoch_base + commit_index
-    // commit_index = global_exec_index - epoch_base
+    // global_exec_index = epoch_base + commit_index + cumulative_fragment_offset
+    // For recovery, we must reconstruct the fragment offset by counting TXs in each commit
     let start_global = go_last_block + 1;
-    let start_commit_index = if start_global > epoch_base_exec_index {
-        (start_global - epoch_base_exec_index) as u32
-    } else {
-        1 // Fallback to 1 if calculation underflows (shouldn't happen if logic is correct)
-    };
+    if start_global <= epoch_base_exec_index {
+        info!(
+            "⚠️ [RECOVERY] Go Master (GEI {}) is behind the current epoch base (GEI {}). \
+            Deferring recovery to Go's network sync mechanism.",
+            go_last_block, epoch_base_exec_index
+        );
+        return Ok(());
+    }
+
+    let start_commit_index = (start_global - epoch_base_exec_index) as u32;
 
     info!(
         "🔍 [RECOVERY] Scanning for commits starting from commit_index={} (global={})",
@@ -72,6 +80,18 @@ pub async fn perform_block_recovery_check(
 
     let mut next_required_global = go_last_block + 1;
 
+    // ═══════════════════════════════════════════════════════════════════
+    // FORK-SAFETY FIX (C2): Track cumulative fragment offset during recovery.
+    //
+    // When a commit has >MAX_TXS_PER_GO_BLOCK TXs, send_committed_subdag
+    // fragments it into N blocks, each consuming 1 GEI. So a fragmented
+    // commit consumes N GEIs instead of 1. We must advance next_required_global
+    // by N, not 1, to match what other nodes did during live processing.
+    //
+    // DETERMINISM: All nodes use the same MAX_TXS_PER_GO_BLOCK constant
+    // and process the same commits → identical fragment offsets.
+    // ═══════════════════════════════════════════════════════════════════
+
     for commit in commits {
         let commit_index = commit.index();
         let global_exec_index = epoch_base_exec_index + commit_index as u64;
@@ -79,6 +99,13 @@ pub async fn perform_block_recovery_check(
         if global_exec_index < next_required_global {
             continue; // Already processed or duplicate
         }
+
+        // NOTE: With fragmentation, the GEI formula is:
+        //   global_exec_index = epoch_base + commit_index + cumulative_fragment_offset
+        // We don't track cumulative_fragment_offset here because send_committed_subdag
+        // handles the actual GEI assignment internally. We pass `next_required_global`
+        // as the starting GEI and let send_committed_subdag fragment as needed.
+        // The key fix is advancing next_required_global by geis_consumed (not always 1).
 
         if global_exec_index > next_required_global {
             // GAP DETECTED!
@@ -91,12 +118,6 @@ pub async fn perform_block_recovery_check(
             return Err(anyhow::anyhow!(error_msg));
         }
 
-        // At this point, global_exec_index == next_required_global
-        info!(
-            "🔄 [RECOVERY] Replaying commit #{} (global_exec_index={})",
-            commit_index, global_exec_index
-        );
-
         // Reconstruct CommittedSubDag
         // Note: reputation_scores are not critical for execution replay, passing empty
         let subdag = consensus_core::load_committed_subdag_from_store(
@@ -105,13 +126,36 @@ pub async fn perform_block_recovery_check(
             vec![],
         );
 
-        // Send to executor
-        executor_client
-            .send_committed_subdag(&subdag, current_epoch, global_exec_index, None)
+        // Count total TXs to determine how many GEIs this commit will consume
+        let total_txs: usize = subdag.blocks.iter().map(|b| b.transactions().len()).sum();
+        let geis_consumed: u64 = if total_txs > MAX_TXS_PER_GO_BLOCK {
+            let fragments =
+                (total_txs + MAX_TXS_PER_GO_BLOCK - 1) / MAX_TXS_PER_GO_BLOCK;
+            fragments as u64
+        } else {
+            1
+        };
+
+        if geis_consumed > 1 {
+            info!(
+                "🔪 [RECOVERY-FRAGMENT] Commit #{} has {} TXs → will consume {} GEIs (global_exec_index={})",
+                commit_index, total_txs, geis_consumed, global_exec_index
+            );
+        } else {
+            info!(
+                "🔄 [RECOVERY] Replaying commit #{} (global_exec_index={}, txs={})",
+                commit_index, global_exec_index, total_txs
+            );
+        }
+
+        // Send to executor — send_committed_subdag handles fragmentation internally
+        // and returns the actual number of GEIs consumed
+        let actual_geis = executor_client
+            .send_committed_subdag(&subdag, current_epoch, next_required_global, None)
             .await?;
 
-        // Advance expected index
-        next_required_global += 1;
+        // Advance expected index by the number of GEIs consumed (not always 1!)
+        next_required_global += actual_geis;
 
         // Small delay to prevent overwhelming the socket/executor
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;

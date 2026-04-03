@@ -35,7 +35,8 @@ pub(super) async fn recover_epoch_pending_transactions(node: &mut ConsensusNode)
 
     // Filter out transactions that were already committed in the previous epoch
     for tx_data in epoch_pending.iter() {
-        let tx_hash = crate::types::tx_hash::calculate_transaction_hash(tx_data);
+        // tx_data từ pending queue là single Transaction bytes (không phải array)
+        let tx_hash = crate::types::tx_hash::calculate_transaction_hash_single(tx_data);
         let hash_hex = hex::encode(&tx_hash);
 
         if committed_hashes.contains(&tx_hash) {

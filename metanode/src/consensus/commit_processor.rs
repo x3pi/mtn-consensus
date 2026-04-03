@@ -16,7 +16,7 @@ use crate::consensus::checkpoint::calculate_global_exec_index;
 use crate::consensus::tx_recycler::TxRecycler;
 use crate::node::block_coordinator::BlockCoordinator;
 use crate::node::executor_client::ExecutorClient;
-use crate::types::tx_hash::calculate_transaction_hash_hex;
+// calculate_transaction_hash_hex removed: was only used for dead logging code
 
 /// Commit processor that ensures commits are executed in order
 pub struct CommitProcessor {
@@ -261,6 +261,14 @@ impl CommitProcessor {
 
         info!("📡 [COMMIT PROCESSOR] Waiting for commits from consensus...");
 
+        // FRAGMENTATION: Track cumulative extra GEIs consumed by block fragmentation.
+        // When a large commit (12K+ TXs) is split into N fragments, the offset
+        // accumulates (N-1) extra GEIs. This ensures:
+        //   commit_5 (12K TXs, 3 fragments) → GEI = base+5+0, base+6, base+7 → offset += 2
+        //   commit_6 (normal)               → GEI = base+6+2 = base+8 ← correct!
+        // FORK-SAFETY: All nodes use the same MAX_TXS_PER_GO_BLOCK → identical offsets.
+        let mut cumulative_fragment_offset: u64 = 0;
+
         loop {
             match receiver.recv().await {
                 Some(subdag) => {
@@ -302,19 +310,20 @@ impl CommitProcessor {
                     }
 
                     if commit_index == next_expected_index {
-                        // --- [FORK SAFETY v2: CONSENSUS-BASED FORMULA] ---
-                        // global_exec_index = epoch_base_index + commit_index
+                        // --- [FORK SAFETY v2: CONSENSUS-BASED FORMULA + FRAGMENTATION] ---
+                        // global_exec_index = epoch_base_index + commit_index + cumulative_fragment_offset
                         // - epoch_base_index: Fixed at epoch start, same for all nodes
                         // - commit_index: From Mysticeti consensus, same for all nodes
-                        // Result: Deterministic across all nodes, even late joiners!
+                        // - cumulative_fragment_offset: Deterministic offset from previous fragmentations
+                        // Result: Deterministic across all nodes, even with fragmentation!
                         let global_exec_index = calculate_global_exec_index(
                             current_epoch,
-                            commit_index as u64,
+                            commit_index as u64 + cumulative_fragment_offset,
                             epoch_base_index,
                         );
 
-                        trace!("📊 [GLOBAL_EXEC_INDEX] Calculated: global_exec_index={}, epoch={}, commit_index={}, epoch_base_index={}",
-                            global_exec_index, current_epoch, commit_index, epoch_base_index);
+                        trace!("📊 [GLOBAL_EXEC_INDEX] Calculated: global_exec_index={}, epoch={}, commit_index={}, epoch_base_index={}, fragment_offset={}",
+                            global_exec_index, current_epoch, commit_index, epoch_base_index, cumulative_fragment_offset);
 
                         let total_txs_in_commit = subdag
                             .blocks
@@ -324,7 +333,7 @@ impl CommitProcessor {
 
                         // CRITICAL FIX: Process commit FIRST before triggering epoch transition
                         // This ensures Go receives the EndOfEpoch commit before Rust starts transition
-                        Self::process_commit(
+                        let geis_consumed = Self::process_commit(
                             &subdag,
                             global_exec_index,
                             current_epoch,
@@ -355,12 +364,21 @@ impl CommitProcessor {
                         // It remains constant throughout the epoch.
                         // The shared_last_global_exec_index is updated for monitoring/visibility only.
 
+                        // FRAGMENTATION: Update callback with the LAST GEI of the fragment range
+                        let last_gei = global_exec_index + geis_consumed - 1;
                         if let Some(ref callback) = self.global_exec_index_callback {
-                            callback(global_exec_index);
+                            callback(last_gei);
                         }
 
                         if let Some(ref callback) = commit_index_callback {
                             callback(commit_index);
+                        }
+
+                        // FRAGMENTATION: Accumulate extra GEIs consumed by this commit
+                        if geis_consumed > 1 {
+                            cumulative_fragment_offset += geis_consumed - 1;
+                            info!("🔪 [FRAGMENT-OFFSET] Commit {} consumed {} GEIs, cumulative_fragment_offset now {}",
+                                commit_index, geis_consumed, cumulative_fragment_offset);
                         }
 
                         next_expected_index += 1;
@@ -407,14 +425,14 @@ impl CommitProcessor {
                         while let Some(pending) = pending_commits.remove(&next_expected_index) {
                             let pending_commit_index = next_expected_index;
 
-                            // Use epoch_base_index for pending commits as well (same formula)
+                            // Use epoch_base_index + fragment offset for pending commits (same formula)
                             let global_exec_index = calculate_global_exec_index(
                                 current_epoch,
-                                pending_commit_index as u64,
+                                pending_commit_index as u64 + cumulative_fragment_offset,
                                 epoch_base_index,
                             );
 
-                            Self::process_commit(
+                            let pending_geis = Self::process_commit(
                                 &pending,
                                 global_exec_index,
                                 current_epoch,
@@ -427,7 +445,12 @@ impl CommitProcessor {
                             )
                             .await?;
 
-                            // epoch_base_index is NOT updated (it's constant per epoch)
+                            // FRAGMENTATION: Accumulate extra GEIs from pending commits
+                            if pending_geis > 1 {
+                                cumulative_fragment_offset += pending_geis - 1;
+                                info!("🔪 [FRAGMENT-OFFSET] Pending commit {} consumed {} GEIs, cumulative_fragment_offset now {}",
+                                    pending_commit_index, pending_geis, cumulative_fragment_offset);
+                            }
 
                             if let Some(ref callback) = commit_index_callback {
                                 callback(pending_commit_index);
@@ -486,34 +509,34 @@ impl CommitProcessor {
     ) {
         let has_end_of_epoch = subdag.extract_end_of_epoch_transaction().is_some();
 
-        let mut queued_count = 0;
+        // ═══════════════════════════════════════════════════════════════════
+        // PERFORMANCE FIX (H3): Collect all TXs first, then acquire lock ONCE.
+        // Previously, the mutex was locked/unlocked per transaction (10K+ cycles
+        // for large commits), causing significant overhead under high throughput.
+        // ═══════════════════════════════════════════════════════════════════
+        let mut tx_batch: Vec<Vec<u8>> = Vec::new();
         let mut skipped_count = 0;
 
-        for (block_idx, block) in subdag.blocks.iter().enumerate() {
-            for (tx_idx, tx) in block.transactions().iter().enumerate() {
+        for block in subdag.blocks.iter() {
+            for tx in block.transactions() {
                 let tx_data = tx.data();
 
                 // Skip EndOfEpoch system transactions - they are epoch-specific
                 if has_end_of_epoch && Self::is_end_of_epoch_transaction(tx_data) {
-                    info!("ℹ️  [TX FLOW] Skipping EndOfEpoch system transaction in failed commit {} (epoch-specific, cannot be queued for next epoch)", commit_index);
                     skipped_count += 1;
                     continue;
                 }
 
-                // Queue the transaction for next epoch
-                let mut queue = pending_transactions_queue.lock().await;
-                queue.push(tx_data.to_vec());
-                queued_count += 1;
-
-                let tx_hash = crate::types::tx_hash::calculate_transaction_hash(tx_data);
-                let tx_hash_hex = hex::encode(&tx_hash[..8]);
-
-                info!("📦 [TX FLOW] Queued failed transaction from commit {} block {} tx {}: hash={} (size={})",
-                    commit_index, block_idx, tx_idx, tx_hash_hex, tx_data.len());
+                tx_batch.push(tx_data.to_vec());
             }
         }
 
-        if queued_count > 0 {
+        // Single lock acquisition for entire batch
+        if !tx_batch.is_empty() {
+            let queued_count = tx_batch.len();
+            let mut queue = pending_transactions_queue.lock().await;
+            queue.extend(tx_batch);
+
             info!("✅ [TX FLOW] Queued {} transactions from failed commit {} (global_exec_index={}, epoch={}) for next epoch",
                 queued_count, commit_index, global_exec_index, epoch);
         }
@@ -524,13 +547,16 @@ impl CommitProcessor {
         }
     }
 
+    /// Detect if a transaction is an EndOfEpoch system transaction using
+    /// proper BCS deserialization (canonical check).
+    ///
+    /// FORK-SAFETY FIX (C3): Previously used `String::from_utf8_lossy().contains("EndOfEpoch")`
+    /// which is heuristic and could produce false positives on user TXs containing
+    /// that substring. Now uses the same BCS deserialization as
+    /// `CommittedSubDag::extract_end_of_epoch_transaction()` for consistency.
     fn is_end_of_epoch_transaction(tx_data: &[u8]) -> bool {
-        if tx_data.len() < 10 {
-            return false;
-        }
-        let data_str = String::from_utf8_lossy(tx_data);
-        data_str.contains("EndOfEpoch")
-            || data_str.contains("epoch") && data_str.contains("transition")
+        consensus_core::SystemTransaction::from_bytes(tx_data)
+            .map_or(false, |sys_tx| sys_tx.is_end_of_epoch())
     }
 
     async fn process_commit(
@@ -545,28 +571,12 @@ impl CommitProcessor {
         >,
         cold_start: Arc<AtomicBool>,
         _cold_start_skip_gei: u64,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let commit_index = subdag.commit_ref.index;
         let mut total_transactions = 0;
-        let mut transaction_hashes = Vec::new();
-        let mut block_details = Vec::new();
 
-        for (block_idx, block) in subdag.blocks.iter().enumerate() {
-            let transactions = block.transactions();
-            total_transactions += transactions.len();
-
-            for tx in transactions {
-                let tx_data = tx.data();
-                let tx_hash_hex = calculate_transaction_hash_hex(tx_data);
-                transaction_hashes.push(tx_hash_hex);
-            }
-
-            block_details.push(format!(
-                "block[{}]={:?} ({}tx)",
-                block_idx,
-                block.reference(),
-                transactions.len()
-            ));
+        for block in subdag.blocks.iter() {
+            total_transactions += block.transactions().len();
         }
 
         let has_system_tx = subdag.extract_end_of_epoch_transaction().is_some();
@@ -825,7 +835,7 @@ impl CommitProcessor {
                             commit_index, skip_threshold_gei, global_exec_index
                         );
                     }
-                    return Ok(());
+                    return Ok(1);
                 } else if !has_end_of_epoch {
                     // Normal operation: skip non-EndOfEpoch commits
                     info!(
@@ -833,7 +843,7 @@ impl CommitProcessor {
                          Go already has this state from peer sync.",
                         commit_index, skip_threshold_gei, global_exec_index
                     );
-                    return Ok(());
+                    return Ok(1);
                 } else {
                     // Normal operation: allow EndOfEpoch through for epoch transition safety
                     info!(
@@ -879,36 +889,63 @@ impl CommitProcessor {
             // leader_address already calculated and validated above
 
             let mut retry_count = 0;
-            loop {
+            let geis_consumed: u64 = loop {
                 match client
                     .send_committed_subdag(subdag, epoch, global_exec_index, leader_address.clone())
                     .await
                 {
-                    Ok(_) => {
-                        trace!("✅ [TX FLOW] Successfully sent committed subdag: global_exec_index={}, commit_index={}",
-                                global_exec_index, commit_index);
+                    Ok(geis_consumed) => {
+                        trace!("✅ [TX FLOW] Successfully sent committed subdag: global_exec_index={}, commit_index={}, geis_consumed={}",
+                                global_exec_index, commit_index, geis_consumed);
 
+                        // Update shared_last_global_exec_index to the LAST GEI of the fragment range
+                        let last_gei = global_exec_index + geis_consumed - 1;
                         if let Some(shared_index) = shared_last_global_exec_index.clone() {
                             let mut index_guard = shared_index.lock().await;
-                            *index_guard = global_exec_index;
-                            info!("📊 [GLOBAL_EXEC_INDEX] Updated shared last_global_exec_index to {} after successful send", global_exec_index);
+                            *index_guard = last_gei;
+                            info!("📊 [GLOBAL_EXEC_INDEX] Updated shared last_global_exec_index to {} after successful send (geis_consumed={})", last_gei, geis_consumed);
                         }
 
                         // Track committed transaction hashes to prevent duplicates during epoch transitions
                         // CRITICAL: Only track when commit is actually processed, not just submitted
                         //
-                        // FIX 2026-02-06: Use try_lock() to avoid deadlock with transition handler
-                        // The transition handler may hold the node lock while waiting for Go to sync.
-                        // If we block here, CommitProcessor stalls and Go never gets more commits = DEADLOCK.
-                        // If lock is unavailable, skip tracking - next commit will retry.
+                        // FIX C1: When try_lock() fails (transition handler holds node lock),
+                        // spawn a deferred task to retry tracking after a short backoff.
+                        // Previously, we simply skipped tracking, which could cause tx_recycler
+                        // to resubmit already-committed TXs in the new epoch.
                         if let Some(node_arc) = crate::node::get_transition_handler_node().await {
                             // Use try_lock() instead of lock().await to avoid blocking
                             let node_guard = match node_arc.try_lock() {
                                 Ok(guard) => guard,
                                 Err(_) => {
-                                    // Lock held by transition handler - skip TX tracking to avoid deadlock
-                                    trace!("⏭️ [TX TRACKING] Skipping tracking for commit {} - node lock held by transition handler", commit_index);
-                                    break; // Exit the retry loop, commit was sent successfully
+                                    // Lock held by transition handler — defer tracking to a background task
+                                    trace!("⏭️ [TX TRACKING] Deferring tracking for commit {} — node lock held by transition handler", commit_index);
+                                    let node_arc_clone = node_arc.clone();
+                                    let subdag_blocks: Vec<Vec<Vec<u8>>> = subdag.blocks.iter()
+                                        .map(|b| b.transactions().iter().map(|tx| tx.data().to_vec()).collect())
+                                        .collect();
+                                    let deferred_commit_index = commit_index;
+                                    tokio::spawn(async move {
+                                        // Wait for transition handler to release lock
+                                        tokio::time::sleep(Duration::from_millis(500)).await;
+                                        if let Ok(guard) = node_arc_clone.try_lock() {
+                                            let mut hashes_guard = guard.committed_transaction_hashes.lock().await;
+                                            let mut count = 0;
+                                            for block_txs in &subdag_blocks {
+                                                for tx_data in block_txs {
+                                                    let tx_hash = crate::types::tx_hash::calculate_transaction_hash_single(tx_data);
+                                                    hashes_guard.insert(tx_hash);
+                                                    count += 1;
+                                                }
+                                            }
+                                            if count > 0 {
+                                                info!("💾 [TX TRACKING DEFERRED] Successfully tracked {} hashes for commit #{} after backoff", count, deferred_commit_index);
+                                            }
+                                        } else {
+                                            warn!("⚠️ [TX TRACKING DEFERRED] Still cannot acquire lock for commit #{}. TX tracking skipped.", deferred_commit_index);
+                                        }
+                                    });
+                                    break geis_consumed; // Exit retry loop, commit was sent successfully
                                 }
                             };
                             let mut hashes_guard =
@@ -918,7 +955,7 @@ impl CommitProcessor {
                             let mut batch_hashes = Vec::new();
                             for block in &subdag.blocks {
                                 for tx in block.transactions() {
-                                    let tx_hash = crate::types::tx_hash::calculate_transaction_hash(
+                                    let tx_hash = crate::types::tx_hash::calculate_transaction_hash_single(
                                         tx.data(),
                                     );
                                     hashes_guard.insert(tx_hash.clone());
@@ -950,14 +987,14 @@ impl CommitProcessor {
                             }
                         }
 
-                        break;
+                        break geis_consumed;
                     }
                     Err(e) => {
                         // Case 1: Duplicate index - Critical Fork Safety check
                         if e.to_string().contains("Duplicate global_exec_index") {
                             error!("🚨 [FORK-SAFETY] Duplicate global_exec_index={} detected! Skipping commit {} to prevent fork. Error: {}", 
                                     global_exec_index, commit_index, e);
-                            break;
+                            break 1;
                         }
 
                         // Case 2: System Transaction (EndOfEpoch) failed - Retry needed
@@ -984,14 +1021,15 @@ impl CommitProcessor {
                         } else {
                             warn!("⚠️  [TX FLOW] No pending_transactions_queue - transactions may be lost!");
                         }
-                        break;
+                        break 1;
                     }
                 }
-            }
+            };
+            return Ok(geis_consumed);
         } else {
             info!("ℹ️  [TX FLOW] Executor client not enabled, skipping send");
         }
 
-        Ok(())
+        Ok(1)
     }
 }

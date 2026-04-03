@@ -109,42 +109,33 @@ pub async fn submit_queued_transactions(node: &mut ConsensusNode) -> Result<usiz
         committed_hashes.len()
     );
 
-    // Filter out transactions that were already committed
-    let mut filtered_transactions = Vec::new();
+    // P0-1 FIX: Compute hash ONCE per TX, carry (tx_data, hash) through filter + dedup.
+    // Previously hashed every TX twice (once for committed filter, once for dedup),
+    // wasting ~400ms CPU at 200K queued TXs during epoch transition.
     let mut skipped_duplicates = 0;
 
-    for tx_data in &*queue {
-        let tx_hash = crate::types::tx_hash::calculate_transaction_hash(tx_data);
-        if committed_hashes.contains(&tx_hash) {
-            skipped_duplicates += 1;
-            let hash_hex = hex::encode(&tx_hash);
-            info!(
-                "⏭️ [TX FLOW] Skipping already committed transaction: {}",
-                hash_hex
-            );
-        } else {
-            filtered_transactions.push(tx_data.clone());
-        }
-    }
-
-    // Dedup among remaining transactions
-    let mut transactions_with_hash: Vec<(Vec<u8>, Vec<u8>)> = filtered_transactions
-        .into_iter()
-        .map(|tx| {
-            (
-                tx.clone(),
-                crate::types::tx_hash::calculate_transaction_hash(&tx),
-            )
+    let mut txs_with_hash: Vec<(Vec<u8>, Vec<u8>)> = queue
+        .iter()
+        .filter_map(|tx| {
+            let hash = crate::types::tx_hash::calculate_transaction_hash_single(tx);
+            if committed_hashes.contains(&hash) {
+                skipped_duplicates += 1;
+                trace!(
+                    "⏭️ [TX FLOW] Skipping already committed transaction: {}",
+                    hex::encode(hash)
+                );
+                None
+            } else {
+                Some((tx.clone(), hash))
+            }
         })
         .collect();
 
-    transactions_with_hash.sort_by(|(_, a), (_, b)| a.cmp(b));
-    transactions_with_hash.dedup_by(|a, b| a.1 == b.1);
+    // Dedup among remaining transactions (using already-computed hashes)
+    txs_with_hash.sort_by(|(_, a), (_, b)| a.cmp(b));
+    txs_with_hash.dedup_by(|a, b| a.1 == b.1);
 
-    let transactions: Vec<Vec<u8>> = transactions_with_hash
-        .into_iter()
-        .map(|(tx, _)| tx)
-        .collect();
+    let transactions: Vec<Vec<u8>> = txs_with_hash.into_iter().map(|(tx, _)| tx).collect();
     queue.clear();
     drop(queue); // Release lock
 

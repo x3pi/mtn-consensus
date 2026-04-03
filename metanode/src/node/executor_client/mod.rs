@@ -11,7 +11,7 @@
 //! - `block_sending`: Block sending + protobuf conversion
 //! - `transition_handoff`: Epoch transition handoff APIs
 
-mod block_sending;
+pub(crate) mod block_sending;
 pub mod block_store;
 mod block_sync;
 pub mod connection_pool;
@@ -65,7 +65,7 @@ pub struct ExecutorClient {
     pub(crate) last_verified_go_index: Arc<tokio::sync::Mutex<u64>>,
     /// Track sent global_exec_indices to prevent duplicates from dual-stream
     /// This prevents both Consensus and Sync from sending the same block
-    pub(crate) sent_indices: Arc<tokio::sync::Mutex<std::collections::HashSet<u64>>>,
+    pub(crate) sent_indices: Arc<tokio::sync::Mutex<std::collections::BTreeSet<u64>>>,
     pub(crate) rpc_circuit_breaker: Arc<RpcCircuitBreaker>,
     /// Circuit breaker state for the block sending socket
     pub(crate) send_failures: Arc<std::sync::atomic::AtomicU32>,
@@ -151,7 +151,7 @@ impl ExecutorClient {
             next_expected_index: Arc::new(tokio::sync::Mutex::new(initial_next_expected)),
             storage_path,
             last_verified_go_index: Arc::new(tokio::sync::Mutex::new(0)),
-            sent_indices: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
+            sent_indices: Arc::new(tokio::sync::Mutex::new(std::collections::BTreeSet::new())),
             rpc_circuit_breaker: Arc::new(RpcCircuitBreaker::new()),
             send_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             send_cb_open_until: Arc::new(tokio::sync::RwLock::new(None)),

@@ -361,8 +361,8 @@ impl TxSocketServer {
 
                         if should_queue {
                             // Queue transactions for next epoch
-                            info!(
-                                "📦 [TX FLOW] Queueing {} transactions for next epoch: {}",
+                            debug!(
+                                "📨 [TX FLOW] Queueing {} transactions for next epoch: {}",
                                 transactions_to_submit.len(),
                                 reason
                             );
@@ -540,7 +540,16 @@ impl TxSocketServer {
                     total_tx_count
                 );
 
-                match client.submit(chunk_vec.clone()).await {
+                // P1-1 FIX: Clone chunk_vec ONCE for SyncOnly retry path.
+                // Previously cloned twice (for submit + for status_receiver spawn).
+                // Common path (success) only uses the original — saves ~100MB per batch.
+                if let Some(ref recycler) = tx_recycler {
+                    recycler.track_submitted(&chunk_vec).await;
+                }
+
+                // Clone only for error recovery (SyncOnly→Validator retry needs the data)
+                let retry_chunk = chunk_vec.clone();
+                match client.submit(chunk_vec).await {
                     Ok((block_ref, _indices, status_receiver)) => {
                         total_submitted += chunk_len;
                         _last_block_ref = Some(format!("{:?}", block_ref));
@@ -549,27 +558,10 @@ impl TxSocketServer {
                             chunk_idx + 1, chunk_len, block_ref, total_submitted, total_tx_count
                         );
 
-                        // Track submitted TXs for recycling (re-submit if not committed)
-                        if let Some(ref recycler) = tx_recycler {
-                            recycler.track_submitted(&chunk_vec).await;
-                        }
-
-                        // NOTE: Mempool broadcast REMOVED — it caused TX duplication.
-                        // Each broadcast made peers re-submit the same TXs to consensus,
-                        // resulting in each TX appearing up to 4× in blocks.
-                        // Consensus DAG (Mysticeti) already propagates committed blocks.
-
-                        // NOTE: epoch_pending_transactions tracking removed (memory leak fix).
-                        // At 10K TPS this Vec grew ~3.6GB/hour by cloning every TX.
-                        // TxRecycler already handles re-submission of stale TXs,
-                        // and committed_transaction_hashes prevents duplicates during epoch recovery.
-
-                        let _client_clone = client.clone();
-                        let _chunk_clone = chunk_vec.clone();
                         tokio::spawn(async move {
                             match status_receiver.await {
                                 Ok(consensus_core::BlockStatus::Sequenced(block)) => {
-                                    info!(
+                                    debug!(
                                         "✅ [TX STATUS] Block {:?} was sequenced and finalized.",
                                         block
                                     );
@@ -603,26 +595,26 @@ impl TxSocketServer {
                                 ).await {
                                     if let Some(real_submitter) = node_guard.transaction_submitter() {
                                         drop(node_guard);
-                                        info!(
+                                        debug!(
                                             "🔄 [TX FLOW] Retrying sub-batch {} with live TransactionSubmitter (post SyncOnly→Validator transition)",
                                             chunk_idx + 1
                                         );
-                                        match real_submitter.submit(chunk_vec.clone()).await {
+                                        match real_submitter.submit(retry_chunk.clone()).await {
                                             Ok((block_ref, _indices, status_receiver)) => {
                                                 total_submitted += chunk_len;
                                                 _last_block_ref = Some(format!("{:?}", block_ref));
-                                                info!(
+                                                debug!(
                                                     "✅ [TX FLOW] Sub-batch {} included (retry): {} TXs in block {:?} (progress: {}/{})",
                                                     chunk_idx + 1, chunk_len, block_ref, total_submitted, total_tx_count
                                                 );
                                                 if let Some(ref recycler) = tx_recycler {
-                                                    recycler.track_submitted(&chunk_vec).await;
+                                                    recycler.track_submitted(&retry_chunk).await;
                                                 }
                                                 // NOTE: Mempool broadcast REMOVED (same as primary path above).
                                                 tokio::spawn(async move {
                                                     match status_receiver.await {
                                                         Ok(consensus_core::BlockStatus::Sequenced(block)) => {
-                                                            info!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
+                                                            debug!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
                                                         }
                                                         Ok(consensus_core::BlockStatus::GarbageCollected(gc_block)) => {
                                                             warn!("♻️ [TX STATUS] Block {:?} was Garbage Collected.", gc_block);
@@ -697,20 +689,23 @@ impl TxSocketServer {
                 }
             } else if total_submitted > 0 {
                 // Partial success
+                // P1-5 FIX: Truncate error to 512 chars to prevent unbounded JSON allocation
+                let truncated_error: String = last_error.chars().take(512).collect();
                 let response = format!(
                     r#"{{"success":true,"partial":true,"submitted":{},"total":{},"error":"{}"}}"#,
                     total_submitted,
                     total_tx_count,
-                    last_error.replace('"', "\\\"")
+                    truncated_error.replace('"', "\\\"")
                 );
                 if let Err(e) = Self::send_response_string(&mut stream, &response).await {
                     error!("❌ [TX FLOW] Failed to send partial response: {}", e);
                     return Err(e.into());
                 }
             } else {
+                let truncated_error: String = last_error.chars().take(512).collect();
                 let error_response = format!(
                     r#"{{"success":false,"error":"Transaction submission failed: {}"}}"#,
-                    last_error.replace('"', "\\\"")
+                    truncated_error.replace('"', "\\\"")
                 );
                 if let Err(e) = Self::send_response_string(&mut stream, &error_response).await {
                     error!("❌ [TX FLOW] Failed to send error response: {}", e);

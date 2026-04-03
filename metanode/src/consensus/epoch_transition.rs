@@ -16,12 +16,12 @@ pub fn start_epoch_transition_handler(
     config: NodeConfig,
 ) {
     tokio::spawn(async move {
-        while let Some((new_epoch, boundary_block_from_tx, synced_global_exec_index)) =
+        while let Some((new_epoch, boundary_timestamp_ms, synced_global_exec_index)) =
             receiver.recv().await
         {
             info!(
-                "🚀 [EPOCH TRANSITION HANDLER] Processing transition request (source=system_tx): epoch={}, boundary_block={}, synced_global_exec_index={}",
-                new_epoch, boundary_block_from_tx, synced_global_exec_index
+                "🚀 [EPOCH TRANSITION HANDLER] Processing transition request (source=system_tx): epoch={}, boundary_timestamp_ms={}, synced_global_exec_index={}",
+                new_epoch, boundary_timestamp_ms, synced_global_exec_index
             );
 
             // Check with EpochTransitionManager before proceeding
@@ -105,8 +105,9 @@ pub fn start_epoch_transition_handler(
                 if let Err(e) = node_guard
                     .transition_to_epoch_from_system_tx(
                         new_epoch,
-                        boundary_block_from_tx, // Now boundary_block, not timestamp
-                        synced_global_exec_index, // CHANGED: Use synced_global_exec_index
+                        boundary_timestamp_ms,
+                        0, // boundary_block is unknown here
+                        synced_global_exec_index,
                         &config,
                     )
                     .await
@@ -136,7 +137,7 @@ pub fn start_epoch_transition_handler(
                     // The system_transaction_provider stores its own epoch_start for internal calculations.
                     // This call is now primarily for updating the provider's epoch counter, timestamp is derived internally.
                     system_transaction_provider
-                        .update_epoch(new_epoch, boundary_block_from_tx) // boundary_block used as placeholder; actual timestamp set during transition
+                        .update_epoch(new_epoch, boundary_timestamp_ms)
                         .await;
                 }
             } else {
