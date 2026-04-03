@@ -303,7 +303,7 @@ metanode/bin/
 /system_run.log
 /nohup.out
 metanode/rust_run_log.out
-
+metanode/config-copy
 # Scratch test scripts
 /test_*.sh
 
