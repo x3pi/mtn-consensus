@@ -1,12 +1,16 @@
 #!/bin/bash
 # ==========================================================
 # Script tự động cài đặt môi trường cho NODE 3
-# Chạy trên máy ảo/máy chủ có IP: 192.168.1.231
+# Chạy trên máy ảo/máy chủ có IP: 127.0.0.1
 # ==========================================================
 set -e
 
 echo -e "\e[1;36m[1/3] Cài đặt đồng bộ thời gian (Chrony)...\e[0m"
-sudo apt update && sudo apt install chrony -y
+if ! command -v chronyd &> /dev/null; then
+    sudo apt update && sudo apt -y install chrony
+else
+    echo -e "  ✅ Chrony đã được cài đặt."
+fi
 sudo systemctl enable --now chrony
 
 echo -e "\n\e[1;36m[2/3] Cấu hình Firewall (UFW)...\e[0m"

@@ -13,7 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Script nằm ở: mtn-consensus/metanode/scripts/
 # BASE_DIR = thư mục cha chứa cả mtn-consensus và mtn-simple-2025
-BASE_DIR="/home/abc/chain-n"
+BASE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 GO_DIR="$BASE_DIR/mtn-simple-2025/cmd/simple_chain"
 RUST_DIR="$BASE_DIR/mtn-consensus/metanode"
 RUST_BIN="$RUST_DIR/target/release/metanode"
@@ -847,25 +847,25 @@ cmd_help() {
 #  Entry point
 # ═══════════════════════════════════════════════════════════════════
 
-# COMMAND="${1:-help}"
-# shift || true
+COMMAND="${1:-help}"
+shift || true
 
-# case "$COMMAND" in
-#     start)        cmd_start "$@" ;;
-#     stop)         cmd_stop ;;
-#     restart)      cmd_restart "$@" ;;
-#     status)       cmd_status ;;
-#     logs)         cmd_logs "$@" ;;
-#     start-node)   cmd_start_node "$@" ;;
-#     stop-node)    cmd_stop_node "$@" ;;
-#     restart-node) cmd_restart_node "$@" ;;
-#     help|--help|-h) cmd_help ;;
-#     *)
-#         log_error "Lệnh không hợp lệ: $COMMAND"
-#         cmd_help
-#         exit 1
-#         ;;
-# esac
+case "$COMMAND" in
+    start)        cmd_start "$@" ;;
+    stop)         cmd_stop ;;
+    restart)      cmd_restart "$@" ;;
+    status)       cmd_status ;;
+    logs)         cmd_logs "$@" ;;
+    start-node)   cmd_start_node "$@" ;;
+    stop-node)    cmd_stop_node "$@" ;;
+    restart-node) cmd_restart_node "$@" ;;
+    help|--help|-h) cmd_help ;;
+    *)
+        log_error "Lệnh không hợp lệ: $COMMAND"
+        cmd_help
+        exit 1
+        ;;
+esac
 
 # echo -e "${BLUE}📋 Step 9: Running SetGet test...${NC}"
 # CLIENT_DIR="$HOME/nhat/client/cmd/client/call_tool_example_new"

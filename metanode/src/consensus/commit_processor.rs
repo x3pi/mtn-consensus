@@ -933,7 +933,7 @@ impl CommitProcessor {
                                             let mut count = 0;
                                             for block_txs in &subdag_blocks {
                                                 for tx_data in block_txs {
-                                                    let tx_hash = crate::types::tx_hash::calculate_transaction_hash(tx_data);
+                                                    let tx_hash = crate::types::tx_hash::calculate_transaction_hash_single(tx_data);
                                                     hashes_guard.insert(tx_hash);
                                                     count += 1;
                                                 }
@@ -955,7 +955,7 @@ impl CommitProcessor {
                             let mut batch_hashes = Vec::new();
                             for block in &subdag.blocks {
                                 for tx in block.transactions() {
-                                    let tx_hash = crate::types::tx_hash::calculate_transaction_hash(
+                                    let tx_hash = crate::types::tx_hash::calculate_transaction_hash_single(
                                         tx.data(),
                                     );
                                     hashes_guard.insert(tx_hash.clone());

@@ -968,7 +968,7 @@ impl ExecutorClient {
     /// so it can be reused by the fragmentation path. Returns Vec<TransactionExe>
     /// in deterministic order (sorted by tx hash).
     fn build_sorted_transactions(&self, subdag: &CommittedSubDag) -> Result<Vec<TransactionExe>> {
-        use crate::types::tx_hash::{calculate_transaction_hash, verify_transaction_protobuf};
+        use crate::types::tx_hash::{calculate_transaction_hash_single, verify_transaction_protobuf};
 
         let mut all_transactions_with_hash: Vec<(&[u8], Vec<u8>)> = Vec::new();
         let mut skipped_count = 0;
@@ -976,7 +976,7 @@ impl ExecutorClient {
         for (block_idx, block) in subdag.blocks.iter().enumerate() {
             for (tx_idx, tx) in block.transactions().iter().enumerate() {
                 let tx_data = tx.data();
-                let tx_hash = calculate_transaction_hash(tx_data);
+                let tx_hash = calculate_transaction_hash_single(tx_data);
 
                 // Filter: Skip SystemTransaction (BCS format)
                 if SystemTransaction::from_bytes(tx_data).is_ok() {
