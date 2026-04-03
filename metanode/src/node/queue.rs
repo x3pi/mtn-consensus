@@ -116,20 +116,17 @@ pub async fn submit_queued_transactions(node: &mut ConsensusNode) -> Result<usiz
 
     let mut txs_with_hash: Vec<(Vec<u8>, Vec<u8>)> = queue
         .iter()
-        .map(|tx| {
-            let hash = crate::types::tx_hash::calculate_transaction_hash(tx);
-            (tx.clone(), hash)
-        })
-        .filter(|(_, hash)| {
-            if committed_hashes.contains(hash) {
+        .filter_map(|tx| {
+            let hash = crate::types::tx_hash::calculate_transaction_hash_single(tx);
+            if committed_hashes.contains(&hash) {
                 skipped_duplicates += 1;
                 trace!(
                     "⏭️ [TX FLOW] Skipping already committed transaction: {}",
                     hex::encode(hash)
                 );
-                false
+                None
             } else {
-                true
+                Some((tx.clone(), hash))
             }
         })
         .collect();
@@ -138,10 +135,7 @@ pub async fn submit_queued_transactions(node: &mut ConsensusNode) -> Result<usiz
     txs_with_hash.sort_by(|(_, a), (_, b)| a.cmp(b));
     txs_with_hash.dedup_by(|a, b| a.1 == b.1);
 
-    let transactions: Vec<Vec<u8>> = txs_with_hash
-        .into_iter()
-        .map(|(tx, _)| tx)
-        .collect();
+    let transactions: Vec<Vec<u8>> = txs_with_hash.into_iter().map(|(tx, _)| tx).collect();
     queue.clear();
     drop(queue); // Release lock
 
