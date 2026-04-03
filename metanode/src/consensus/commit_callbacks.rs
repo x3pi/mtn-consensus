@@ -48,17 +48,15 @@ pub fn create_global_exec_index_callback(
 
 /// Creates an epoch transition callback that sends transition requests via channel
 pub fn create_epoch_transition_callback(
-    epoch_transition_sender: tokio::sync::mpsc::UnboundedSender<(u64, u64, u64)>, // CHANGED: u32 -> u64
+    epoch_transition_sender: tokio::sync::mpsc::UnboundedSender<(u64, u64, u64)>,
 ) -> impl Fn(u64, u64, u64) -> Result<(), anyhow::Error> + Send + Sync + 'static {
-    // CHANGED: parameter 2 is now boundary_block from EndOfEpoch tx, not timestamp
-    move |new_epoch, boundary_block_from_tx, synced_global_exec_index| {
-        info!("🎯 [SYSTEM TX CALLBACK] EndOfEpoch detected: epoch={}, boundary_block={}, synced_global_exec_index={}",
-            new_epoch, boundary_block_from_tx, synced_global_exec_index);
+    move |new_epoch, boundary_timestamp_ms, synced_global_exec_index| {
+        info!("🎯 [SYSTEM TX CALLBACK] EndOfEpoch detected: epoch={}, boundary_timestamp_ms={}, synced_global_exec_index={}",
+            new_epoch, boundary_timestamp_ms, synced_global_exec_index);
 
-        // Send transition request via channel to transition handler task
         if let Err(e) = epoch_transition_sender.send((
             new_epoch,
-            boundary_block_from_tx, // This is now boundary_block, not timestamp
+            boundary_timestamp_ms,
             synced_global_exec_index,
         )) {
             warn!(
