@@ -366,7 +366,8 @@ cmd_start() {
     for arg in "$@"; do
         case "$arg" in
             --fresh) fresh=true ;;
-            --build) build_go=true; build_rust=true; build_evm=true ;;
+            --build) build_go=true; build_rust=true ;;
+            --build-all) build_go=true; build_rust=true; build_evm=true ;;
         esac
     done
 
@@ -383,7 +384,8 @@ cmd_start() {
     fi
     if $build_go; then
         log_info "🛠  Đang build Go (simple_chain)..."
-        (cd "$GO_DIR" && go build -o simple_chain .) || exit 1
+        # Xóa binary cũ và ép build lại hoàn toàn (quan trọng để cập nhật CGo/EVM)
+        (cd "$GO_DIR" && rm -f simple_chain && go build -a -o simple_chain .) || exit 1
     fi
     if $build_rust; then
         log_info "🛠  Đang build Rust (metanode)..."
@@ -819,7 +821,7 @@ cmd_help() {
     echo -e "${BOLD}MTN Orchestrator — Quản lý cluster Metanode${NC}"
     echo ""
     echo -e "  ${CYAN}Toàn bộ cluster:${NC}"
-    echo -e "    ${BOLD}start${NC}   [--fresh]         Khởi động cluster (Master→Sub→Rust)"
+    echo -e "    ${BOLD}start${NC}   [--fresh] [--build] [--build-all]  Khởi động cluster (Master→Sub→Rust)"
     echo -e "    ${BOLD}stop${NC}                      Dừng an toàn (Rust→Sub→Master)"
     echo -e "    ${BOLD}restart${NC} [--fresh]         Stop rồi start"
     echo -e "    ${BOLD}status${NC}                    Xem trạng thái tất cả node"
@@ -864,3 +866,16 @@ case "$COMMAND" in
         exit 1
         ;;
 esac
+
+echo -e "${BLUE}📋 Step 9: Running SetGet test...${NC}"
+CLIENT_DIR="$HOME/nhat/client/cmd/client/call_tool_example_new"
+if [ -d "$CLIENT_DIR" ]; then
+    cd "$CLIENT_DIR"
+    echo -e "${GREEN}  🚀 Running: go run . -data=SetGet.json -config=config-local-genis.json${NC}"
+    # Run the command and pipe 3 enters to it
+    (sleep 2; echo ""; sleep 2; echo ""; sleep 2; echo "") | go run . -data=SetGet.json -config=config-local-genis.json
+    echo -e "${GREEN}  ✅ SetGet test completed${NC}"
+else
+    echo -e "${YELLOW}  ⚠️ Client directory not found: $CLIENT_DIR${NC}"
+fi
+echo ""
