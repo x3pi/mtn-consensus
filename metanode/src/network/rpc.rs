@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Simple HTTP RPC server for submitting transactions
 /// Supports both HTTP POST and length-prefixed binary protocols
