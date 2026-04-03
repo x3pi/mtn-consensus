@@ -16,7 +16,7 @@ use crate::consensus::checkpoint::calculate_global_exec_index;
 use crate::consensus::tx_recycler::TxRecycler;
 use crate::node::block_coordinator::BlockCoordinator;
 use crate::node::executor_client::ExecutorClient;
-use crate::types::tx_hash::calculate_transaction_hash_hex;
+use crate::types::tx_hash::calculate_transaction_hash_single_hex;
 
 /// Commit processor that ensures commits are executed in order
 pub struct CommitProcessor {
@@ -505,7 +505,8 @@ impl CommitProcessor {
                 queue.push(tx_data.to_vec());
                 queued_count += 1;
 
-                let tx_hash = crate::types::tx_hash::calculate_transaction_hash(tx_data);
+                // tx.data() luôn là single Transaction bytes (đã được store riêng lẻ trong DAG)
+                let tx_hash = crate::types::tx_hash::calculate_transaction_hash_single(tx_data);
                 let tx_hash_hex = hex::encode(&tx_hash[..8]);
 
                 info!("📦 [TX FLOW] Queued failed transaction from commit {} block {} tx {}: hash={} (size={})",
@@ -557,7 +558,7 @@ impl CommitProcessor {
 
             for tx in transactions {
                 let tx_data = tx.data();
-                let tx_hash_hex = calculate_transaction_hash_hex(tx_data);
+                let tx_hash_hex = calculate_transaction_hash_single_hex(tx_data);
                 transaction_hashes.push(tx_hash_hex);
             }
 
@@ -918,7 +919,8 @@ impl CommitProcessor {
                             let mut batch_hashes = Vec::new();
                             for block in &subdag.blocks {
                                 for tx in block.transactions() {
-                                    let tx_hash = crate::types::tx_hash::calculate_transaction_hash(
+                                    // tx.data() là single Transaction bytes — dùng hàm không-heuristic
+                                    let tx_hash = crate::types::tx_hash::calculate_transaction_hash_single(
                                         tx.data(),
                                     );
                                     hashes_guard.insert(tx_hash.clone());

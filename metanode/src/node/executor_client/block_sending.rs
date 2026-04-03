@@ -717,8 +717,9 @@ impl ExecutorClient {
             for (tx_idx, tx) in block.transactions().iter().enumerate() {
                 // Get transaction data (raw bytes) - Go needs transaction data, not digest
                 let tx_data = tx.data();
-                use crate::types::tx_hash::calculate_transaction_hash;
-                let tx_hash = calculate_transaction_hash(tx_data);
+                // tx.data() là single Transaction bytes từ DAG — không cần heuristic
+                use crate::types::tx_hash::calculate_transaction_hash_single;
+                let tx_hash = calculate_transaction_hash_single(tx_data);
                 let tx_hash_hex = hex::encode(&tx_hash[..8.min(tx_hash.len())]);
 
                 info!("🔍 [DIAG] TX[{}/{}]: hash={}..., size={} bytes",

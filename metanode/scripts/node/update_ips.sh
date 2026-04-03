@@ -410,7 +410,11 @@ for N in $(seq 0 $((NODE_COUNT - 1))); do
 set -e
 
 echo -e "\e[1;36m[1/3] Cài đặt đồng bộ thời gian (Chrony)...\e[0m"
-sudo apt update && sudo apt install chrony -y
+if ! command -v chronyd &> /dev/null; then
+    sudo apt update && sudo apt -y install chrony
+else
+    echo -e "  ✅ Chrony đã được cài đặt."
+fi
 sudo systemctl enable --now chrony
 
 echo -e "\n\e[1;36m[2/3] Cấu hình Firewall (UFW)...\e[0m"

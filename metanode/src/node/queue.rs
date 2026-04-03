@@ -114,7 +114,8 @@ pub async fn submit_queued_transactions(node: &mut ConsensusNode) -> Result<usiz
     let mut skipped_duplicates = 0;
 
     for tx_data in &*queue {
-        let tx_hash = crate::types::tx_hash::calculate_transaction_hash(tx_data);
+        // tx_data đã được store riêng lẻ (không phải array) — dùng hàm rõ ràng
+        let tx_hash = crate::types::tx_hash::calculate_transaction_hash_single(tx_data);
         if committed_hashes.contains(&tx_hash) {
             skipped_duplicates += 1;
             let hash_hex = hex::encode(&tx_hash);
@@ -133,7 +134,7 @@ pub async fn submit_queued_transactions(node: &mut ConsensusNode) -> Result<usiz
         .map(|tx| {
             (
                 tx.clone(),
-                crate::types::tx_hash::calculate_transaction_hash(&tx),
+                crate::types::tx_hash::calculate_transaction_hash_single(&tx),
             )
         })
         .collect();

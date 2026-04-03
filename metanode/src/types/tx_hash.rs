@@ -13,34 +13,19 @@ mod proto {
 
 use proto::{AccessTuple, Transaction, Transactions};
 
-/// Calculate official transaction hash using Keccak256(TransactionHashData)
-/// This matches the Go implementation exactly
+/// Hash một single Transaction bytes — KHÔNG thử decode array.
 ///
-/// Transaction data can be:
-/// - A protobuf `Transactions` message (containing multiple Transaction)
-/// - A single protobuf `Transaction` message
-/// - Raw bytes (fallback to Keccak256 of raw data for non-protobuf data)
-pub fn calculate_transaction_hash(tx_data: &[u8]) -> Vec<u8> {
-    // Try to parse as Transactions (multiple transactions)
-    if let Ok(transactions) = Transactions::decode(tx_data) {
-        if !transactions.transactions.is_empty() {
-            // Calculate hash for the first transaction (most common case)
-            // If there are multiple transactions, we hash the first one
-            return calculate_single_transaction_hash(&transactions.transactions[0]);
-        }
-    }
-
-    // Try to parse as single Transaction
+/// Dùng khi biết chắc `tx_data` là pb.Transaction đơn (ví dụ: đã được
+/// zero-copy extract từ pb.Transactions trong tx_socket_server.rs).
+/// Loại bỏ hoàn toàn false-positive decode.
+pub fn calculate_transaction_hash_single(tx_data: &[u8]) -> Vec<u8> {
     if let Ok(tx) = Transaction::decode(tx_data) {
         return calculate_single_transaction_hash(&tx);
     }
-
-    // If parsing fails, this might be non-protobuf data
-    // Log a warning but still return a hash (using Keccak256 of raw data as fallback)
-    warn!("Failed to parse transaction as protobuf, using raw data hash");
-    let hash = Keccak256::digest(tx_data);
-    hash.to_vec()
+    warn!("Failed to parse single Transaction protobuf, using raw data hash");
+    Keccak256::digest(tx_data).to_vec()
 }
+
 
 /// Calculate hash for a single Transaction using TransactionHashData
 /// This is the official hash calculation that matches Go implementation
@@ -88,11 +73,13 @@ fn calculate_single_transaction_hash(tx: &Transaction) -> Vec<u8> {
     hash.to_vec()
 }
 
-/// Calculate transaction hash and return hex string (first 8 bytes)
-pub fn calculate_transaction_hash_hex(tx_data: &[u8]) -> String {
-    let hash = calculate_transaction_hash(tx_data);
+/// Calculate single transaction hash and return hex string (first 8 bytes)
+/// Dùng `calculate_transaction_hash_single` — KHÔNG thử decode array.
+pub fn calculate_transaction_hash_single_hex(tx_data: &[u8]) -> String {
+    let hash = calculate_transaction_hash_single(tx_data);
     hex::encode(&hash[..8.min(hash.len())])
 }
+
 
 /// Verify that transaction data is valid protobuf (Transaction or Transactions)
 /// Returns true if data can be parsed as protobuf with valid fields, false otherwise

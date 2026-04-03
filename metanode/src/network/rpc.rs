@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 
-use crate::types::tx_hash::calculate_transaction_hash_hex;
+use crate::types::tx_hash::calculate_transaction_hash_single_hex;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -173,7 +173,7 @@ impl RpcServer {
                             match read_data_result {
                                 Ok(Ok(tx_data)) => {
                                     tx_count += 1;
-                                    let tx_hash_preview = calculate_transaction_hash_hex(&tx_data);
+                                    let tx_hash_preview = calculate_transaction_hash_single_hex(&tx_data);
                                     let tx_hash_short = if tx_hash_preview.len() >= 16 {
                                         &tx_hash_preview[..16]
                                     } else {
@@ -369,7 +369,7 @@ impl RpcServer {
             transactions_to_submit.len()
         );
         for (i, tx_data) in transactions_to_submit.iter().enumerate() {
-            let tx_hash = calculate_transaction_hash_hex(tx_data);
+            let tx_hash = calculate_transaction_hash_single_hex(tx_data);
             // Try to decode transaction to get from/to/nonce
             if let Ok(tx) = Transaction::decode(tx_data.as_slice()) {
                 let from_addr = if tx.from_address.len() >= 10 {
@@ -402,7 +402,7 @@ impl RpcServer {
 
         // Calculate hash for logging (use first transaction)
         let first_tx_hash = if !transactions_to_submit.is_empty() {
-            calculate_transaction_hash_hex(&transactions_to_submit[0])
+            calculate_transaction_hash_single_hex(&transactions_to_submit[0])
         } else {
             "unknown".to_string()
         };
@@ -498,7 +498,7 @@ impl RpcServer {
 
                 // Log chi tiết từng transaction đã được submit
                 for (i, tx_data) in transactions_to_submit.iter().enumerate() {
-                    let tx_hash = calculate_transaction_hash_hex(tx_data);
+                    let tx_hash = calculate_transaction_hash_single_hex(tx_data);
                     let index = if i < indices.len() { indices[i] } else { 0 };
                     if let Ok(tx) = Transaction::decode(tx_data.as_slice()) {
                         let from_addr = if tx.from_address.len() >= 10 {
