@@ -180,7 +180,7 @@ impl RpcServer {
                                         &tx_hash_preview
                                     };
 
-                                    info!("📥 [TX FLOW] RPC TX #{} from {:?}: size={} bytes, hash={}...",
+                                    debug!("📥 [TX FLOW] RPC TX #{} from {:?}: size={} bytes, hash={}...",
                                         tx_count, peer_addr, tx_data.len(), tx_hash_short);
 
                                     let is_length_prefixed = true;
@@ -275,7 +275,7 @@ impl RpcServer {
                     return Ok(());
                 }
 
-                info!("📦 [TX FLOW] Received Transactions message with {} transactions, splitting into individual transactions", 
+                debug!("📦 [TX FLOW] Received Transactions message with {} transactions, splitting into individual transactions", 
                     transactions_msg.transactions.len());
 
                 // Split Transactions message into individual Transaction messages
@@ -308,7 +308,7 @@ impl RpcServer {
                     return Ok(());
                 }
 
-                info!("✅ [TX FLOW] Split Transactions message into {} individual transactions for consensus", individual_txs.len());
+                debug!("✅ [TX FLOW] Split Transactions message into {} individual transactions for consensus", individual_txs.len());
                 individual_txs
             }
             Err(_) => {
@@ -316,7 +316,7 @@ impl RpcServer {
                 match Transaction::decode(tx_data.as_slice()) {
                     Ok(tx) => {
                         // Format: pb.Transaction (single transaction) - từ Rust client
-                        info!("📦 [TX FLOW] Received single Transaction message, encoding for consensus");
+                        debug!("📦 [TX FLOW] Received single Transaction message, encoding for consensus");
                         let mut buf = Vec::new();
                         if let Err(e) = tx.encode(&mut buf) {
                             error!("❌ [TX FLOW] Failed to encode single Transaction: {}", e);
@@ -364,7 +364,7 @@ impl RpcServer {
         };
 
         // Log chi tiết từng transaction trước khi submit
-        info!(
+        debug!(
             "📤 [TX FLOW] Preparing to submit {} transaction(s) via RPC",
             transactions_to_submit.len()
         );
@@ -382,7 +382,7 @@ impl RpcServer {
                 } else {
                     hex::encode(&tx.to_address)
                 };
-                info!(
+                debug!(
                     "   📝 TX[{}]: hash={}, from={}, to={}, nonce={}",
                     i,
                     tx_hash,
@@ -391,7 +391,7 @@ impl RpcServer {
                     hex::encode(&tx.nonce)
                 );
             } else {
-                info!(
+                debug!(
                     "   📝 TX[{}]: hash={}, size={} bytes (cannot decode protobuf)",
                     i,
                     tx_hash,
@@ -418,7 +418,7 @@ impl RpcServer {
             if !is_ready {
                 if should_queue {
                     // Queue transactions for next epoch instead of rejecting
-                    info!("📦 [TX FLOW] Queueing {} transaction(s) for next epoch: {} (first_hash={})",
+                    debug!("📦 [TX FLOW] Queueing {} transaction(s) for next epoch: {} (first_hash={})",
                         transactions_to_submit.len(), reason, first_tx_hash);
 
                     // Queue all transactions

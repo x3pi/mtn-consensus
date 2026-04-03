@@ -361,8 +361,8 @@ impl TxSocketServer {
 
                         if should_queue {
                             // Queue transactions for next epoch
-                            info!(
-                                "📦 [TX FLOW] Queueing {} transactions for next epoch: {}",
+                            debug!(
+                                "📨 [TX FLOW] Queueing {} transactions for next epoch: {}",
                                 transactions_to_submit.len(),
                                 reason
                             );
@@ -561,7 +561,7 @@ impl TxSocketServer {
                         tokio::spawn(async move {
                             match status_receiver.await {
                                 Ok(consensus_core::BlockStatus::Sequenced(block)) => {
-                                    info!(
+                                    debug!(
                                         "✅ [TX STATUS] Block {:?} was sequenced and finalized.",
                                         block
                                     );
@@ -595,7 +595,7 @@ impl TxSocketServer {
                                 ).await {
                                     if let Some(real_submitter) = node_guard.transaction_submitter() {
                                         drop(node_guard);
-                                        info!(
+                                        debug!(
                                             "🔄 [TX FLOW] Retrying sub-batch {} with live TransactionSubmitter (post SyncOnly→Validator transition)",
                                             chunk_idx + 1
                                         );
@@ -603,7 +603,7 @@ impl TxSocketServer {
                                             Ok((block_ref, _indices, status_receiver)) => {
                                                 total_submitted += chunk_len;
                                                 _last_block_ref = Some(format!("{:?}", block_ref));
-                                                info!(
+                                                debug!(
                                                     "✅ [TX FLOW] Sub-batch {} included (retry): {} TXs in block {:?} (progress: {}/{})",
                                                     chunk_idx + 1, chunk_len, block_ref, total_submitted, total_tx_count
                                                 );
@@ -614,7 +614,7 @@ impl TxSocketServer {
                                                 tokio::spawn(async move {
                                                     match status_receiver.await {
                                                         Ok(consensus_core::BlockStatus::Sequenced(block)) => {
-                                                            info!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
+                                                            debug!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
                                                         }
                                                         Ok(consensus_core::BlockStatus::GarbageCollected(gc_block)) => {
                                                             warn!("♻️ [TX STATUS] Block {:?} was Garbage Collected.", gc_block);

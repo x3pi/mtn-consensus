@@ -528,10 +528,10 @@ impl ExecutorClient {
                 sent.insert(idx);
             }
             // Limit memory: trim if too large
+            // H2 FIX: Fast removal using BTreeSet pop_first() (O(log N))
+            // instead of O(N) iteration in HashSet, which caused O(N^2) loop.
             while sent.len() > 10000 {
-                if let Some(&min_idx) = sent.iter().min() {
-                    sent.remove(&min_idx);
-                }
+                sent.pop_first();
             }
         }
 
