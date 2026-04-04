@@ -34,14 +34,6 @@ impl ExecutorClient {
             return Err(anyhow::anyhow!("Circuit breaker: {}", reason));
         }
 
-        // Connect to Go request socket if needed
-        if let Err(e) = self.connect_request().await {
-            return Err(anyhow::anyhow!(
-                "Failed to connect to Go request socket: {}",
-                e
-            ));
-        }
-
         // Create GetValidatorsAtBlockRequest
         let request = Request {
             payload: Some(proto::request::Payload::GetValidatorsAtBlockRequest(
@@ -53,8 +45,9 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Send request via UDS
-        let mut conn_guard = self.request_connection.lock().await;
+        // Use connection pool for parallel RPC queries (IPC-2 optimization)
+        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             // Write 4-byte length prefix (big-endian)
             let len = request_buf.len() as u32;
@@ -294,14 +287,6 @@ impl ExecutorClient {
             return Err(anyhow::anyhow!("Circuit breaker: {}", reason));
         }
 
-        // Connect to Go request socket if needed
-        if let Err(e) = self.connect_request().await {
-            return Err(anyhow::anyhow!(
-                "Failed to connect to Go request socket: {}",
-                e
-            ));
-        }
-
         // Create GetLastBlockNumberRequest
         let request = Request {
             payload: Some(proto::request::Payload::GetLastBlockNumberRequest(
@@ -313,8 +298,9 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Send request via UDS
-        let mut conn_guard = self.request_connection.lock().await;
+        // Use connection pool for parallel RPC queries (IPC-2 optimization)
+        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             // Write 4-byte length prefix (big-endian)
             let len = request_buf.len() as u32;
@@ -424,14 +410,6 @@ impl ExecutorClient {
             return Err(anyhow::anyhow!("Circuit breaker: {}", reason));
         }
 
-        // Connect to Go request socket if needed
-        if let Err(e) = self.connect_request().await {
-            return Err(anyhow::anyhow!(
-                "Failed to connect to Go request socket: {}",
-                e
-            ));
-        }
-
         // Reuse GetLastBlockNumberRequest — Go response now includes last_global_exec_index
         let request = Request {
             payload: Some(proto::request::Payload::GetLastBlockNumberRequest(
@@ -442,7 +420,9 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        let mut conn_guard = self.request_connection.lock().await;
+        // Use connection pool for parallel RPC queries (IPC-2 optimization)
+        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             let len = request_buf.len() as u32;
             let len_bytes = len.to_be_bytes();

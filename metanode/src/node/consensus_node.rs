@@ -891,7 +891,7 @@ impl ConsensusNode {
                 storage.current_epoch,
                 storage.validator_eth_addresses.clone(),
             );
-            Arc::new(tokio::sync::Mutex::new(map))
+            Arc::new(tokio::sync::RwLock::new(map))
         })
         .with_cold_start(cold_start.clone())
         .with_cold_start_skip_gei(
@@ -900,7 +900,8 @@ impl ConsensusNode {
             } else {
                 0  // Normal operation — no GEI skip needed
             }
-        );
+        )
+        .with_storage_path(config.storage_path.clone());
 
         // ExecutorClient for commit processing
         let initial_next_expected = if config.executor_read_enabled {
@@ -1195,7 +1196,7 @@ impl ConsensusNode {
                     storage.current_epoch,
                     storage.validator_eth_addresses.clone(),
                 );
-                Arc::new(tokio::sync::Mutex::new(map))
+                Arc::new(tokio::sync::RwLock::new(map))
             },
             block_coordinator: None,
             peer_rpc_addresses: config.peer_rpc_addresses.clone(),

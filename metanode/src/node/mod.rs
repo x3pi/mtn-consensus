@@ -172,8 +172,9 @@ pub struct ConsensusNode {
     /// Multi-epoch committee cache: ETH addresses keyed by epoch
     /// Keeps last 3 epochs to support lookups during epoch transitions
     /// Updated when committee is loaded, used by CommitProcessor to send leader_address to Go
+    /// RS-1: RwLock for concurrent read access during commit processing
     pub(crate) epoch_eth_addresses:
-        Arc<tokio::sync::Mutex<std::collections::HashMap<u64, Vec<Vec<u8>>>>>,
+        Arc<tokio::sync::RwLock<std::collections::HashMap<u64, Vec<Vec<u8>>>>>,
 
     /// Block Coordinator for dual-stream block production
     /// Handles both Consensus and Sync streams with deduplication and priority

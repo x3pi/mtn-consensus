@@ -427,6 +427,7 @@ impl ExecutorClient {
     }
 
     /// Connect to Go request socket for request/response (lazy connection with retry)
+    #[allow(dead_code)]
     pub(crate) async fn connect_request(&self) -> Result<()> {
         let mut conn_guard = self.request_connection.lock().await;
 

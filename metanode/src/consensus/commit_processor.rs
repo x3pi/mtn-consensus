@@ -51,7 +51,9 @@ pub struct CommitProcessor {
     epoch_transition_callback: Option<Arc<dyn Fn(u64, u64, u64) -> Result<()> + Send + Sync>>, // CHANGED: u32 -> u64
     /// Multi-epoch committee cache: ETH addresses keyed by epoch
     /// Supports looking up leaders from previous epochs during transitions
-    epoch_eth_addresses: Arc<tokio::sync::Mutex<std::collections::HashMap<u64, Vec<Vec<u8>>>>>,
+    /// RS-1: Uses RwLock instead of Mutex — reads (every commit) don't block each other,
+    /// only writes (epoch transition) take exclusive lock.
+    epoch_eth_addresses: Arc<tokio::sync::RwLock<std::collections::HashMap<u64, Vec<Vec<u8>>>>>,
     /// Block Coordinator for dual-stream block production (optional)
     block_coordinator: Option<Arc<BlockCoordinator>>,
     /// TX recycler for confirming committed TXs
@@ -63,6 +65,8 @@ pub struct CommitProcessor {
     /// Set from synced_global_exec_index (Phase 1 peer sync state) during cold-start.
     /// This prevents replayed commits from creating duplicate blocks in Go.
     cold_start_skip_gei: u64,
+    /// RS-2: Storage path for persisting cumulative_fragment_offset
+    storage_path: Option<std::path::PathBuf>,
 }
 
 impl CommitProcessor {
@@ -82,12 +86,13 @@ impl CommitProcessor {
             pending_transactions_queue: None,
             epoch_transition_callback: None,
             epoch_eth_addresses: Arc::new(
-                tokio::sync::Mutex::new(std::collections::HashMap::new()),
+                tokio::sync::RwLock::new(std::collections::HashMap::new()),
             ),
             block_coordinator: None,
             tx_recycler: None,
             cold_start: Arc::new(AtomicBool::new(false)),
             cold_start_skip_gei: 0,
+            storage_path: None,
         }
     }
 
@@ -172,7 +177,7 @@ impl CommitProcessor {
     /// Accepts a shared reference to the node's epoch_eth_addresses
     pub fn with_epoch_eth_addresses(
         mut self,
-        epoch_eth_addresses: Arc<tokio::sync::Mutex<std::collections::HashMap<u64, Vec<Vec<u8>>>>>,
+        epoch_eth_addresses: Arc<tokio::sync::RwLock<std::collections::HashMap<u64, Vec<Vec<u8>>>>>,
     ) -> Self {
         self.epoch_eth_addresses = epoch_eth_addresses;
         self
@@ -183,7 +188,7 @@ impl CommitProcessor {
     pub fn with_validator_eth_addresses(mut self, eth_addresses: Vec<Vec<u8>>) -> Self {
         let mut map = std::collections::HashMap::new();
         map.insert(self.current_epoch, eth_addresses);
-        self.epoch_eth_addresses = Arc::new(tokio::sync::Mutex::new(map));
+        self.epoch_eth_addresses = Arc::new(tokio::sync::RwLock::new(map));
         self
     }
 
@@ -191,7 +196,7 @@ impl CommitProcessor {
     #[allow(dead_code)]
     pub fn get_epoch_eth_addresses_arc(
         &self,
-    ) -> Arc<tokio::sync::Mutex<std::collections::HashMap<u64, Vec<Vec<u8>>>>> {
+    ) -> Arc<tokio::sync::RwLock<std::collections::HashMap<u64, Vec<Vec<u8>>>>> {
         self.epoch_eth_addresses.clone()
     }
 
@@ -218,6 +223,12 @@ impl CommitProcessor {
     /// are skipped during cold-start to prevent duplicate blocks.
     pub fn with_cold_start_skip_gei(mut self, gei: u64) -> Self {
         self.cold_start_skip_gei = gei;
+        self
+    }
+
+    /// RS-2: Set storage path for persisting cumulative_fragment_offset
+    pub fn with_storage_path(mut self, path: std::path::PathBuf) -> Self {
+        self.storage_path = Some(path);
         self
     }
 
@@ -267,7 +278,17 @@ impl CommitProcessor {
         //   commit_5 (12K TXs, 3 fragments) → GEI = base+5+0, base+6, base+7 → offset += 2
         //   commit_6 (normal)               → GEI = base+6+2 = base+8 ← correct!
         // FORK-SAFETY: All nodes use the same MAX_TXS_PER_GO_BLOCK → identical offsets.
-        let mut cumulative_fragment_offset: u64 = 0;
+        // RS-2: Load persisted offset from disk for crash recovery.
+        let mut cumulative_fragment_offset: u64 = if let Some(ref sp) = self.storage_path {
+            let loaded = crate::node::executor_client::persistence::load_fragment_offset(sp);
+            if loaded > 0 {
+                info!("📂 [FRAGMENT-OFFSET] Recovered persisted offset={} from disk", loaded);
+            }
+            loaded
+        } else {
+            0
+        };
+        let storage_path_for_persist = self.storage_path.clone();
 
         loop {
             match receiver.recv().await {
@@ -322,8 +343,11 @@ impl CommitProcessor {
                             epoch_base_index,
                         );
 
-                        trace!("📊 [GLOBAL_EXEC_INDEX] Calculated: global_exec_index={}, epoch={}, commit_index={}, epoch_base_index={}, fragment_offset={}",
-                            global_exec_index, current_epoch, commit_index, epoch_base_index, cumulative_fragment_offset);
+                        // CC-1: Unified batch_id for end-to-end tracing (Rust → Go)
+                        let batch_id = format!("E{}C{}G{}", current_epoch, commit_index, global_exec_index);
+
+                        trace!("[batch_id={}] 📊 Calculated: epoch_base={}, fragment_offset={}",
+                            batch_id, epoch_base_index, cumulative_fragment_offset);
 
                         let total_txs_in_commit = subdag
                             .blocks
@@ -379,6 +403,10 @@ impl CommitProcessor {
                             cumulative_fragment_offset += geis_consumed - 1;
                             info!("🔪 [FRAGMENT-OFFSET] Commit {} consumed {} GEIs, cumulative_fragment_offset now {}",
                                 commit_index, geis_consumed, cumulative_fragment_offset);
+                            // RS-2: Persist after each change for crash recovery
+                            if let Some(ref sp) = storage_path_for_persist {
+                                let _ = crate::node::executor_client::persistence::persist_fragment_offset(sp, cumulative_fragment_offset).await;
+                            }
                         }
 
                         next_expected_index += 1;
@@ -450,6 +478,10 @@ impl CommitProcessor {
                                 cumulative_fragment_offset += pending_geis - 1;
                                 info!("🔪 [FRAGMENT-OFFSET] Pending commit {} consumed {} GEIs, cumulative_fragment_offset now {}",
                                     pending_commit_index, pending_geis, cumulative_fragment_offset);
+                                // RS-2: Persist after each change for crash recovery
+                                if let Some(ref sp) = storage_path_for_persist {
+                                    let _ = crate::node::executor_client::persistence::persist_fragment_offset(sp, cumulative_fragment_offset).await;
+                                }
                             }
 
                             if let Some(ref callback) = commit_index_callback {
@@ -567,7 +599,7 @@ impl CommitProcessor {
         pending_transactions_queue: Option<Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>>,
         shared_last_global_exec_index: Option<Arc<tokio::sync::Mutex<u64>>>,
         validator_eth_addresses: Arc<
-            tokio::sync::Mutex<std::collections::HashMap<u64, Vec<Vec<u8>>>>,
+            tokio::sync::RwLock<std::collections::HashMap<u64, Vec<Vec<u8>>>>,
         >,
         cold_start: Arc<AtomicBool>,
         _cold_start_skip_gei: u64,
@@ -580,6 +612,9 @@ impl CommitProcessor {
         }
 
         let has_system_tx = subdag.extract_end_of_epoch_transaction().is_some();
+
+        // CC-1: Unified batch_id for end-to-end tracing
+        let batch_id = format!("E{}C{}G{}", epoch, commit_index, global_exec_index);
 
         // ═══════════════════════════════════════════════════════════════════════════════
         // 🛡️ RUST-DRIVEN LEADER SELECTION (Critical Fork-Safety)
@@ -594,7 +629,7 @@ impl CommitProcessor {
             let max_retries = 10; // 10 * 200ms = 2 seconds max wait
 
             let resolved_address = loop {
-                let epoch_addresses = validator_eth_addresses.lock().await;
+                let epoch_addresses = validator_eth_addresses.read().await;
 
                 // Check if committee HashMap is loaded
                 if epoch_addresses.is_empty() {
@@ -704,7 +739,7 @@ impl CommitProcessor {
                                 }
 
                                 // Update the cache
-                                let mut cache = validator_eth_addresses.lock().await;
+                                let mut cache = validator_eth_addresses.write().await;
                                 cache.insert(epoch, new_eth_addresses);
                                 info!(
                                     "🔄 [LEADER] Refreshed epoch_eth_addresses for epoch {}: now have {} validators (cache size: {})",
@@ -773,14 +808,14 @@ impl CommitProcessor {
 
         if total_transactions > 0 || has_system_tx {
             trace!(
-                "🔷 [Global Index: {}] Executing commit #{} (epoch={}): {} blocks, {} txs, has_system_tx={}",
-                global_exec_index, commit_index, epoch, subdag.blocks.len(), total_transactions, has_system_tx
+                "🔷 [batch_id={}] [Global Index: {}] Executing commit #{} (epoch={}): {} blocks, {} txs, has_system_tx={}",
+                batch_id, global_exec_index, commit_index, epoch, subdag.blocks.len(), total_transactions, has_system_tx
             );
         } else {
             // Still log empty commits but as trace/debug to avoid spam
             tracing::trace!(
-                "⏭️ [TX FLOW] Forwarding empty commit to Go Master (for sequence sync): global_exec_index={}, commit_index={}",
-                global_exec_index, commit_index
+                "⏭️ [batch_id={}] [TX FLOW] Forwarding empty commit to Go Master (for sequence sync): global_exec_index={}, commit_index={}",
+                batch_id, global_exec_index, commit_index
             );
         }
 
@@ -895,8 +930,8 @@ impl CommitProcessor {
                     .await
                 {
                     Ok(geis_consumed) => {
-                        trace!("✅ [TX FLOW] Successfully sent committed subdag: global_exec_index={}, commit_index={}, geis_consumed={}",
-                                global_exec_index, commit_index, geis_consumed);
+                        trace!("✅ [batch_id={}] [TX FLOW] Successfully sent committed subdag: global_exec_index={}, commit_index={}, geis_consumed={}",
+                                batch_id, global_exec_index, commit_index, geis_consumed);
 
                         // Update shared_last_global_exec_index to the LAST GEI of the fragment range
                         let last_gei = global_exec_index + geis_consumed - 1;

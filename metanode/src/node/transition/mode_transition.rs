@@ -284,7 +284,9 @@ pub async fn transition_mode_only(
     }
 
     // Share epoch_eth_addresses HashMap reference for leader address lookup
-    processor = processor.with_epoch_eth_addresses(node.epoch_eth_addresses.clone());
+    processor = processor
+        .with_storage_path(node.storage_path.clone())
+        .with_epoch_eth_addresses(node.epoch_eth_addresses.clone());
 
     if let Some(c) = exec_client_proc {
         processor = processor.with_executor_client(c);

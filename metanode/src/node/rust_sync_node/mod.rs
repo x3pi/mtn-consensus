@@ -106,7 +106,7 @@ pub struct RustSyncNode {
     pub(crate) epoch_base_index: Arc<AtomicU64>,
     /// Multi-epoch cache: epoch -> sorted list of validator ETH addresses
     #[allow(dead_code)]
-    pub(crate) epoch_eth_addresses: Arc<Mutex<HashMap<u64, Vec<Vec<u8>>>>>,
+    pub(crate) epoch_eth_addresses: Arc<tokio::sync::RwLock<HashMap<u64, Vec<Vec<u8>>>>>,
     // Stored to allow rebuilding TonicClient on committee change
     pub(crate) context: Option<Arc<Context>>,
     pub(crate) network_keypair: Option<NetworkKeyPair>,
@@ -146,7 +146,7 @@ impl RustSyncNode {
             ))),
             epoch_base_index: Arc::new(AtomicU64::new(epoch_base_index)),
 
-            epoch_eth_addresses: Arc::new(Mutex::new(HashMap::new())),
+            epoch_eth_addresses: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             context: None,
             network_keypair: None,
             metrics: SyncMetrics::new_for_test(),

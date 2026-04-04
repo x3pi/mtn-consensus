@@ -488,7 +488,7 @@ pub async fn transition_to_epoch_from_system_tx(
     // Old epoch committees are never needed after transition completes.
     // =========================================================================
     {
-        let mut addrs = node.epoch_eth_addresses.lock().await;
+        let mut addrs = node.epoch_eth_addresses.write().await;
         let before_count = addrs.len();
         if before_count > 2 {
             let min_epoch_to_keep = new_epoch.saturating_sub(1);

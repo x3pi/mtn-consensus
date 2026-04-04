@@ -62,7 +62,7 @@ impl RustSyncNode {
             let leader_address = loop {
                 // 1. Try to resolve from cache
                 {
-                    let mut cache = self.epoch_eth_addresses.lock().await;
+                    let mut cache = self.epoch_eth_addresses.write().await;
 
                     // Load if missing
                     if !cache.contains_key(&epoch) {

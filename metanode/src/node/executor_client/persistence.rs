@@ -92,6 +92,67 @@ pub async fn read_last_block_number(storage_path: &Path) -> Result<u64> {
     Ok(u64::from_le_bytes(buf))
 }
 
+/// RS-2: Persist cumulative_fragment_offset to disk for crash recovery.
+/// During block fragmentation (commits with >MAX_TXS_PER_GO_BLOCK TXs), the offset
+/// accumulates extra GEIs. If a node crashes mid-epoch, this offset MUST be recovered
+/// to compute correct GEIs — otherwise the node diverges (fork).
+/// Uses atomic write (temp + rename) for corruption safety.
+pub async fn persist_fragment_offset(storage_path: &Path, offset: u64) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let persist_dir = storage_path.join("executor_state");
+    std::fs::create_dir_all(&persist_dir)?;
+    let temp_path = persist_dir.join("fragment_offset.tmp");
+    let final_path = persist_dir.join("fragment_offset.bin");
+    let mut file = tokio::fs::File::create(&temp_path).await?;
+    file.write_all(&offset.to_le_bytes()).await?;
+    file.flush().await?;
+    file.sync_all().await?;
+    drop(file);
+    std::fs::rename(&temp_path, &final_path)?;
+    trace!(
+        "💾 [PERSIST] Saved fragment_offset={} to {:?}",
+        offset,
+        final_path
+    );
+    Ok(())
+}
+
+/// RS-2: Load persisted fragment offset from disk.
+/// Returns 0 if file doesn't exist (first start or clean epoch).
+pub fn load_fragment_offset(storage_path: &Path) -> u64 {
+    let persist_path = storage_path
+        .join("executor_state")
+        .join("fragment_offset.bin");
+
+    if !persist_path.exists() {
+        return 0;
+    }
+
+    match std::fs::read(&persist_path) {
+        Ok(bytes) if bytes.len() == 8 => {
+            let offset = u64::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]);
+            info!(
+                "📂 [PERSIST] Loaded persisted fragment_offset={} from {:?}",
+                offset, persist_path
+            );
+            offset
+        }
+        Ok(bytes) => {
+            warn!(
+                "⚠️ [PERSIST] Corrupted fragment_offset file: {} bytes (expected 8)",
+                bytes.len()
+            );
+            0
+        }
+        Err(e) => {
+            warn!("⚠️ [PERSIST] Failed to read fragment_offset: {}", e);
+            0
+        }
+    }
+}
+
 /// Load persisted last sent index from file
 /// Returns None if file doesn't exist or is corrupted
 /// Returns (global_exec_index, commit_index)

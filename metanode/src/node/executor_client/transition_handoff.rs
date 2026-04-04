@@ -72,14 +72,6 @@ impl ExecutorClient {
         boundary_block: u64,
         boundary_gei: u64,
     ) -> Result<()> {
-        // Connect to Go request socket if needed
-        if let Err(e) = self.connect_request().await {
-            return Err(anyhow::anyhow!(
-                "Failed to connect to Go request socket: {}",
-                e
-            ));
-        }
-
         // Create AdvanceEpochRequest with boundary_block for deterministic epoch transition
         let request = Request {
             payload: Some(proto::request::Payload::AdvanceEpochRequest(
@@ -96,8 +88,9 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Send request via UDS
-        let mut conn_guard = self.request_connection.lock().await;
+        // Use connection pool for parallel RPC queries (IPC-2 optimization)
+        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             // Write 4-byte length prefix (big-endian)
             let len = request_buf.len() as u32;
@@ -202,13 +195,6 @@ impl ExecutorClient {
             return Err(anyhow::anyhow!("Executor client is not enabled"));
         }
 
-        if let Err(e) = self.connect_request().await {
-            return Err(anyhow::anyhow!(
-                "Failed to connect to Go request socket: {}",
-                e
-            ));
-        }
-
         let request = Request {
             payload: Some(proto::request::Payload::SetConsensusStartBlockRequest(
                 proto::SetConsensusStartBlockRequest { block_number },
@@ -218,7 +204,9 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        let mut conn_guard = self.request_connection.lock().await;
+        // Use connection pool for parallel RPC queries (IPC-2 optimization)
+        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             let len = request_buf.len() as u32;
             stream.write_all(&len.to_be_bytes()).await?;
@@ -281,13 +269,6 @@ impl ExecutorClient {
             return Err(anyhow::anyhow!("Executor client is not enabled"));
         }
 
-        if let Err(e) = self.connect_request().await {
-            return Err(anyhow::anyhow!(
-                "Failed to connect to Go request socket: {}",
-                e
-            ));
-        }
-
         let request = Request {
             payload: Some(proto::request::Payload::SetSyncStartBlockRequest(
                 proto::SetSyncStartBlockRequest {
@@ -299,7 +280,9 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        let mut conn_guard = self.request_connection.lock().await;
+        // Use connection pool for parallel RPC queries (IPC-2 optimization)
+        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             let len = request_buf.len() as u32;
             stream.write_all(&len.to_be_bytes()).await?;
@@ -363,13 +346,6 @@ impl ExecutorClient {
             return Err(anyhow::anyhow!("Executor client is not enabled"));
         }
 
-        if let Err(e) = self.connect_request().await {
-            return Err(anyhow::anyhow!(
-                "Failed to connect to Go request socket: {}",
-                e
-            ));
-        }
-
         let request = Request {
             payload: Some(proto::request::Payload::WaitForSyncToBlockRequest(
                 proto::WaitForSyncToBlockRequest {
@@ -382,7 +358,9 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        let mut conn_guard = self.request_connection.lock().await;
+        // Use connection pool for parallel RPC queries (IPC-2 optimization)
+        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             let len = request_buf.len() as u32;
             stream.write_all(&len.to_be_bytes()).await?;

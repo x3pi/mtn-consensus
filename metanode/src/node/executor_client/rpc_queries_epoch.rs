@@ -31,14 +31,6 @@ impl ExecutorClient {
             return Err(anyhow::anyhow!("Circuit breaker: {}", reason));
         }
 
-        // Connect to Go request socket if needed
-        if let Err(e) = self.connect_request().await {
-            return Err(anyhow::anyhow!(
-                "Failed to connect to Go request socket: {}",
-                e
-            ));
-        }
-
         // Create GetCurrentEpochRequest
         let request = Request {
             payload: Some(proto::request::Payload::GetCurrentEpochRequest(
@@ -50,8 +42,9 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Send request via UDS
-        let mut conn_guard = self.request_connection.lock().await;
+        // Use connection pool for parallel RPC queries (IPC-2 optimization)
+        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             // Write 4-byte length prefix (big-endian)
             let len = request_buf.len() as u32;
@@ -153,14 +146,6 @@ impl ExecutorClient {
             return Err(anyhow::anyhow!("Executor client is not enabled"));
         }
 
-        // Connect to Go request socket if needed
-        if let Err(e) = self.connect_request().await {
-            return Err(anyhow::anyhow!(
-                "Failed to connect to Go request socket: {}",
-                e
-            ));
-        }
-
         // Create GetEpochStartTimestampRequest
         let request = Request {
             payload: Some(proto::request::Payload::GetEpochStartTimestampRequest(
@@ -172,8 +157,9 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Send request via UDS
-        let mut conn_guard = self.request_connection.lock().await;
+        // Use connection pool for parallel RPC queries (IPC-2 optimization)
+        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             // Write 4-byte length prefix (big-endian)
             let len = request_buf.len() as u32;
@@ -276,14 +262,6 @@ impl ExecutorClient {
             return Err(anyhow::anyhow!("Circuit breaker: {}", reason));
         }
 
-        // Connect to Go request socket if needed
-        if let Err(e) = self.connect_request().await {
-            return Err(anyhow::anyhow!(
-                "Failed to connect to Go request socket: {}",
-                e
-            ));
-        }
-
         // Create GetEpochBoundaryDataRequest
         let request = Request {
             payload: Some(proto::request::Payload::GetEpochBoundaryDataRequest(
@@ -295,8 +273,9 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Send request via UDS
-        let mut conn_guard = self.request_connection.lock().await;
+        // Use connection pool for parallel RPC queries (IPC-2 optimization)
+        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             // Write 4-byte length prefix (big-endian)
             let len = request_buf.len() as u32;

@@ -256,7 +256,7 @@ impl CommitteeSource {
         send_socket: &str,
         target_epoch: u64,
         epoch_eth_addresses: &std::sync::Arc<
-            tokio::sync::Mutex<std::collections::HashMap<u64, Vec<Vec<u8>>>>,
+            tokio::sync::RwLock<std::collections::HashMap<u64, Vec<Vec<u8>>>>,
         >,
     ) -> Result<()> {
         let client = self.create_executor_client(send_socket);
@@ -300,7 +300,7 @@ impl CommitteeSource {
                     }
 
                     // Update the HashMap with new epoch's addresses
-                    let mut cache = epoch_eth_addresses.lock().await;
+                    let mut cache = epoch_eth_addresses.write().await;
 
                     // Keep only last 3 epochs to prevent unbounded growth
                     if cache.len() >= 3 {

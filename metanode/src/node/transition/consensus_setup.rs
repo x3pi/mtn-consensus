@@ -82,7 +82,8 @@ pub(super) async fn setup_validator_consensus(
         .with_is_transitioning(node.is_transitioning.clone())
         .with_pending_transactions_queue(node.pending_transactions_queue.clone())
         .with_epoch_transition_callback(epoch_cb)
-        .with_block_coordinator(coordinator.clone());
+        .with_block_coordinator(coordinator.clone())
+        .with_storage_path(node.storage_path.clone());
 
     processor = processor.with_epoch_eth_addresses(node.epoch_eth_addresses.clone());
 
@@ -202,7 +203,8 @@ pub(super) async fn setup_synconly_sync(
         .with_is_transitioning(node.is_transitioning.clone())
         .with_pending_transactions_queue(node.pending_transactions_queue.clone())
         .with_epoch_transition_callback(epoch_cb)
-        .with_block_coordinator(coordinator.clone());
+        .with_block_coordinator(coordinator.clone())
+        .with_storage_path(node.storage_path.clone());
 
     processor = processor.with_epoch_eth_addresses(node.epoch_eth_addresses.clone());
 
