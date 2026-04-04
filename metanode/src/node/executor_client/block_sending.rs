@@ -25,10 +25,10 @@ use super::{GO_VERIFICATION_INTERVAL, MAX_BUFFER_SIZE};
 /// When a DAG commit exceeds this threshold, Rust splits it into multiple
 /// ExecutableBlock payloads with incrementing global_exec_index values.
 /// Go EVM performs best with 5000-10000 TXs per block (balances parallelism
-/// vs IntermediateRoot overhead). Splitting at 10000 reduces per-block overhead
+/// vs IntermediateRoot overhead). Splitting at 50000 reduces per-block overhead
 /// while keeping GC pressure and EVM contention manageable.
 /// FORK-SAFETY: All nodes use the same threshold → deterministic split.
-pub const MAX_TXS_PER_GO_BLOCK: usize = 10000;
+pub const MAX_TXS_PER_GO_BLOCK: usize = 50000;
 
 impl ExecutorClient {
     /// Send committed sub-DAG to executor, with automatic fragmentation for large commits.
