@@ -316,7 +316,7 @@ impl TxSocketServer {
                 continue;
             }
 
-            debug!(
+            info!(
                 "✅ [TX FLOW] Zero-copy extracted {} individual transactions via UDS",
                 individual_txs.len()
             );
@@ -340,7 +340,7 @@ impl TxSocketServer {
             }
 
             // Check if node is ready (lock-free fast path already passed)
-            debug!(
+            info!(
                 "🔍 [TX FLOW] Checking transaction acceptance for {} TXs",
                 transactions_to_submit.len()
             );
@@ -553,7 +553,7 @@ impl TxSocketServer {
                     Ok((block_ref, _indices, status_receiver)) => {
                         total_submitted += chunk_len;
                         _last_block_ref = Some(format!("{:?}", block_ref));
-                        debug!(
+                        info!(
                             "✅ [TX FLOW] Sub-batch {} included: {} TXs in block {:?} (progress: {}/{})",
                             chunk_idx + 1, chunk_len, block_ref, total_submitted, total_tx_count
                         );

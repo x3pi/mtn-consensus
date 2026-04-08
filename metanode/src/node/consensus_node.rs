@@ -154,10 +154,10 @@ impl ConsensusNode {
                 match executor_client.get_last_block_number().await {
                     Ok((n, _is_ready)) => {
                         block_num = n;
-                        if n > 0 {
+                        if n > 0 || _is_ready {
                             info!(
-                                "✅ [STARTUP] Got block number {} from Go (attempt {})",
-                                n, attempt
+                                "✅ [STARTUP] Got block number {} from Go (is_ready={}) (attempt {})",
+                                n, _is_ready, attempt
                             );
                             break;
                         } else if attempt < max_retries {

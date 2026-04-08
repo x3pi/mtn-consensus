@@ -444,6 +444,11 @@ pub async fn transition_to_epoch_from_system_tx(
     }
     std::fs::create_dir_all(&db_path)?;
 
+    // Reset fragment offset for the new epoch to prevent GEI double-counting
+    if let Err(e) = crate::node::executor_client::persistence::reset_fragment_offset(&node.storage_path).await {
+        warn!("⚠️ [PERSIST] Failed to reset fragment offset: {}", e);
+    }
+
     info!(
         "📋 [COMMITTEE] Fetching committee for epoch {} from {} (epoch={})",
         new_epoch,

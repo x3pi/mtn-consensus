@@ -282,9 +282,20 @@ impl CommitObserver {
                         .recover_and_vote_on_blocks(committed_sub_dag.blocks.clone());
                 }
 
-                self.commit_finalizer_handle.send(committed_sub_dag).expect(
-                    "Failed to send recovered commit to finalizer — channel closed unexpectedly",
-                );
+                if let Err(e) = self.commit_finalizer_handle.send(committed_sub_dag) {
+                    // During recovery, the commit processor may encounter an EndOfEpoch
+                    // transaction and trigger an epoch transition, which closes the commit
+                    // channel. When this happens, the CommitFinalizer's run loop exits,
+                    // closing its internal channel. This is expected behavior — not a crash.
+                    info!(
+                        "Commit finalizer channel closed during recovery at commit {last_sent_commit_index} \
+                         (likely epoch transition triggered): {e:?}. \
+                         Stopping recovery — remaining commits will be replayed in the new epoch."
+                    );
+                    // Adjust last_sent_commit_index back since this commit was not actually sent.
+                    last_sent_commit_index -= 1;
+                    break;
+                }
 
                 self.context
                     .metrics
@@ -296,11 +307,22 @@ impl CommitObserver {
             }
         }
 
-        assert_eq!(
-            last_sent_commit_index, last_commit_index,
-            "We should have sent all commits up to the last commit {}",
-            last_commit_index
-        );
+        // During epoch transitions, recovery may stop early because the commit channel
+        // closes after processing an EndOfEpoch transaction. This is safe — remaining
+        // commits belong to a future epoch and will be replayed when that epoch starts.
+        if last_sent_commit_index < last_commit_index {
+            info!(
+                "Commit observer recovery stopped early at commit {last_sent_commit_index} \
+                 (last_commit_index={last_commit_index}). \
+                 Remaining commits will be handled by the new epoch."
+            );
+        } else {
+            assert_eq!(
+                last_sent_commit_index, last_commit_index,
+                "We should have sent all commits up to the last commit {}",
+                last_commit_index
+            );
+        }
 
         info!(
             "Commit observer recovery [{}..={}] completed, took {:?}",

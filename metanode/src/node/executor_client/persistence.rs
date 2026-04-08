@@ -117,6 +117,21 @@ pub async fn persist_fragment_offset(storage_path: &Path, offset: u64) -> Result
     Ok(())
 }
 
+/// Reset/Delete persisted fragment offset from disk.
+/// Call this during epoch transitions to prevent carrying over the offset into the new epoch.
+pub async fn reset_fragment_offset(storage_path: &Path) -> Result<()> {
+    let persist_path = storage_path
+        .join("executor_state")
+        .join("fragment_offset.bin");
+    
+    if persist_path.exists() {
+        tokio::fs::remove_file(&persist_path).await?;
+        info!("📂 [PERSIST] Reset/Removed fragment_offset file for new epoch.");
+    }
+    Ok(())
+}
+
+
 /// RS-2: Load persisted fragment offset from disk.
 /// Returns 0 if file doesn't exist (first start or clean epoch).
 pub fn load_fragment_offset(storage_path: &Path) -> u64 {

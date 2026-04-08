@@ -53,7 +53,7 @@ get_master_pprof() {
 }
 
 # ─── Timeout settings ────────────────────────────────────────────
-SOCKET_TIMEOUT=30      # Chờ socket tối đa 30 giây
+SOCKET_TIMEOUT=90      # Chờ socket tối đa 90 giây
 PROCESS_TIMEOUT=15     # Chờ process start tối đa 15 giây
 SHUTDOWN_TIMEOUT=30    # Chờ process dừng tối đa 30s (Go StopWait=12s + FlushAll + CloseAll)
 PHASE_DELAY=3          # Delay giữa các phase (giây)
@@ -363,11 +363,12 @@ cmd_start() {
     local build_go=false
     local build_rust=false
     local build_evm=false
+    local build_nomt=false
     for arg in "$@"; do
         case "$arg" in
             --fresh) fresh=true ;;
             --build) build_go=true; build_rust=true ;;
-            --build-all) build_go=true; build_rust=true; build_evm=true ;;
+            --build-all) build_go=true; build_rust=true; build_evm=true; build_nomt=true ;;
         esac
     done
 
@@ -378,6 +379,10 @@ cmd_start() {
     echo -e "${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
 
     # Build processes
+    if $build_nomt; then
+        log_info "🛠  Đang build NOMT FFI (Rust)..."
+        (cd "$BASE_DIR/mtn-simple-2025/pkg/nomt_ffi/rust_lib" && cargo +nightly build --release) || exit 1
+    fi
     if $build_evm; then
         log_info "🛠  Đang build EVM (C++ MVM)..."
         (cd "$BASE_DIR/mtn-simple-2025/pkg/mvm" && chmod +x build.sh && ./build.sh) || exit 1
