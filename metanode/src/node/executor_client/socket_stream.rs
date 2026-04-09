@@ -86,6 +86,14 @@ impl SocketStream {
                 let stream = UnixStream::connect(path).await.map_err(|e| {
                     anyhow::anyhow!("Failed to connect to Unix socket '{}': {}", path, e)
                 })?;
+
+                // Tune UDS buffer sizes for high-throughput blocks
+                let std_stream = stream.into_std().map_err(|e| anyhow::anyhow!("Failed to convert UnixStream: {}", e))?;
+                let socket = socket2::Socket::from(std_stream);
+                let _ = socket.set_send_buffer_size(32 * 1024 * 1024);
+                let _ = socket.set_recv_buffer_size(32 * 1024 * 1024);
+                let stream = UnixStream::from_std(socket.into()).map_err(|e| anyhow::anyhow!("Failed to restore UnixStream: {}", e))?;
+
                 Ok(SocketStream::Unix(stream))
             }
             SocketAddress::Tcp(sock_addr) => {
@@ -113,6 +121,10 @@ impl SocketStream {
                 socket
                     .set_keepalive(true)
                     .map_err(|e| anyhow::anyhow!("Failed to set TCP keepalive: {}", e))?;
+                
+                // Tune TCP buffer sizes
+                let _ = socket.set_send_buffer_size(32 * 1024 * 1024);
+                let _ = socket.set_recv_buffer_size(32 * 1024 * 1024);
 
                 // Convert back to tokio TcpStream
                 let stream = TcpStream::from_std(socket.into())?;

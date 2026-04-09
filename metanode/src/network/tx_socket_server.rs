@@ -103,6 +103,26 @@ impl TxSocketServer {
                         addr
                     );
 
+                    // Tune UDS connection buffers
+                    let stream = match stream.into_std() {
+                        Ok(std_stream) => {
+                            let socket = socket2::Socket::from(std_stream);
+                            let _ = socket.set_recv_buffer_size(32 * 1024 * 1024);
+                            let _ = socket.set_send_buffer_size(32 * 1024 * 1024);
+                            match tokio::net::UnixStream::from_std(socket.into()) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    error!("Failed to restore UnixStream: {}", e);
+                                    continue;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to convert to std stream: {}", e);
+                            continue;
+                        }
+                    };
+
                     let client = self.transaction_client.clone();
                     let node = self.node.clone();
                     let is_transitioning = self.is_transitioning.clone();
