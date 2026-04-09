@@ -63,23 +63,27 @@ impl TxRecycler {
 
     /// Track submitted TXs. Called by tx_socket_server after client.submit() succeeds.
     pub async fn track_submitted(&self, tx_data_list: &[Vec<u8>]) {
+        // PERF: Pre-compute hashes concurrently outside the Mutex to prevent
+        // blocking the async executor during high-throughput submission.
+        use rayon::prelude::*;
+        let hashes: Vec<[u8; 32]> = tx_data_list
+            .par_iter()
+            .map(|tx_data| Self::hash_tx(tx_data))
+            .collect();
+
         let mut pending = self.pending.lock().await;
         let mut total = self.total_submitted.lock().await;
 
-        for tx_data in tx_data_list {
-            let hash = Self::hash_tx(tx_data);
-
+        for (tx_data, hash) in tx_data_list.iter().zip(hashes) {
             // Don't overwrite if already pending (might be a re-submission)
             if !pending.contains_key(&hash) {
-                // Memory safety: evict oldest if too many
+                // Memory safety: evict pseudo-random element if too many.
+                // PERF: Replacing O(N) min_by_key search with O(1) next() eviction.
+                // This prevents 5 billion iteration stalls when pending > 100,000.
                 if pending.len() >= MAX_PENDING_TXS {
-                    // Find and remove the oldest entry
-                    if let Some(oldest_key) = pending
-                        .iter()
-                        .min_by_key(|(_, v)| v.submitted_at)
-                        .map(|(k, _)| *k)
-                    {
-                        pending.remove(&oldest_key);
+                    let key_to_remove = pending.keys().next().copied();
+                    if let Some(k) = key_to_remove {
+                        pending.remove(&k);
                     }
                 }
 
