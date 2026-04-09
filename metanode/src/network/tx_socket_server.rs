@@ -510,8 +510,8 @@ impl TxSocketServer {
             }
 
             // Submit transactions to consensus in sub-batches
-            // Consensus limits have been reduced to 5,000 to keep blocks small and fast.
-            const MAX_BUNDLE_SIZE: usize = 4000;
+            // MetaNode: Increased to 60,000 to match config 60K max blocks (u16 limitation)
+            const MAX_BUNDLE_SIZE: usize = 60000;
             let total_tx_count = transactions_to_submit.len();
 
             let mut all_succeeded = true;
