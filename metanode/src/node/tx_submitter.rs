@@ -23,6 +23,17 @@ pub trait TransactionSubmitter: Send + Sync {
         Vec<consensus_types::block::TransactionIndex>,
         tokio::sync::oneshot::Receiver<BlockStatus>,
     )>;
+
+    async fn submit_no_wait(
+        &self,
+        transactions: Vec<Vec<u8>>,
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<(
+            consensus_types::block::BlockRef,
+            Vec<consensus_types::block::TransactionIndex>,
+            tokio::sync::oneshot::Receiver<BlockStatus>,
+        )>
+    >;
 }
 
 /// Direct adapter for `consensus_core::TransactionClient`.
@@ -55,6 +66,22 @@ impl TransactionSubmitter for DirectTransactionSubmitter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to submit transaction: {}", e))?;
         Ok((block_ref, indices, status))
+    }
+
+    async fn submit_no_wait(
+        &self,
+        transactions: Vec<Vec<u8>>,
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<(
+            consensus_types::block::BlockRef,
+            Vec<consensus_types::block::TransactionIndex>,
+            tokio::sync::oneshot::Receiver<BlockStatus>,
+        )>
+    > {
+        self.client
+            .submit_no_wait(transactions)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to submit transaction: {}", e))
     }
 }
 
@@ -93,6 +120,23 @@ impl TransactionSubmitter for TransactionClientProxy {
             .map_err(|e| anyhow::anyhow!("Failed to submit transaction: {}", e))?;
         Ok((block_ref, indices, status))
     }
+
+    async fn submit_no_wait(
+        &self,
+        transactions: Vec<Vec<u8>>,
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<(
+            consensus_types::block::BlockRef,
+            Vec<consensus_types::block::TransactionIndex>,
+            tokio::sync::oneshot::Receiver<BlockStatus>,
+        )>
+    > {
+        let client = { self.inner.read().await.clone() };
+        client
+            .submit_no_wait(transactions)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to submit transaction: {}", e))
+    }
 }
 
 /// No-op submitter for SyncOnly nodes.
@@ -110,6 +154,21 @@ impl TransactionSubmitter for NoOpTransactionSubmitter {
         Vec<consensus_types::block::TransactionIndex>,
         tokio::sync::oneshot::Receiver<BlockStatus>,
     )> {
+        Err(anyhow::anyhow!(
+            "SyncOnly node cannot submit to consensus directly"
+        ))
+    }
+
+    async fn submit_no_wait(
+        &self,
+        _transactions: Vec<Vec<u8>>,
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<(
+            consensus_types::block::BlockRef,
+            Vec<consensus_types::block::TransactionIndex>,
+            tokio::sync::oneshot::Receiver<BlockStatus>,
+        )>
+    > {
         Err(anyhow::anyhow!(
             "SyncOnly node cannot submit to consensus directly"
         ))

@@ -318,7 +318,7 @@ impl NodeConfig {
                 metrics_port: 9100 + idx as u16,
                 speed_multiplier: 1.0, // Default: normal speed
                 leader_timeout_ms: None,
-                min_round_delay_ms: Some(200), // Enforce 200ms delay to create fat blocks (Anti-Fork performance tuning)
+                min_round_delay_ms: Some(50), // TPS OPTIMIZATION: Reduced from 200ms to 50ms to accelerate DAG linearizer latency
                 time_based_epoch_change: true, // Enabled by default
                 epoch_duration_seconds: None,  // DEPRECATED: loaded from Go via protobuf now
                 max_clock_drift_seconds: 5,
@@ -333,7 +333,7 @@ impl NodeConfig {
                 commit_sync_parallel_fetches: default_commit_sync_parallel_fetches(),
                 commit_sync_batches_ahead: default_commit_sync_batches_ahead(),
                 adaptive_catchup_enabled: default_adaptive_catchup(),
-                adaptive_delay_enabled: default_adaptive_delay(),
+                adaptive_delay_enabled: false, // TPS OPTIMIZATION: Disabled to prevent Rust from slowing down rounds
 
                 epoch_transition_optimization: "balanced".to_string(),
                 enable_gradual_shutdown: true,

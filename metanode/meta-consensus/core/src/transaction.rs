@@ -350,7 +350,7 @@ impl TransactionClient {
     /// If multiple transactions are submitted, the method will attempt to bundle them together in a single block. If the total size of
     /// the transactions exceeds `max_transactions_in_block_bytes`, no transaction will be submitted and an error will be returned instead.
     /// Similar if transactions exceed `max_transactions_in_block_count` an error will be returned.
-    pub(crate) async fn submit_no_wait(
+    pub async fn submit_no_wait(
         &self,
         transactions: Vec<Vec<u8>>,
     ) -> Result<

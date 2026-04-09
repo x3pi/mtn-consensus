@@ -510,13 +510,12 @@ impl TxSocketServer {
             }
 
             // Submit transactions to consensus in sub-batches
-            // Consensus limits have been increased to 200,000
-            const MAX_BUNDLE_SIZE: usize = 200000;
+            // Consensus limits have been reduced to 5,000 to keep blocks small and fast.
+            const MAX_BUNDLE_SIZE: usize = 4000;
             let total_tx_count = transactions_to_submit.len();
 
             let mut all_succeeded = true;
             let mut total_submitted = 0usize;
-            let mut _last_block_ref = None;
             let mut last_error = String::new();
 
             // PERF: Fast path for single chunk (common case: ≤200K TXs)
@@ -549,28 +548,34 @@ impl TxSocketServer {
 
                 // Clone only for error recovery (SyncOnly→Validator retry needs the data)
                 let retry_chunk = chunk_vec.clone();
-                match client.submit(chunk_vec).await {
-                    Ok((block_ref, _indices, status_receiver)) => {
+                match client.submit_no_wait(chunk_vec).await {
+                    Ok(included_in_block_rx) => {
                         total_submitted += chunk_len;
-                        _last_block_ref = Some(format!("{:?}", block_ref));
-                        info!(
-                            "✅ [TX FLOW] Sub-batch {} included: {} TXs in block {:?} (progress: {}/{})",
-                            chunk_idx + 1, chunk_len, block_ref, total_submitted, total_tx_count
-                        );
-
+                        
                         tokio::spawn(async move {
-                            match status_receiver.await {
-                                Ok(consensus_core::BlockStatus::Sequenced(block)) => {
-                                    debug!(
-                                        "✅ [TX STATUS] Block {:?} was sequenced and finalized.",
-                                        block
+                            match included_in_block_rx.await {
+                                Ok((block_ref, _indices, status_receiver)) => {
+                                    info!(
+                                        "✅ [TX FLOW] Sub-batch included: {} TXs in block {:?}",
+                                        chunk_len, block_ref
                                     );
-                                }
-                                Ok(consensus_core::BlockStatus::GarbageCollected(gc_block)) => {
-                                    warn!("♻️ [TX STATUS] Block {:?} was Garbage Collected. TxRecycler will handle re-submission if necessary.", gc_block);
+                                    
+                                    tokio::spawn(async move {
+                                        match status_receiver.await {
+                                            Ok(consensus_core::BlockStatus::Sequenced(block)) => {
+                                                debug!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
+                                            }
+                                            Ok(consensus_core::BlockStatus::GarbageCollected(gc_block)) => {
+                                                warn!("♻️ [TX STATUS] Block {:?} was Garbage Collected. TxRecycler will handle re-submission if necessary.", gc_block);
+                                            }
+                                            Err(e) => {
+                                                warn!("⚠️ [TX STATUS] Failed to receive block status: {}", e);
+                                            }
+                                        }
+                                    });
                                 }
                                 Err(e) => {
-                                    warn!("⚠️ [TX STATUS] Failed to receive block status: {}", e);
+                                    warn!("❌ [TX FLOW] Failed to receive inclusion ack: {}", e);
                                 }
                             }
                         });
@@ -599,28 +604,37 @@ impl TxSocketServer {
                                             "🔄 [TX FLOW] Retrying sub-batch {} with live TransactionSubmitter (post SyncOnly→Validator transition)",
                                             chunk_idx + 1
                                         );
-                                        match real_submitter.submit(retry_chunk.clone()).await {
-                                            Ok((block_ref, _indices, status_receiver)) => {
+                                        match real_submitter.submit_no_wait(retry_chunk.clone()).await {
+                                            Ok(included_in_block_rx) => {
                                                 total_submitted += chunk_len;
-                                                _last_block_ref = Some(format!("{:?}", block_ref));
-                                                debug!(
-                                                    "✅ [TX FLOW] Sub-batch {} included (retry): {} TXs in block {:?} (progress: {}/{})",
-                                                    chunk_idx + 1, chunk_len, block_ref, total_submitted, total_tx_count
-                                                );
+                                                
                                                 if let Some(ref recycler) = tx_recycler {
                                                     recycler.track_submitted(&retry_chunk).await;
                                                 }
-                                                // NOTE: Mempool broadcast REMOVED (same as primary path above).
+                                                
                                                 tokio::spawn(async move {
-                                                    match status_receiver.await {
-                                                        Ok(consensus_core::BlockStatus::Sequenced(block)) => {
-                                                            debug!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
-                                                        }
-                                                        Ok(consensus_core::BlockStatus::GarbageCollected(gc_block)) => {
-                                                            warn!("♻️ [TX STATUS] Block {:?} was Garbage Collected.", gc_block);
+                                                    match included_in_block_rx.await {
+                                                        Ok((block_ref, _indices, status_receiver)) => {
+                                                            debug!(
+                                                                "✅ [TX FLOW] Sub-batch included (retry): {} TXs in block {:?}",
+                                                                chunk_len, block_ref
+                                                            );
+                                                            tokio::spawn(async move {
+                                                                match status_receiver.await {
+                                                                    Ok(consensus_core::BlockStatus::Sequenced(block)) => {
+                                                                        debug!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
+                                                                    }
+                                                                    Ok(consensus_core::BlockStatus::GarbageCollected(gc_block)) => {
+                                                                        warn!("♻️ [TX STATUS] Block {:?} was Garbage Collected.", gc_block);
+                                                                    }
+                                                                    Err(e) => {
+                                                                        warn!("⚠️ [TX STATUS] Failed to receive block status: {}", e);
+                                                                    }
+                                                                }
+                                                            });
                                                         }
                                                         Err(e) => {
-                                                            warn!("⚠️ [TX STATUS] Failed to receive block status: {}", e);
+                                                            warn!("❌ [TX FLOW] Failed to receive inclusion ack on retry: {}", e);
                                                         }
                                                     }
                                                 });
