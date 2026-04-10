@@ -259,10 +259,14 @@ echo -e "\n${BOLD}═══ TPS Blast Scripts (run_multinode_load.sh, run_node0_
 
 TPS_DIR="$GO_DIR/cmd/tool/tps_blast"
 
+# Go RPC ports per node (used for TPS blast scripts, typically Sub nodes)
+GO_RPC_PORTS=(8646 10646 10650 10651 10649)
 # Go Master connection ports per node (same as config)
 GO_CONN_PORTS=(4201 6201 6211 6221 6241)
-# Go RPC ports per node
-GO_RPC_PORTS=(8757 10747 10749 10750 10748)
+# Go Master RPC ports per node
+GO_MASTER_RPC_PORTS=(8757 10747 10749 10750 10748)
+# Go Sub RPC ports per node
+GO_SUB_RPC_PORTS=(8646 10646 10650 10651 10649)
 
 # Build NODES array string: "IP0:4201" "IP1:6201" "IP2:6211" "IP3:6221"
 # Only use first 4 nodes (validators, exclude node4 SyncOnly)
@@ -422,12 +426,18 @@ echo -e "\n\e[1;36m[2/3] Cấu hình Firewall (UFW)...\e[0m"
 sudo ufw allow ${CONSENSUS_PORTS[$N]}/tcp
 # Peer Discovery Go Master
 sudo ufw allow ${PEER_RPC_PORTS[$N]}/tcp
-# Go User RPC
-sudo ufw allow ${GO_RPC_PORTS[$N]}/tcp
+# Go Master User RPC
+sudo ufw allow ${GO_MASTER_RPC_PORTS[$N]:-8000}/tcp
+# Go Sub User RPC
+sudo ufw allow ${GO_SUB_RPC_PORTS[$N]:-8000}/tcp
 # Go Internal P2P (Primary, Worker)
 sudo ufw allow ${GENESIS_PRIMARY_PORTS[$N]:-4000}/tcp
 sudo ufw allow ${GENESIS_WORKER_PORTS[$N]:-4012}/tcp
 sudo ufw allow ${GENESIS_P2P_PORTS[$N]:-9000}/tcp
+# Go Master raw connection port (cho TPS Blast/tps_benchmark kết nối)
+sudo ufw allow ${GO_MASTER_CONN_PORTS[$N]}/tcp
+# Go Sub raw connection port
+sudo ufw allow ${GO_SUB_CONN_PORTS[$N]}/tcp
 
 echo -e "\n\e[1;32m✅ Setup hệ thống hoàn tất cho Máy Node $N.\e[0m"
 echo -e "\e[1;33mTiếp theo:\e[0m Bạn hãy copy file binary và config sang máy này rồi chạy."

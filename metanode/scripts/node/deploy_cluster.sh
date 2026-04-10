@@ -133,8 +133,10 @@ get_nodes_for_server() {
     local server="$1"
     local nodes=""
     for node_id in "${!NODE_SERVER[@]}"; do
-        if [ -n "$ONLY_NODE" ] && [ "$node_id" != "$ONLY_NODE" ]; then
-            continue
+        if [ -n "$ONLY_NODE" ]; then
+            if [[ ! ",$ONLY_NODE," =~ ",$node_id," ]] && [[ ! " $ONLY_NODE " =~ " $node_id " ]]; then
+                continue
+            fi
         fi
         if [ "${NODE_SERVER[$node_id]}" == "$server" ]; then
             nodes="$nodes $node_id"
@@ -443,11 +445,9 @@ if $DO_START; then
 
             for id in $nodes; do
                 DATA=\"node\${id}\"
-                rm -rf \"sample/\${DATA}/data\" 2>/dev/null || true
-                rm -rf \"sample/\${DATA}/data-write\" 2>/dev/null || true
-                rm -rf \"sample/\${DATA}/back_up\" 2>/dev/null || true
-                rm -rf \"sample/\${DATA}/back_up_write\" 2>/dev/null || true
+                rm -rf \"sample/\${DATA}\" 2>/dev/null || true
                 rm -rf \"${REMOTE_METANODE}/config/storage/node_\${id}\" 2>/dev/null || true
+                rm -rf \"snapshot_data_node\${id}\" 2>/dev/null || true
                 mkdir -p \"sample/\${DATA}/data/data/xapian_node\"
                 mkdir -p \"sample/\${DATA}/data-write/data/xapian_node\"
                 mkdir -p \"sample/\${DATA}/back_up\"
@@ -472,8 +472,8 @@ if $DO_START; then
         for id in $nodes; do
             log_info "Starting Go Master $id on $server..."
             XAPIAN="sample/node${id}/data/data/xapian_node"
-            PPROF_ARG=""
-            [ "$id" -eq "0" ] && PPROF_ARG="--pprof-addr=localhost:6060"
+            MASTER_PPROF_PORT=$((6060 + id))
+            PPROF_ARG="--pprof-addr=localhost:${MASTER_PPROF_PORT}"
 
             ssh_cmd "$server" "
                 cd '${REMOTE_GO_SIMPLE}'
@@ -518,14 +518,15 @@ if $DO_START; then
         for id in $nodes; do
             log_info "Starting Go Sub $id on $server..."
             XAPIAN="sample/node${id}/data-write/data/xapian_node"
+            SUB_PPROF_PORT=$((6070 + id))
 
             ssh_cmd "$server" "
                 cd '${REMOTE_GO_SIMPLE}'
                 LOG_DIR='${REMOTE_METANODE}/logs'
                 tmux new-session -d -s 'go-sub-${id}' -c '${REMOTE_GO_SIMPLE}' \
-                    \"ulimit -n 100000; export GOTOOLCHAIN=${GO_TOOLCHAIN} && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='${XAPIAN}' && export MVM_LOG_DIR=\\\"\${LOG_DIR}/node_${id}\\\" && ./simple_chain -config=${GO_SUB_CONFIGS[$id]} >> \\\"\${LOG_DIR}/node_${id}/go-sub-stdout.log\\\" 2>&1\"
+                    \"ulimit -n 100000; export GOTOOLCHAIN=${GO_TOOLCHAIN} && export GOMEMLIMIT=4GiB && export XAPIAN_BASE_PATH='${XAPIAN}' && export MVM_LOG_DIR=\\\"\${LOG_DIR}/node_${id}\\\" && ./simple_chain -config=${GO_SUB_CONFIGS[$id]} --pprof-addr=localhost:${SUB_PPROF_PORT} >> \\\"\${LOG_DIR}/node_${id}/go-sub-stdout.log\\\" 2>&1\"
             "
-            log_ok "Go Sub $id started"
+            log_ok "Go Sub $id started (pprof: localhost:${SUB_PPROF_PORT})"
             sleep 1
         done
     done
@@ -578,7 +579,7 @@ echo ""
 echo -e "    📝 Commands:"
 echo -e "       Full deploy:   ${CYAN}./deploy_cluster.sh --all${NC}"
 echo -e "       Start keep db: ${CYAN}./deploy_cluster.sh --start --keep-data${NC}"
-echo -e "       Stop/Start 1 node: ${CYAN}./deploy_cluster.sh --stop --only-node 4${NC}"
+echo -e "       Stop/Start specific nodes: ${CYAN}./deploy_cluster.sh --stop --only-node 0,1,2${NC}"
 echo -e "       Build only:    ${CYAN}./deploy_cluster.sh --build${NC}"
 echo -e "       Push only:     ${CYAN}./deploy_cluster.sh --push --ips${NC}"
 echo -e "       Start only:    ${CYAN}./deploy_cluster.sh --start${NC}"

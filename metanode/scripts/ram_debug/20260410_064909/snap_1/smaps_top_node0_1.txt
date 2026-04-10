@@ -1,0 +1,23 @@
+=== TOP MEMORY MAPPINGS (PID 399908) ===
+Phân tích: Private_Dirty = heap thực sự đang dùng
+
+       0.0 MB private_dirty |       83.8 MB rss | [heap]
+       0.0 MB private_dirty |       21.9 MB rss | /home/abc/nhat/con-chain-v2/mtn-consensus/metanode/target/release/metanode
+       0.0 MB private_dirty |        1.8 MB rss | /usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33
+       0.0 MB private_dirty |        1.8 MB rss | /usr/lib/x86_64-linux-gnu/libc.so.6
+       0.0 MB private_dirty |     1035.1 MB rss | 0
+       0.0 MB private_dirty |        0.5 MB rss | /usr/lib/x86_64-linux-gnu/libm.so.6
+       0.0 MB private_dirty |        0.4 MB rss | [stack]
+       0.0 MB private_dirty |        0.2 MB rss | /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+       0.0 MB private_dirty |        0.1 MB rss | /usr/lib/x86_64-linux-gnu/libunwind.so.8.0.1
+       0.0 MB private_dirty |        0.1 MB rss | /usr/lib/x86_64-linux-gnu/liblzma.so.5.4.5
+       0.0 MB private_dirty |        0.1 MB rss | /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+       0.0 MB private_dirty |        0.1 MB rss | /usr/lib/heaptrack/libheaptrack_inject.so
+       0.0 MB private_dirty |        0.0 MB rss | [vvar]
+       0.0 MB private_dirty |        0.0 MB rss | [vsyscall]
+       0.0 MB private_dirty |        0.0 MB rss | [vdso]
+
+--- HEAP REGION (anonymous mappings) ---
+
+--- STACK REGIONS ---
+  Số thread stacks: 1
