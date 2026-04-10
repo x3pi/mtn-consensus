@@ -364,11 +364,15 @@ cmd_start() {
     local build_rust=false
     local build_evm=false
     local build_nomt=false
-    for arg in "$@"; do
-        case "$arg" in
-            --fresh) fresh=true ;;
-            --build) build_go=true; build_rust=true ;;
-            --build-all) build_go=true; build_rust=true; build_evm=true; build_nomt=true ;;
+    local exclude_node="-1"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --fresh) fresh=true; shift ;;
+            --build) build_go=true; build_rust=true; shift ;;
+            --build-all) build_go=true; build_rust=true; build_evm=true; build_nomt=true; shift ;;
+            --exclude-node) exclude_node="$2"; shift 2 ;;
+            *) shift ;;
         esac
     done
 
@@ -444,7 +448,10 @@ cmd_start() {
             rm -rf "$GO_DIR/sample/node${i}/back_up_write"
         done
         log_step "Xóa logs..."
-        rm -rf "$LOG_BASE"/node_* 2>/dev/null || true
+        for i in $(seq 0 $((NUM_NODES - 1))); do
+            if [ "$i" = "$exclude_node" ]; then continue; fi
+            rm -rf "$LOG_BASE/node_${i}" 2>/dev/null || true
+        done
         log_info "✅ Dọn sạch hoàn tất"
     fi
 
@@ -453,6 +460,7 @@ cmd_start() {
     log_info "Go Master phải sẵn sàng TRƯỚC để nhận block từ Rust"
 
     for i in $(seq 0 $((NUM_NODES - 1))); do
+        if [ "$i" = "$exclude_node" ]; then continue; fi
         start_go_master "$i"
         if [ $i -lt $((NUM_NODES - 1)) ]; then
             sleep "$NODE_DELAY"
@@ -463,6 +471,7 @@ cmd_start() {
     log_info "Chờ Go Master tạo UDS socket..."
     local master_ready=true
     for i in $(seq 0 $((NUM_NODES - 1))); do
+        if [ "$i" = "$exclude_node" ]; then continue; fi
         if ! wait_for_socket "$(get_master_sock $i)" "$SOCKET_TIMEOUT" "Go-Master-${i}"; then
             master_ready=false
         fi
@@ -480,6 +489,7 @@ cmd_start() {
     log_info "Go Sub kết nối đến Go Master để nhận bản sao state"
 
     for i in $(seq 0 $((NUM_NODES - 1))); do
+        if [ "$i" = "$exclude_node" ]; then continue; fi
         start_go_sub "$i"
         if [ $i -lt $((NUM_NODES - 1)) ]; then
             sleep "$NODE_DELAY"
@@ -499,10 +509,12 @@ cmd_start() {
     # (Đã fix lỗi mixup Block vs GEI trong consensus_node.rs)
     log_step "Xóa Rust executor_state (tránh recovery gap)..."
     for i in $(seq 0 $((NUM_NODES - 1))); do
+        if [ "$i" = "$exclude_node" ]; then continue; fi
         rm -rf "$RUST_DIR/config/storage/node_${i}/executor_state"
     done
 
     for i in $(seq 0 $((NUM_NODES - 1))); do
+        if [ "$i" = "$exclude_node" ]; then continue; fi
         start_rust "$i"
         if [ $i -lt $((NUM_NODES - 1)) ]; then
             sleep "$NODE_DELAY"

@@ -5,13 +5,13 @@ Wants=metanode-rust@%i.service
 
 [Service]
 Type=simple
-User=abc
-WorkingDirectory=/home/abc/chain-n/mtn-simple-2025/cmd/simple_chain
-ExecStart=/home/abc/chain-n/mtn-simple-2025/cmd/simple_chain/simple_chain -config=config-master-node%i.json
+User={{USER}}
+WorkingDirectory={{GO_WORKDIR}}/cmd/simple_chain
+ExecStart={{GO_WORKDIR}}/cmd/simple_chain/simple_chain -config=config-master-node%i.json
 
 # Environment
 Environment=GOTOOLCHAIN=go1.23.5
-Environment=GOMEMLIMIT=4GiB
+Environment=GOMEMLIMIT={{GOMEMLIMIT}}
 Environment=XAPIAN_BASE_PATH=sample/node%i/data/data/xapian_node
 
 # File descriptors
@@ -24,8 +24,8 @@ StartLimitIntervalSec=300
 StartLimitBurst=10
 
 # Logging
-StandardOutput=append:/home/abc/chain-n/mtn-consensus/metanode/logs/node_%i/go-master-stdout.log
-StandardError=append:/home/abc/chain-n/mtn-consensus/metanode/logs/node_%i/go-master-stdout.log
+StandardOutput=append:{{RUST_WORKDIR}}/logs/node_%i/go-master-stdout.log
+StandardError=append:{{RUST_WORKDIR}}/logs/node_%i/go-master-stdout.log
 
 [Install]
 WantedBy=multi-user.target

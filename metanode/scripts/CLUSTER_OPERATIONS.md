@@ -174,6 +174,19 @@ Nếu bạn có thay đổi liên quan đến C++ EVM precompile và muốn **Bu
 ./mtn-orchestrator.sh restart --fresh --build-all
 ```
 
+### Restart loại trừ một node (giả lập node sập/catch-up)
+
+Nếu bạn muốn khởi động hệ thống nhưng **không chạy một node cụ thể đồng bộ** (ví dụ node 4) nhằm phục vụ test cơ chế catch-up (sync block), hãy thêm tùy chọn `--exclude-node <ID>`. Khi dùng cờ này cùng với `--fresh`, dữ liệu và log ổ cứng của node bị loại trừ sẽ **không bị xóa**.
+
+```bash
+./mtn-orchestrator.sh restart --fresh --build-all --exclude-node 4
+```
+
+Khi hệ thống 4 node kia đã hoạt động hoàn tất, bạn có thể khởi động riêng node 4 sau đó bằng lệnh:
+```bash
+./mtn-orchestrator.sh start-node 4
+```
+
 > 💡 **Mẹo**: Các lệnh build (`cargo build`, `go build`, `make`) đều được thiết kế theo cơ chế **incremental compilation** (build tăng dần). Nên kể cả khi bạn thêm cờ `--build` hoặc `--build-all`, nếu code không bị thay đổi thì quá trình vượt qua bước build vẫn sẽ cực kỳ nhanh do không bị compile lại từ đầu. Gần như có thể dùng cờ này một cách thoải mái.
 ---
 
@@ -354,11 +367,27 @@ cat mtn-simple-2025/cmd/simple_chain/sample/node0/back_up/last_block_backup.json
 | `restart --fresh --build-all` | Khởi động mới và kiểm tra/Build lại toàn bộ (EVM, Go, Rust) |
 | `start --build` | Khởi động giữ data cũ nhưng có Build lại Go và Rust |
 | `start --build-all` | Khởi động giữ data cũ nhưng có Build lại toàn bộ (EVM, Go, Rust) |
+| `<cmd> --exclude-node <N>`| (Dùng kèm start/restart) Không wipe data và không khởi động node N |
 | `status` | Hiển thị trạng thái cluster |
 | `logs <N> [layer]` | Xem log node N |
 | `stop-node <N>` | Tắt 1 node |
 | `start-node <N>` | Khởi động 1 node |
 | `restart-node <N>` | Restart 1 node |
+
+---
+
+## 9. Đưa Hệ Thống Lên Production (Mainnet/Testnet)
+
+Kịch bản `mtn-orchestrator.sh` ở trên được thiết kế dành cho **Môi Trường Testing/Dev** chạy dưới các process rời rạc / Tmux để dễ kiểm thử (Catch-up, Restart, Crash Safety, Wipe block...). Nó không phù hợp để làm script giữ core chạy liên tục dài ngày cho máy chủ Mainnet.
+
+Để đi vào môi trường Production thực tế, mời bạn tham khảo và dùng bộ công cụ cấu hình chuyên biệt ở thư mục `deploy/`:
+👉 **[Xem Hướng Dẫn Vận Hành Môi Trường Production 🚀](../deploy/README.md)**
+
+Bộ công cụ Production này sẽ giải quyết:
+- Chạy thông qua Systemd tự khởi động sau Server Reboot.
+- Tự động Xoay nén các tập tin Log, chống sập/đầy ổ cứng.
+- Cân bằng và Bảo Mật RPC qua Nginx Proxy.
+- Có Dashboard Giám Sát Grafana, cảnh báo Crash.
 
 ---
 

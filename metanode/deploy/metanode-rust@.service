@@ -5,9 +5,9 @@ After=metanode-go-sub@%i.service
 
 [Service]
 Type=simple
-User=abc
-WorkingDirectory=/home/abc/chain-n/mtn-consensus/metanode
-ExecStart=/home/abc/chain-n/mtn-consensus/metanode/target/release/metanode --config-path config/node_%i.toml
+User={{USER}}
+WorkingDirectory={{RUST_WORKDIR}}
+ExecStart={{RUST_WORKDIR}}/target/release/metanode --config-path config/node_%i.toml
 
 # Environment
 Environment=RUST_LOG=info
@@ -23,8 +23,8 @@ StartLimitIntervalSec=300
 StartLimitBurst=10
 
 # Logging
-StandardOutput=append:/home/abc/chain-n/mtn-consensus/metanode/logs/node_%i/rust.log
-StandardError=append:/home/abc/chain-n/mtn-consensus/metanode/logs/node_%i/rust.log
+StandardOutput=append:{{RUST_WORKDIR}}/logs/node_%i/rust.log
+StandardError=append:{{RUST_WORKDIR}}/logs/node_%i/rust.log
 
 [Install]
 WantedBy=multi-user.target
