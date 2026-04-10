@@ -376,6 +376,21 @@ cat mtn-simple-2025/cmd/simple_chain/sample/node0/back_up/last_block_backup.json
 
 ---
 
+## 9. Đưa Hệ Thống Lên Production (Mainnet/Testnet)
+
+Kịch bản `mtn-orchestrator.sh` ở trên được thiết kế dành cho **Môi Trường Testing/Dev** chạy dưới các process rời rạc / Tmux để dễ kiểm thử (Catch-up, Restart, Crash Safety, Wipe block...). Nó không phù hợp để làm script giữ core chạy liên tục dài ngày cho máy chủ Mainnet.
+
+Để đi vào môi trường Production thực tế, mời bạn tham khảo và dùng bộ công cụ cấu hình chuyên biệt ở thư mục `deploy/`:
+👉 **[Xem Hướng Dẫn Vận Hành Môi Trường Production 🚀](../deploy/README.md)**
+
+Bộ công cụ Production này sẽ giải quyết:
+- Chạy thông qua Systemd tự khởi động sau Server Reboot.
+- Tự động Xoay nén các tập tin Log, chống sập/đầy ổ cứng.
+- Cân bằng và Bảo Mật RPC qua Nginx Proxy.
+- Có Dashboard Giám Sát Grafana, cảnh báo Crash.
+
+---
+
 ## Cấu trúc thư mục dữ liệu
 
 ```
