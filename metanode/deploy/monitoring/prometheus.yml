@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # MetaNode Go Execution Engine Metrics
+  - job_name: "metanode-go-execution"
+    static_configs:
+      - targets: 
+        # By default Go master/sub nodes expose metrics on a configurable port
+        # Please ensure your simple_chain config has MetricsEnabled/MetricsPort configured
+        - "localhost:9091" # Node 0
+        - "localhost:9092" # Node 1
+        - "localhost:9093" # Node 2
+
+  # MetaNode Rust Consensus Metrics (mysten-metrics)
+  - job_name: "metanode-rust-consensus"
+    static_configs:
+      - targets:
+        # mysten-metrics typically exposes prometheus metrics
+        - "localhost:9184" # Node 0
+        - "localhost:9185" # Node 1
+        - "localhost:9186" # Node 2
