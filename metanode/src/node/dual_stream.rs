@@ -51,10 +51,7 @@ pub struct DualStreamController {
 
 impl DualStreamController {
     /// Create a new DualStreamController.
-    pub fn new(
-        executor_client: Arc<ExecutorClient>,
-        peer_rpc_addresses: Vec<String>,
-    ) -> Self {
+    pub fn new(executor_client: Arc<ExecutorClient>, peer_rpc_addresses: Vec<String>) -> Self {
         Self {
             executor_client,
             peer_rpc_addresses,
@@ -88,15 +85,13 @@ impl DualStreamController {
             );
 
             if peer_addrs.is_empty() {
-                warn!("⚠️ [DUAL-STREAM] No peers configured — block sync stream exiting immediately");
+                warn!(
+                    "⚠️ [DUAL-STREAM] No peers configured — block sync stream exiting immediately"
+                );
                 return;
             }
 
-            let catchup = CatchupManager::new(
-                executor.clone(),
-                String::new(),
-                peer_addrs.clone(),
-            );
+            let catchup = CatchupManager::new(executor.clone(), String::new(), peer_addrs.clone());
 
             // State tracking
             let mut consensus_driven_streak: u32 = 0;
@@ -128,7 +123,8 @@ impl DualStreamController {
                     }
                     Err(e) => {
                         consecutive_errors += 1;
-                        if consecutive_errors > 60 { // 60 * 500ms = 30s
+                        if consecutive_errors > 60 {
+                            // 60 * 500ms = 30s
                             warn!(
                                 "⚠️ [DUAL-STREAM] Too many Go query errors ({}): {}. Stopping.",
                                 consecutive_errors, e
@@ -159,22 +155,17 @@ impl DualStreamController {
                 // 3. ACTIVE SYNC: Fetch blocks from peers if Go is behind network
                 let mut peer_synced: u64 = 0;
                 if go_block < net_block {
-                    let fetch_to = std::cmp::min(
-                        go_block + FETCH_BATCH_SIZE,
-                        net_block,
-                    );
+                    let fetch_to = std::cmp::min(go_block + FETCH_BATCH_SIZE, net_block);
 
-                    if let Ok(synced) = catchup
-                        .sync_blocks_from_peers(go_block, fetch_to)
-                        .await
-                    {
+                    if let Ok(synced) = catchup.sync_blocks_from_peers(go_block, fetch_to).await {
                         peer_synced = synced;
                         total_peer_synced += synced;
                     }
                 }
 
                 let go_block_advanced = go_block != last_go_block;
-                let fully_caught_up_and_idle = go_block >= net_block && peer_synced == 0 && !go_block_advanced;
+                let fully_caught_up_and_idle =
+                    go_block >= net_block && peer_synced == 0 && !go_block_advanced;
 
                 // 4. CONVERGENCE CHECK: evaluate source of advancement or idle stability
                 if go_block_advanced || fully_caught_up_and_idle {
@@ -182,14 +173,21 @@ impl DualStreamController {
                         // Advancement came purely from consensus, OR we are caught up and idle
                         consensus_driven_streak += 1;
                         if consensus_driven_streak == 1
-                            || consensus_driven_streak % 5 == 0
+                            || consensus_driven_streak.is_multiple_of(5)
                             || consensus_driven_streak >= STABLE_THRESHOLD - 2
                         {
-                            let reason = if fully_caught_up_and_idle { "Idle stability" } else { "Consensus driving" };
+                            let reason = if fully_caught_up_and_idle {
+                                "Idle stability"
+                            } else {
+                                "Consensus driving"
+                            };
                             info!(
                                 "🏛️ [DUAL-STREAM] {}! streak={}/{} (Go: {} → {})",
-                                reason, consensus_driven_streak, STABLE_THRESHOLD,
-                                last_go_block, go_block
+                                reason,
+                                consensus_driven_streak,
+                                STABLE_THRESHOLD,
+                                last_go_block,
+                                go_block
                             );
                         }
                     } else {
@@ -207,7 +205,8 @@ impl DualStreamController {
                 }
 
                 // 5. Log progress periodically
-                if total_rounds % 20 == 0 { // Every 10 seconds (20 * 500ms)
+                if total_rounds.is_multiple_of(20) {
+                    // Every 10 seconds (20 * 500ms)
                     let gap = net_block.saturating_sub(go_block);
                     info!(
                         "🔄 [DUAL-STREAM] round={}: Go={}, Net={}, gap={}, epoch={}, commit={}, streak={}, peer_total={}",

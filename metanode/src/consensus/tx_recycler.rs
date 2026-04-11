@@ -181,7 +181,7 @@ impl TxRecycler {
         stale_txs
     }
 
-// Get current stats
+    // Get current stats
     pub async fn stats(&self) -> (usize, u64, u64, u64) {
         let pending = self.pending.lock().await;
         let submitted = *self.total_submitted.lock().await;
@@ -199,26 +199,41 @@ impl TxRecycler {
             let mut loaded_count = 0;
             while offset + 32 < data.len() {
                 let mut hash = [0u8; 32];
-                hash.copy_from_slice(&data[offset..offset+32]);
+                hash.copy_from_slice(&data[offset..offset + 32]);
                 offset += 32;
-                
-                if offset + 4 > data.len() { break; }
-                let tx_len = u32::from_le_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]) as usize;
+
+                if offset + 4 > data.len() {
+                    break;
+                }
+                let tx_len = u32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]) as usize;
                 offset += 4;
-                
-                if offset + tx_len > data.len() { break; }
-                let tx_data = data[offset..offset+tx_len].to_vec();
+
+                if offset + tx_len > data.len() {
+                    break;
+                }
+                let tx_data = data[offset..offset + tx_len].to_vec();
                 offset += tx_len;
-                
-                pending.insert(hash, PendingTx {
-                    data: tx_data,
-                    submitted_at: Instant::now(), // Reset timer on startup
-                    recycle_count: 0,
-                });
+
+                pending.insert(
+                    hash,
+                    PendingTx {
+                        data: tx_data,
+                        submitted_at: Instant::now(), // Reset timer on startup
+                        recycle_count: 0,
+                    },
+                );
                 loaded_count += 1;
             }
             if loaded_count > 0 {
-                info!("💾 [TX RECYCLER] Hydrated {} pending transactions from disk", loaded_count);
+                info!(
+                    "💾 [TX RECYCLER] Hydrated {} pending transactions from disk",
+                    loaded_count
+                );
             }
         }
     }
@@ -227,15 +242,17 @@ impl TxRecycler {
     pub async fn save_to_disk(&self, storage_path: &str) {
         let pending = self.pending.lock().await;
         // Don't save if empty to save I/O
-        if pending.is_empty() { return; }
-        
+        if pending.is_empty() {
+            return;
+        }
+
         let mut data = Vec::new();
         for (hash, ptx) in pending.iter() {
             data.extend_from_slice(hash);
             data.extend_from_slice(&(ptx.data.len() as u32).to_le_bytes());
             data.extend_from_slice(&ptx.data);
         }
-        
+
         let file_path = format!("{}/tx_recycler_pending.dat", storage_path);
         let temp_path = format!("{}.tmp", file_path);
         if std::fs::write(&temp_path, data).is_ok() {

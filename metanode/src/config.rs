@@ -320,7 +320,7 @@ impl NodeConfig {
                 leader_timeout_ms: None,
                 min_round_delay_ms: Some(50), // TPS OPTIMIZATION: Reduced from 200ms to 50ms to accelerate DAG linearizer latency
                 time_based_epoch_change: true, // Enabled by default
-                epoch_duration_seconds: None,  // DEPRECATED: loaded from Go via protobuf now
+                epoch_duration_seconds: None, // DEPRECATED: loaded from Go via protobuf now
                 max_clock_drift_seconds: 5,
                 enable_ntp_sync: false, // Disabled by default (enable for production)
                 ntp_servers: default_ntp_servers(),

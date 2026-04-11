@@ -121,6 +121,7 @@ pub(crate) struct CommitSyncer<C: NetworkClient> {
 }
 
 impl<C: NetworkClient> CommitSyncer<C> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         context: Arc<Context>,
         core_thread_dispatcher: Arc<dyn CoreThreadDispatcher>,
@@ -269,7 +270,7 @@ impl<C: NetworkClient> CommitSyncer<C> {
         if local_commit_index == 0 && quorum_commit_index > 200 {
             // SNAPSHOT RESTORE: Fast-forward to the current quorum. Historical
             // commits can never be verified (DAG was wiped — vote blocks reference
-            // digests that don't exist). The node will only process NEW commits 
+            // digests that don't exist). The node will only process NEW commits
             // after it joins consensus via the proposer cold-start exemption.
             let fast_forward_to = quorum_commit_index;
             if self.synced_commit_index < fast_forward_to {
@@ -347,21 +348,21 @@ impl<C: NetworkClient> CommitSyncer<C> {
         }
 
         // Log significant lag warnings (throttled)
-        if lag > MODERATE_LAG_THRESHOLD {
-            if now.duration_since(self.last_sync_mode_log_at) >= Duration::from_secs(10) {
-                if is_severe_lag {
-                    tracing::error!(
+        if lag > MODERATE_LAG_THRESHOLD
+            && now.duration_since(self.last_sync_mode_log_at) >= Duration::from_secs(10)
+        {
+            if is_severe_lag {
+                tracing::error!(
                         "🚨 [LAG-DETECTION] Node is severely lagging: lag={} commits ({}% behind quorum), local_commit={}, quorum_commit={}, synced_commit={}",
                         lag, lag_percentage, local_commit_index, quorum_commit_index, self.synced_commit_index
                     );
-                } else {
-                    tracing::warn!(
+            } else {
+                tracing::warn!(
                         "⚠️  [LAG-DETECTION] Node is lagging significantly: lag={} commits ({}% behind quorum), local_commit={}, quorum_commit={}, synced_commit={}",
                         lag, lag_percentage, local_commit_index, quorum_commit_index, self.synced_commit_index
                     );
-                }
-                self.last_sync_mode_log_at = now;
             }
+            self.last_sync_mode_log_at = now;
         }
 
         if now.duration_since(self.last_schedule_log_at) >= min_interval

@@ -149,7 +149,7 @@ impl ConsensusNode {
             let max_retries = 30;
             let retry_interval = std::time::Duration::from_secs(2);
             let mut block_num = 0u64;
-            
+
             for attempt in 1..=max_retries {
                 match executor_client.get_last_block_number().await {
                     Ok((n, _is_ready)) => {
@@ -177,18 +177,20 @@ impl ConsensusNode {
                             tokio::time::sleep(retry_interval).await;
                         } else {
                             warn!("⚠️ [STARTUP] Failed to fetch latest block from Go after {} attempts: {}. Attempting to read persisted value.", max_retries, e);
-                            block_num = super::executor_client::read_last_block_number(&config.storage_path)
-                                .await
-                                .unwrap_or(0);
+                            block_num = super::executor_client::read_last_block_number(
+                                &config.storage_path,
+                            )
+                            .await
+                            .unwrap_or(0);
                         }
                     }
                 }
             }
-            
+
             if block_num == 0 {
                 warn!("⚠️ [STARTUP] Go still reporting block=0 after {} retries. This may be a fresh node or Go failed to load snapshot data.", max_retries);
             }
-            
+
             block_num
         };
 
@@ -211,7 +213,7 @@ impl ConsensusNode {
                 let max_epoch_retries = 30;
                 let retry_interval = std::time::Duration::from_secs(2);
                 let mut final_epoch = 0u64;
-                
+
                 for attempt in 1..=max_epoch_retries {
                     match executor_client.get_current_epoch().await {
                         Ok(e) => {
@@ -240,13 +242,14 @@ impl ConsensusNode {
                             } else {
                                 return Err(anyhow::anyhow!(
                                     "Failed to fetch epoch from Go after {} attempts: {}",
-                                    max_epoch_retries, e
+                                    max_epoch_retries,
+                                    e
                                 ));
                             }
                         }
                     }
                 }
-                
+
                 if final_epoch == 0 && latest_block_number > 0 {
                     warn!(
                         "⚠️ [SYNC-ONLY STARTUP] Go still reporting epoch=0 despite block={}. Snapshot data may not have loaded correctly.",
@@ -260,7 +263,7 @@ impl ConsensusNode {
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to fetch current epoch from Go: {}", e))?
             };
-            
+
             info!(
                 "📋 [SYNC-ONLY STARTUP] Using LOCAL Go epoch {} (skipping peer discovery to prevent deadlock)",
                 epoch
@@ -346,11 +349,7 @@ impl ConsensusNode {
             if config.epochs_to_keep > 0 {
                 // Smart cleanup: only delete epochs older than epochs_to_keep
                 // Keep recent epochs so THIS node can serve historical data to lagging peers
-                let keep_from = if go_epoch >= config.epochs_to_keep as u64 {
-                    go_epoch - config.epochs_to_keep as u64
-                } else {
-                    0
-                };
+                let keep_from = go_epoch.saturating_sub(config.epochs_to_keep as u64);
                 let epochs_dir = storage_path.join("epochs");
                 if epochs_dir.exists() {
                     if let Ok(entries) = std::fs::read_dir(&epochs_dir) {
@@ -380,7 +379,7 @@ impl ConsensusNode {
                 local_epoch, go_epoch
             );
             warn!("🗑️ [CATCHUP] Clearing ALL local epochs to resync with network.");
-            if let Ok(entries) = std::fs::read_dir(&storage_path.join("epochs")) {
+            if let Ok(entries) = std::fs::read_dir(storage_path.join("epochs")) {
                 for entry in entries.flatten() {
                     if let Ok(path) = entry.path().canonicalize() {
                         info!("🗑️ [CATCHUP] Removing {:?}", path);
@@ -415,126 +414,173 @@ impl ConsensusNode {
             executor_client.clone()
         };
 
-        let (current_epoch, epoch_timestamp_ms, boundary_block, validators, epoch_duration_from_go, boundary_gei) =
-            match peer_executor_client
-                .get_epoch_boundary_data(current_epoch)
-                .await
-            {
-                Ok((epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)) => {
-                    info!(
+        let (
+            current_epoch,
+            epoch_timestamp_ms,
+            boundary_block,
+            validators,
+            epoch_duration_from_go,
+            boundary_gei,
+        ) = match peer_executor_client
+            .get_epoch_boundary_data(current_epoch)
+            .await
+        {
+            Ok((epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)) => {
+                info!(
                         "✅ [STARTUP] Got epoch boundary data for epoch {} from Go (epoch_duration={}s, boundary_gei={})",
                         epoch, epoch_dur, boundary_gei_val
                     );
-                    (epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)
-                }
-                Err(e) => {
-                    warn!(
+                (
+                    epoch,
+                    timestamp,
+                    boundary_blk,
+                    vals,
+                    epoch_dur,
+                    boundary_gei_val,
+                )
+            }
+            Err(e) => {
+                warn!(
                         "⚠️ [STARTUP] Failed to get epoch boundary for epoch {}: {}. Trying fallbacks...",
                         current_epoch, e
                     );
 
-                    // SNAPSHOT RESTORE FIX (2026-03-19):
-                    // After snapshot restore, Go may have stale epoch data (epoch=0) while
-                    // peers are at epoch N. Instead of falling back to local Go's stale epoch,
-                    // query peers FIRST for epoch boundary data.
-                    let local_epoch = executor_client.get_current_epoch().await.unwrap_or(0);
-                    
-                    if local_epoch < current_epoch && !config.peer_rpc_addresses.is_empty() {
-                        warn!(
+                // SNAPSHOT RESTORE FIX (2026-03-19):
+                // After snapshot restore, Go may have stale epoch data (epoch=0) while
+                // peers are at epoch N. Instead of falling back to local Go's stale epoch,
+                // query peers FIRST for epoch boundary data.
+                let local_epoch = executor_client.get_current_epoch().await.unwrap_or(0);
+
+                if local_epoch < current_epoch && !config.peer_rpc_addresses.is_empty() {
+                    warn!(
                             "🔄 [STARTUP] Local Go epoch {} < peer epoch {}. Go may have stale data (snapshot restore?). Querying peers for epoch boundary...",
                             local_epoch, current_epoch
                         );
-                        
-                        // Try each peer for epoch boundary data at the CORRECT (peer) epoch
-                        let mut peer_boundary = None;
-                        for peer_addr in &config.peer_rpc_addresses {
-                            match crate::network::peer_rpc::query_peer_epoch_boundary_data(
-                                peer_addr, current_epoch,
-                            ).await {
-                                Ok(boundary) => {
-                                    info!(
+
+                    // Try each peer for epoch boundary data at the CORRECT (peer) epoch
+                    let mut peer_boundary = None;
+                    for peer_addr in &config.peer_rpc_addresses {
+                        match crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                            peer_addr,
+                            current_epoch,
+                        )
+                        .await
+                        {
+                            Ok(boundary) => {
+                                info!(
                                         "✅ [STARTUP] Got epoch {} boundary from peer {}: {} validators, boundary_block={}, boundary_gei={}",
                                         current_epoch, peer_addr, boundary.validators.len(), boundary.boundary_block, boundary.boundary_gei
                                     );
-                                    peer_boundary = Some(boundary);
-                                    break;
-                                }
-                                Err(pe) => {
-                                    warn!("⚠️ [STARTUP] Peer {} epoch {} boundary failed: {}", peer_addr, current_epoch, pe);
-                                }
+                                peer_boundary = Some(boundary);
+                                break;
+                            }
+                            Err(pe) => {
+                                warn!(
+                                    "⚠️ [STARTUP] Peer {} epoch {} boundary failed: {}",
+                                    peer_addr, current_epoch, pe
+                                );
                             }
                         }
-                        
-                        if let Some(boundary) = peer_boundary {
-                            use super::executor_client::proto::ValidatorInfo as ProtoVI;
-                            let validators: Vec<ProtoVI> = boundary.validators.into_iter().map(|v| {
-                                ProtoVI {
-                                    address: v.address,
-                                    stake: v.stake.to_string(),
-                                    name: v.name,
-                                    authority_key: v.authority_key,
-                                    protocol_key: v.protocol_key,
-                                    network_key: v.network_key,
-                                    description: String::new(),
-                                    website: String::new(),
-                                    image: String::new(),
-                                    commission_rate: 0,
-                                    min_self_delegation: String::new(),
-                                    accumulated_rewards_per_share: String::new(),
-                                    p2p_address: String::new(),
-                                }
-                            }).collect();
-                            (current_epoch, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64, boundary.boundary_gei)
-                        } else {
-                            warn!("⚠️ [STARTUP] No peers returned epoch {} boundary. Falling back to local Go epoch {}.", current_epoch, local_epoch);
-                            // Fall through to local Go fallback below
-                            match executor_client.get_epoch_boundary_data(local_epoch).await {
-                                Ok((epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)) => {
-                                    (epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)
-                                }
-                                Err(e2) => {
-                                    return Err(anyhow::anyhow!(
+                    }
+
+                    if let Some(boundary) = peer_boundary {
+                        use super::executor_client::proto::ValidatorInfo as ProtoVI;
+                        let validators: Vec<ProtoVI> = boundary
+                            .validators
+                            .into_iter()
+                            .map(|v| ProtoVI {
+                                address: v.address,
+                                stake: v.stake.to_string(),
+                                name: v.name,
+                                authority_key: v.authority_key,
+                                protocol_key: v.protocol_key,
+                                network_key: v.network_key,
+                                description: String::new(),
+                                website: String::new(),
+                                image: String::new(),
+                                commission_rate: 0,
+                                min_self_delegation: String::new(),
+                                accumulated_rewards_per_share: String::new(),
+                                p2p_address: String::new(),
+                            })
+                            .collect();
+                        (
+                            current_epoch,
+                            boundary.timestamp_ms,
+                            boundary.boundary_block,
+                            validators,
+                            900u64,
+                            boundary.boundary_gei,
+                        )
+                    } else {
+                        warn!("⚠️ [STARTUP] No peers returned epoch {} boundary. Falling back to local Go epoch {}.", current_epoch, local_epoch);
+                        // Fall through to local Go fallback below
+                        match executor_client.get_epoch_boundary_data(local_epoch).await {
+                            Ok((
+                                epoch,
+                                timestamp,
+                                boundary_blk,
+                                vals,
+                                epoch_dur,
+                                boundary_gei_val,
+                            )) => (
+                                epoch,
+                                timestamp,
+                                boundary_blk,
+                                vals,
+                                epoch_dur,
+                                boundary_gei_val,
+                            ),
+                            Err(e2) => {
+                                return Err(anyhow::anyhow!(
                                         "Failed to get epoch boundary from peers AND local Go. Peer epoch={} error: {}, Local epoch={} error: {}",
                                         current_epoch, e, local_epoch, e2
                                     ));
-                                }
                             }
                         }
-                    } else {
-                        // Local epoch matches or no peers — use local Go
-                        info!(
-                            "📊 [STARTUP] Using local Go epoch {} for boundary data",
-                            local_epoch
-                        );
+                    }
+                } else {
+                    // Local epoch matches or no peers — use local Go
+                    info!(
+                        "📊 [STARTUP] Using local Go epoch {} for boundary data",
+                        local_epoch
+                    );
 
-                        match executor_client.get_epoch_boundary_data(local_epoch).await {
-                            Ok((epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)) => {
-                                info!(
+                    match executor_client.get_epoch_boundary_data(local_epoch).await {
+                        Ok((epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)) => {
+                            info!(
                                     "✅ [STARTUP] Got epoch boundary data for local epoch {} (epoch_duration={}s, boundary_gei={})",
                                     epoch, epoch_dur, boundary_gei_val
                                 );
-                                (epoch, timestamp, boundary_blk, vals, epoch_dur, boundary_gei_val)
-                            }
-                            Err(e2) => {
-                                warn!(
+                            (
+                                epoch,
+                                timestamp,
+                                boundary_blk,
+                                vals,
+                                epoch_dur,
+                                boundary_gei_val,
+                            )
+                        }
+                        Err(e2) => {
+                            warn!(
                                     "⚠️ [STARTUP] No epoch boundary available (local epoch {} error: {}). Trying genesis validators...",
                                     local_epoch, e2
                                 );
-                                // Try local Go first
-                                match executor_client.get_validators_at_block(0).await {
-                                    Ok((genesis_validators, _genesis_epoch, _)) => {
-                                        (0u64, 0u64, 0u64, genesis_validators, 900u64, 0u64)
-                                    }
-                                    Err(e3) => {
-                                        // LOCAL GO FAILED — query peers for epoch 0
-                                        warn!(
+                            // Try local Go first
+                            match executor_client.get_validators_at_block(0).await {
+                                Ok((genesis_validators, _genesis_epoch, _)) => {
+                                    (0u64, 0u64, 0u64, genesis_validators, 900u64, 0u64)
+                                }
+                                Err(e3) => {
+                                    // LOCAL GO FAILED — query peers for epoch 0
+                                    warn!(
                                             "⚠️ [STARTUP] Local Go genesis validators failed: {}. Querying peers...",
                                             e3
                                         );
-                                        if !config.peer_rpc_addresses.is_empty() {
-                                            let mut peer_validators = None;
-                                            for peer_addr in &config.peer_rpc_addresses {
-                                                match crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                                    if !config.peer_rpc_addresses.is_empty() {
+                                        let mut peer_validators = None;
+                                        for peer_addr in &config.peer_rpc_addresses {
+                                            match crate::network::peer_rpc::query_peer_epoch_boundary_data(
                                                     peer_addr, 0,
                                                 ).await {
                                                     Ok(boundary) => {
@@ -549,46 +595,55 @@ impl ConsensusNode {
                                                         warn!("⚠️ [STARTUP] Peer {} epoch 0 boundary failed: {}", peer_addr, pe);
                                                     }
                                                 }
-                                            }
-                                            if let Some(boundary) = peer_validators {
-                                                use super::executor_client::proto::ValidatorInfo as ProtoVI;
-                                                let validators: Vec<ProtoVI> = boundary.validators.into_iter().map(|v| {
-                                                    ProtoVI {
-                                                        address: v.address,
-                                                        stake: v.stake.to_string(),
-                                                        name: v.name,
-                                                        authority_key: v.authority_key,
-                                                        protocol_key: v.protocol_key,
-                                                        network_key: v.network_key,
-                                                        description: String::new(),
-                                                        website: String::new(),
-                                                        image: String::new(),
-                                                        commission_rate: 0,
-                                                        min_self_delegation: String::new(),
-                                                        accumulated_rewards_per_share: String::new(),
-                                                        p2p_address: String::new(),
-                                                    }
-                                                }).collect();
-                                                (0u64, boundary.timestamp_ms, boundary.boundary_block, validators, 900u64, boundary.boundary_gei)
-                                            } else {
-                                                return Err(anyhow::anyhow!(
+                                        }
+                                        if let Some(boundary) = peer_validators {
+                                            use super::executor_client::proto::ValidatorInfo as ProtoVI;
+                                            let validators: Vec<ProtoVI> = boundary
+                                                .validators
+                                                .into_iter()
+                                                .map(|v| ProtoVI {
+                                                    address: v.address,
+                                                    stake: v.stake.to_string(),
+                                                    name: v.name,
+                                                    authority_key: v.authority_key,
+                                                    protocol_key: v.protocol_key,
+                                                    network_key: v.network_key,
+                                                    description: String::new(),
+                                                    website: String::new(),
+                                                    image: String::new(),
+                                                    commission_rate: 0,
+                                                    min_self_delegation: String::new(),
+                                                    accumulated_rewards_per_share: String::new(),
+                                                    p2p_address: String::new(),
+                                                })
+                                                .collect();
+                                            (
+                                                0u64,
+                                                boundary.timestamp_ms,
+                                                boundary.boundary_block,
+                                                validators,
+                                                900u64,
+                                                boundary.boundary_gei,
+                                            )
+                                        } else {
+                                            return Err(anyhow::anyhow!(
                                                     "Failed to fetch genesis validators from both local Go and peers. Local: {}, No peers returned data.",
                                                     e3
                                                 ));
-                                            }
-                                        } else {
-                                            return Err(anyhow::anyhow!(
+                                        }
+                                    } else {
+                                        return Err(anyhow::anyhow!(
                                                 "Failed to fetch genesis validators: {} (no peers configured for fallback)",
                                                 e3
                                             ));
-                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            };
+            }
+        };
 
         info!(
             "📊 [STARTUP] Using epoch boundary data: epoch={}, boundary_block={}, epoch_timestamp={}ms, validators={}, boundary_gei={}",
@@ -712,8 +767,14 @@ impl ConsensusNode {
             return (0, false);
         }
 
-        let (local_go_block, _go_ready) = executor_client.get_last_block_number().await.unwrap_or((0, false));
-        let local_go_gei = executor_client.get_last_global_exec_index().await.unwrap_or(0);
+        let (local_go_block, _go_ready) = executor_client
+            .get_last_block_number()
+            .await
+            .unwrap_or((0, false));
+        let local_go_gei = executor_client
+            .get_last_global_exec_index()
+            .await
+            .unwrap_or(0);
         let storage_path = &config.storage_path;
 
         let (persisted_index, persisted_commit) =
@@ -845,7 +906,7 @@ impl ConsensusNode {
                     .unwrap_or(false)
         };
         let cold_start = Arc::new(std::sync::atomic::AtomicBool::new(
-            !dag_has_history && storage.is_in_committee && storage.current_epoch > 0
+            !dag_has_history && storage.is_in_committee && storage.current_epoch > 0,
         ));
         if !dag_has_history && storage.is_in_committee && storage.current_epoch > 0 {
             warn!(
@@ -896,10 +957,10 @@ impl ConsensusNode {
         .with_cold_start(cold_start.clone())
         .with_cold_start_skip_gei(
             if !dag_has_history && storage.is_in_committee && storage.current_epoch > 0 {
-                u64::MAX  // Block ALL commits — mode_transition processor will handle them
+                u64::MAX // Block ALL commits — mode_transition processor will handle them
             } else {
-                0  // Normal operation — no GEI skip needed
-            }
+                0 // Normal operation — no GEI skip needed
+            },
         )
         .with_storage_path(config.storage_path.clone());
 
@@ -948,7 +1009,6 @@ impl ConsensusNode {
         tokio::spawn(async move {
             executor_client_for_init.initialize_from_go().await;
         });
-
 
         // ♻️ TX Recycler: Create shared instance for tracking and recycling uncommitted TXs
         let tx_recycler = Arc::new(crate::consensus::tx_recycler::TxRecycler::new());
@@ -1006,7 +1066,9 @@ impl ConsensusNode {
         // (before executor_client_for_proc) for backpressure wiring
 
         // Start authority or hold commit_consumer for SyncOnly
-        let start_as_validator = storage.is_in_committee && !storage.is_lagging && (dag_has_history || storage.current_epoch == 0);
+        let start_as_validator = storage.is_in_committee
+            && !storage.is_lagging
+            && (dag_has_history || storage.current_epoch == 0);
         let (authority, commit_consumer_holder) = if start_as_validator {
             info!("🚀 Starting consensus authority node...");
             (
@@ -1044,13 +1106,9 @@ impl ConsensusNode {
             (None, Some(commit_consumer))
         };
 
-        let transaction_client_proxy = if let Some(ref auth) = authority {
-            Some(Arc::new(TransactionClientProxy::new(
+        let transaction_client_proxy = authority.as_ref().map(|auth| Arc::new(TransactionClientProxy::new(
                 auth.transaction_client(),
-            )))
-        } else {
-            None
-        };
+            )));
 
         Ok(ConsensusSetup {
             authority,
@@ -1156,7 +1214,9 @@ impl ConsensusNode {
             } else {
                 NodeMode::SyncOnly
             },
-            cold_start: !consensus.dag_has_history && storage.is_in_committee && storage.current_epoch > 0,
+            cold_start: !consensus.dag_has_history
+                && storage.is_in_committee
+                && storage.current_epoch > 0,
             execution_lock: Arc::new(tokio::sync::RwLock::new(storage.current_epoch)),
             reconfig_state: Arc::new(tokio::sync::RwLock::new(ReconfigState::default())),
             transaction_client_proxy: consensus.transaction_client_proxy,

@@ -51,7 +51,11 @@ pub async fn start_rust_sync_task_with_network(
 
     // CRITICAL FIX: Get Go's last block number to initialize BlockQueue correctly
     // BlockQueue uses global_exec_index, NOT commit_index, so we need go_last_block + 1
-    let go_last_block = executor_client.get_last_block_number().await.map(|(b, _)| b).unwrap_or(0);
+    let go_last_block = executor_client
+        .get_last_block_number()
+        .await
+        .map(|(b, _)| b)
+        .unwrap_or(0);
     let initial_global_exec_index = go_last_block as u32 + 1;
 
     // CRITICAL FIX: Get epoch boundary data to calculate epoch_base_index

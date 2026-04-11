@@ -27,7 +27,7 @@ pub fn calculate_committee_hash(committee: &Committee) -> [u8; 32] {
     let mut hasher = Keccak256::new();
 
     // Hash committee size first
-    hasher.update(&(committee.size() as u64).to_le_bytes());
+    hasher.update((committee.size() as u64).to_le_bytes());
 
     // Collect authorities in index order (deterministic)
     for i in 0..committee.size() {
@@ -35,9 +35,9 @@ pub fn calculate_committee_hash(committee: &Committee) -> [u8; 32] {
         let authority = committee.authority(idx);
 
         // Hash public key
-        hasher.update(&authority.protocol_key.to_bytes());
+        hasher.update(authority.protocol_key.to_bytes());
         // Hash stake
-        hasher.update(&authority.stake.to_le_bytes());
+        hasher.update(authority.stake.to_le_bytes());
         // Hash hostname (network identity)
         hasher.update(authority.hostname.as_bytes());
     }
@@ -80,7 +80,11 @@ impl CommitteeSource {
         );
 
         let local_epoch = local_client.get_current_epoch().await.unwrap_or(0);
-        let local_block = local_client.get_last_block_number().await.map(|(b, _)| b).unwrap_or(0);
+        let local_block = local_client
+            .get_last_block_number()
+            .await
+            .map(|(b, _)| b)
+            .unwrap_or(0);
 
         info!(
             "📊 [COMMITTEE SOURCE] Local Go Master: epoch={}, block={}",
@@ -381,7 +385,7 @@ impl CommitteeSource {
                 ));
             }
 
-            let should_log = attempt == 1 || attempt % LOG_INTERVAL == 0;
+            let should_log = attempt == 1 || attempt.is_multiple_of(LOG_INTERVAL);
 
             match client.get_epoch_boundary_data(target_epoch).await {
                 Ok((epoch, timestamp_ms, boundary_block, validators, _, _)) => {

@@ -271,7 +271,7 @@ mod tests {
         let controller = SyncController::new();
         let rx = controller.get_shutdown_receiver();
         // Initial shutdown signal should be false
-        assert_eq!(*rx.borrow(), false);
+        assert!(!(*rx.borrow()));
     }
 
     #[test]

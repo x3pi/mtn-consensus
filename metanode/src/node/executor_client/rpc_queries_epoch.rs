@@ -43,7 +43,10 @@ impl ExecutorClient {
         request.encode(&mut request_buf)?;
 
         // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+        let (mut conn_guard, _slot) = self
+            .request_pool
+            .get_connection()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             // Write 4-byte length prefix (big-endian)
@@ -114,7 +117,7 @@ impl ExecutorClient {
 
             match response.payload {
                 Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
-                    return Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"));
+                    Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
                 }
                 Some(proto::response::Payload::GetCurrentEpochResponse(
                     get_current_epoch_response,
@@ -124,17 +127,17 @@ impl ExecutorClient {
                         "✅ [EXECUTOR-REQ] Received current epoch from Go: {}",
                         current_epoch
                     );
-                    return Ok(current_epoch);
+                    Ok(current_epoch)
                 }
                 Some(proto::response::Payload::Error(error_msg)) => {
-                    return Err(anyhow::anyhow!("Go returned error: {}", error_msg));
+                    Err(anyhow::anyhow!("Go returned error: {}", error_msg))
                 }
                 _ => {
-                    return Err(anyhow::anyhow!("Unexpected response payload type"));
+                    Err(anyhow::anyhow!("Unexpected response payload type"))
                 }
             }
         } else {
-            return Err(anyhow::anyhow!("Request connection is not available"));
+            Err(anyhow::anyhow!("Request connection is not available"))
         }
     }
 
@@ -158,7 +161,10 @@ impl ExecutorClient {
         request.encode(&mut request_buf)?;
 
         // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+        let (mut conn_guard, _slot) = self
+            .request_pool
+            .get_connection()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             // Write 4-byte length prefix (big-endian)
@@ -229,20 +235,20 @@ impl ExecutorClient {
                             "✅ [EXECUTOR-REQ] Received epoch start timestamp from Go: {}ms",
                             epoch_start_timestamp_ms
                         );
-                        return Ok(epoch_start_timestamp_ms);
+                        Ok(epoch_start_timestamp_ms)
                     }
                     proto::response::Payload::Error(error_msg) => {
-                        return Err(anyhow::anyhow!("Go returned error: {}", error_msg));
+                        Err(anyhow::anyhow!("Go returned error: {}", error_msg))
                     }
                     _ => {
-                        return Err(anyhow::anyhow!("Unexpected response payload type"));
+                        Err(anyhow::anyhow!("Unexpected response payload type"))
                     }
                 }
             } else {
-                return Err(anyhow::anyhow!("Request connection is not available"));
+                Err(anyhow::anyhow!("Request connection is not available"))
             }
         } else {
-            return Err(anyhow::anyhow!("Request connection is not available"));
+            Err(anyhow::anyhow!("Request connection is not available"))
         }
     }
 
@@ -274,7 +280,10 @@ impl ExecutorClient {
         request.encode(&mut request_buf)?;
 
         // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+        let (mut conn_guard, _slot) = self
+            .request_pool
+            .get_connection()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             // Write 4-byte length prefix (big-endian)
@@ -334,7 +343,7 @@ impl ExecutorClient {
 
             match response.payload {
                 Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
-                    return Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"));
+                    Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
                 }
                 Some(proto::response::Payload::EpochBoundaryData(data)) => {
                     info!("✅ [EPOCH BOUNDARY] Received unified epoch boundary data: epoch={}, timestamp_ms={}, boundary_block={}, validator_count={}",
@@ -357,26 +366,26 @@ impl ExecutorClient {
                     } else {
                         900
                     };
-                    return Ok((
+                    Ok((
                         data.epoch,
                         data.epoch_start_timestamp_ms,
                         data.boundary_block,
                         data.validators,
                         epoch_duration,
                         data.boundary_gei,
-                    ));
+                    ))
                 }
                 Some(proto::response::Payload::Error(error_msg)) => {
-                    return Err(anyhow::anyhow!("Go returned error: {}", error_msg));
+                    Err(anyhow::anyhow!("Go returned error: {}", error_msg))
                 }
                 _ => {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "Unexpected response payload type for GetEpochBoundaryData"
-                    ));
+                    ))
                 }
             }
         } else {
-            return Err(anyhow::anyhow!("Request connection is not available"));
+            Err(anyhow::anyhow!("Request connection is not available"))
         }
     }
 }

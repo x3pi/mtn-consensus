@@ -123,14 +123,13 @@ pub async fn reset_fragment_offset(storage_path: &Path) -> Result<()> {
     let persist_path = storage_path
         .join("executor_state")
         .join("fragment_offset.bin");
-    
+
     if persist_path.exists() {
         tokio::fs::remove_file(&persist_path).await?;
         info!("📂 [PERSIST] Reset/Removed fragment_offset file for new epoch.");
     }
     Ok(())
 }
-
 
 /// RS-2: Load persisted fragment offset from disk.
 /// Returns 0 if file doesn't exist (first start or clean epoch).
@@ -256,7 +255,7 @@ mod tests {
         let persist_dir = dir.path().join("executor_state");
         std::fs::create_dir_all(&persist_dir).unwrap();
         let file_path = persist_dir.join("last_sent_index.bin");
-        std::fs::write(&file_path, &[1, 2, 3]).unwrap(); // 3 bytes = corrupted
+        std::fs::write(&file_path, [1, 2, 3]).unwrap(); // 3 bytes = corrupted
 
         let result = load_persisted_last_index(dir.path());
         assert_eq!(result, None);
@@ -268,7 +267,7 @@ mod tests {
         let persist_dir = dir.path().join("executor_state");
         std::fs::create_dir_all(&persist_dir).unwrap();
         let file_path = persist_dir.join("last_sent_index.bin");
-        std::fs::write(&file_path, &999u64.to_le_bytes()).unwrap(); // 8 bytes = legacy
+        std::fs::write(&file_path, 999u64.to_le_bytes()).unwrap(); // 8 bytes = legacy
 
         let result = load_persisted_last_index(dir.path());
         assert_eq!(result, Some((999, 0))); // commit_index defaults to 0

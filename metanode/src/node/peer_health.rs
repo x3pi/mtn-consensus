@@ -12,21 +12,13 @@ use tracing::{debug, warn};
 
 /// Peer health state
 #[allow(dead_code)]
+#[derive(Default)]
 struct PeerHealth {
     consecutive_failures: u32,
     last_failure: Option<Instant>,
     backoff_until: Option<Instant>,
 }
 
-impl Default for PeerHealth {
-    fn default() -> Self {
-        Self {
-            consecutive_failures: 0,
-            last_failure: None,
-            backoff_until: None,
-        }
-    }
-}
 
 /// Tracks health of peers with circuit breaker backoff
 pub struct PeerHealthTracker {

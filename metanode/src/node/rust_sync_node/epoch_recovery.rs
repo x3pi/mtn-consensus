@@ -55,7 +55,7 @@ impl RustSyncNode {
             // If we cannot, we wait and retry. We NEVER send None to Go.
             // ═══════════════════════════════════════════════════════════════════════════════
             let epoch = commit_data.epoch;
-            let leader_author_index = subdag.leader.author.value() as usize;
+            let leader_author_index = subdag.leader.author.value();
 
             let mut retry_count = 0;
             let resolve_start = Instant::now();
@@ -93,7 +93,7 @@ impl RustSyncNode {
                                             let addr_list: Vec<Vec<u8>> = sorted
                                                 .iter()
                                                 .map(|v| {
-                                                    hex::decode(&v.address.trim_start_matches("0x"))
+                                                    hex::decode(v.address.trim_start_matches("0x"))
                                                         .unwrap_or_default()
                                                 })
                                                 .collect();
@@ -127,7 +127,7 @@ impl RustSyncNode {
                                     let addr_list: Vec<Vec<u8>> = sorted_validators
                                         .iter()
                                         .map(|v| {
-                                            hex::decode(&v.address.trim_start_matches("0x"))
+                                            hex::decode(v.address.trim_start_matches("0x"))
                                                 .unwrap_or_default()
                                         })
                                         .collect();
@@ -316,7 +316,12 @@ impl RustSyncNode {
 
                 if let Err(e) = self
                     .executor_client
-                    .advance_epoch(trans.epoch, trans.timestamp_ms, trans.boundary_block, trans.boundary_gei)
+                    .advance_epoch(
+                        trans.epoch,
+                        trans.timestamp_ms,
+                        trans.boundary_block,
+                        trans.boundary_gei,
+                    )
                     .await
                 {
                     warn!(

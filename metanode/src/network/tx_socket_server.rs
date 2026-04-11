@@ -201,7 +201,7 @@ impl TxSocketServer {
                         Self::send_response_string(&mut stream, &error_response).await
                     {
                         error!("❌ [TX FLOW] Failed to send error response: {}", send_err);
-                        return Err(send_err.into());
+                        return Err(send_err);
                     }
                     info!("🔌 [TX FLOW] Closing connection due to frame read error (Go will reconnect)");
                     return Ok(()); // Đóng connection để Go client reconnect, tránh lỗi out-of-sync
@@ -331,7 +331,7 @@ impl TxSocketServer {
                     r#"{"success":false,"error":"Invalid Transactions protobuf layout"}"#;
                 if let Err(e) = Self::send_response_string(&mut stream, error_response).await {
                     error!("❌ [TX FLOW] Failed to send error response: {}", e);
-                    return Err(e.into());
+                    return Err(e);
                 }
                 continue;
             }
@@ -348,12 +348,14 @@ impl TxSocketServer {
             if let Some(ref transitioning) = is_transitioning {
                 if transitioning.load(Ordering::SeqCst) {
                     warn!("⚡ [TX FLOW] Epoch transition in progress. Rejecting {} transactions (Go will retry).", transactions_to_submit.len());
-                    let error_response = r#"{"success":false,"error":"epoch transition in progress, please retry"}"#;
-                    if let Err(e) =
-                        Self::send_response_string(&mut stream, error_response).await
-                    {
-                        error!("❌ [TX FLOW] Failed to send epoch transition response: {}", e);
-                        return Err(e.into());
+                    let error_response =
+                        r#"{"success":false,"error":"epoch transition in progress, please retry"}"#;
+                    if let Err(e) = Self::send_response_string(&mut stream, error_response).await {
+                        error!(
+                            "❌ [TX FLOW] Failed to send epoch transition response: {}",
+                            e
+                        );
+                        return Err(e);
                     }
                     continue;
                 }
@@ -403,7 +405,7 @@ impl TxSocketServer {
                                 Self::send_response_string(&mut stream, &success_response).await
                             {
                                 error!("❌ [TX FLOW] Failed to send queue response: {}", e);
-                                return Err(e.into());
+                                return Err(e);
                             }
                             continue; // Tiếp tục xử lý request tiếp theo
                         }
@@ -438,11 +440,10 @@ impl TxSocketServer {
 
                                 let reject_response = r#"{"success":false,"error":"Node is still initializing, please retry"}"#;
                                 if let Err(e) =
-                                    Self::send_response_string(&mut stream, reject_response)
-                                        .await
+                                    Self::send_response_string(&mut stream, reject_response).await
                                 {
                                     error!("❌ [TX FLOW] Failed to send reject response: {}", e);
-                                    return Err(e.into());
+                                    return Err(e);
                                 }
                                 continue; // Continue to next request
                             }
@@ -462,7 +463,7 @@ impl TxSocketServer {
                                 Self::send_response_string(&mut stream, &error_response).await
                             {
                                 error!("❌ [TX FLOW] Failed to send error response: {}", e);
-                                return Err(e.into());
+                                return Err(e);
                             }
                             continue; // Tiếp tục xử lý request tiếp theo
                         }
@@ -476,7 +477,7 @@ impl TxSocketServer {
                         // TransactionSubmitter.submit() is thread-safe and doesn't need the node lock.
                         let is_epoch_transition = is_transitioning
                             .as_ref()
-                            .map_or(false, |flag| flag.load(Ordering::SeqCst));
+                            .is_some_and(|flag| flag.load(Ordering::SeqCst));
 
                         if is_epoch_transition {
                             // During epoch transition, reject — Go will retry (30x × 2s)
@@ -486,8 +487,11 @@ impl TxSocketServer {
                             if let Err(e) =
                                 Self::send_response_string(&mut stream, error_response).await
                             {
-                                error!("❌ [TX FLOW] Failed to send epoch transition response: {}", e);
-                                return Err(e.into());
+                                error!(
+                                    "❌ [TX FLOW] Failed to send epoch transition response: {}",
+                                    e
+                                );
+                                return Err(e);
                             }
                             continue;
                         }
@@ -518,12 +522,14 @@ impl TxSocketServer {
                     // Epoch transition started between initial check and now — reject, Go will retry
                     warn!("⚠️ [RACE CONDITION] Epoch transition detected before submission. Rejecting {} TXs (Go will retry).",
                         transactions_to_submit.len());
-                    let error_response = r#"{"success":false,"error":"epoch transition in progress, please retry"}"#;
-                    if let Err(e) =
-                        Self::send_response_string(&mut stream, error_response).await
-                    {
-                        error!("❌ [TX FLOW] Failed to send epoch transition response: {}", e);
-                        return Err(e.into());
+                    let error_response =
+                        r#"{"success":false,"error":"epoch transition in progress, please retry"}"#;
+                    if let Err(e) = Self::send_response_string(&mut stream, error_response).await {
+                        error!(
+                            "❌ [TX FLOW] Failed to send epoch transition response: {}",
+                            e
+                        );
+                        return Err(e);
                     }
                     continue;
                 }
@@ -543,7 +549,8 @@ impl TxSocketServer {
             let chunks_list: Vec<Vec<Vec<u8>>> = if total_tx_count <= MAX_BUNDLE_SIZE {
                 vec![transactions_to_submit]
             } else {
-                transactions_to_submit.chunks(MAX_BUNDLE_SIZE)
+                transactions_to_submit
+                    .chunks(MAX_BUNDLE_SIZE)
                     .map(|c| c.to_vec())
                     .collect()
             };
@@ -571,7 +578,7 @@ impl TxSocketServer {
                 match client.submit_no_wait(chunk_vec).await {
                     Ok(included_in_block_rx) => {
                         total_submitted += chunk_len;
-                        
+
                         tokio::spawn(async move {
                             match included_in_block_rx.await {
                                 Ok((block_ref, _indices, status_receiver)) => {
@@ -579,13 +586,15 @@ impl TxSocketServer {
                                         "✅ [TX FLOW] Sub-batch included: {} TXs in block {:?}",
                                         chunk_len, block_ref
                                     );
-                                    
+
                                     tokio::spawn(async move {
                                         match status_receiver.await {
                                             Ok(consensus_core::BlockStatus::Sequenced(block)) => {
                                                 debug!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
                                             }
-                                            Ok(consensus_core::BlockStatus::GarbageCollected(gc_block)) => {
+                                            Ok(consensus_core::BlockStatus::GarbageCollected(
+                                                gc_block,
+                                            )) => {
                                                 warn!("♻️ [TX STATUS] Block {:?} was Garbage Collected. TxRecycler will handle re-submission if necessary.", gc_block);
                                             }
                                             Err(e) => {
@@ -617,24 +626,34 @@ impl TxSocketServer {
                                 if let Ok(node_guard) = tokio::time::timeout(
                                     std::time::Duration::from_millis(500),
                                     node_arc.lock(),
-                                ).await {
-                                    if let Some(real_submitter) = node_guard.transaction_submitter() {
+                                )
+                                .await
+                                {
+                                    if let Some(real_submitter) = node_guard.transaction_submitter()
+                                    {
                                         drop(node_guard);
                                         debug!(
                                             "🔄 [TX FLOW] Retrying sub-batch {} with live TransactionSubmitter (post SyncOnly→Validator transition)",
                                             chunk_idx + 1
                                         );
-                                        match real_submitter.submit_no_wait(retry_chunk.clone()).await {
+                                        match real_submitter
+                                            .submit_no_wait(retry_chunk.clone())
+                                            .await
+                                        {
                                             Ok(included_in_block_rx) => {
                                                 total_submitted += chunk_len;
-                                                
+
                                                 if let Some(ref recycler) = tx_recycler {
                                                     recycler.track_submitted(&retry_chunk).await;
                                                 }
-                                                
+
                                                 tokio::spawn(async move {
                                                     match included_in_block_rx.await {
-                                                        Ok((block_ref, _indices, status_receiver)) => {
+                                                        Ok((
+                                                            block_ref,
+                                                            _indices,
+                                                            status_receiver,
+                                                        )) => {
                                                             debug!(
                                                                 "✅ [TX FLOW] Sub-batch included (retry): {} TXs in block {:?}",
                                                                 chunk_len, block_ref
@@ -691,7 +710,9 @@ impl TxSocketServer {
                                     chunk_idx + 1, chunk_len
                                 );
                             }
-                        } else if err_str.contains("shutting down") || err_str.contains("channel closed") {
+                        } else if err_str.contains("shutting down")
+                            || err_str.contains("channel closed")
+                        {
                             // Epoch transition closed the consensus channel.
                             // Return error — Go will retry after transition completes (30x × 2s).
                             warn!(
@@ -707,7 +728,9 @@ impl TxSocketServer {
                             last_error = err_str;
                             error!(
                                 "❌ [TX FLOW] Sub-batch {} submission failed: {} TXs, error={}",
-                                chunk_idx + 1, chunk_len, e
+                                chunk_idx + 1,
+                                chunk_len,
+                                e
                             );
                             // Don't break — try remaining sub-batches
                         }
@@ -719,7 +742,7 @@ impl TxSocketServer {
                 let success_response = format!(r#"{{"success":true,"count":{}}}"#, total_submitted);
                 if let Err(e) = Self::send_response_string(&mut stream, &success_response).await {
                     error!("❌ [TX FLOW] Failed to send success response: {}", e);
-                    return Err(e.into());
+                    return Err(e);
                 }
             } else if total_submitted > 0 {
                 // Partial success
@@ -733,7 +756,7 @@ impl TxSocketServer {
                 );
                 if let Err(e) = Self::send_response_string(&mut stream, &response).await {
                     error!("❌ [TX FLOW] Failed to send partial response: {}", e);
-                    return Err(e.into());
+                    return Err(e);
                 }
             } else {
                 let truncated_error: String = last_error.chars().take(512).collect();
@@ -743,7 +766,7 @@ impl TxSocketServer {
                 );
                 if let Err(e) = Self::send_response_string(&mut stream, &error_response).await {
                     error!("❌ [TX FLOW] Failed to send error response: {}", e);
-                    return Err(e.into());
+                    return Err(e);
                 }
             }
 

@@ -137,11 +137,9 @@ impl PeerRpcServer {
                                     break;
                                 }
                             } else if request_bytes.len() > 4 && !request_bytes.starts_with(b"POST")
-                            {
-                                if request_bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                                && request_bytes.windows(4).any(|w| w == b"\r\n\r\n") {
                                     break;
                                 }
-                            }
                         }
                         Ok(Err(e)) => {
                             warn!("🌐 [PEER RPC] Failed to read from {}: {}", peer_addr, e);
@@ -172,7 +170,8 @@ impl PeerRpcServer {
                 } else if request.starts_with("GET /get_epoch_boundary_data") {
                     Self::handle_get_epoch_boundary_data(&mut stream, &executor, &request).await;
                 } else if request.starts_with("GET /get_executable_blocks") {
-                    Self::handle_get_executable_blocks(&mut stream, &executor, node_id, &request).await;
+                    Self::handle_get_executable_blocks(&mut stream, &executor, node_id, &request)
+                        .await;
                 } else if request.starts_with("GET /get_blocks") {
                     Self::handle_get_blocks(&mut stream, &executor, node_id, &request).await;
                 } else if request.starts_with("GET /health") {
@@ -454,7 +453,10 @@ impl PeerRpcServer {
                 }
 
                 let count = blocks.len();
-                info!("🌐 [PEER RPC] Returning {} executable blocks from Rust store", count);
+                info!(
+                    "🌐 [PEER RPC] Returning {} executable blocks from Rust store",
+                    count
+                );
 
                 let response = GetBlocksResponse {
                     node_id,
@@ -470,11 +472,17 @@ impl PeerRpcServer {
                 );
 
                 if let Err(e) = stream.write_all(http_response.as_bytes()).await {
-                    error!("🌐 [PEER RPC] Failed to write /get_executable_blocks response: {}", e);
+                    error!(
+                        "🌐 [PEER RPC] Failed to write /get_executable_blocks response: {}",
+                        e
+                    );
                 }
             }
             Err(e) => {
-                warn!("🌐 [PEER RPC] Failed to load executable blocks from store: {}", e);
+                warn!(
+                    "🌐 [PEER RPC] Failed to load executable blocks from store: {}",
+                    e
+                );
                 let response = GetBlocksResponse {
                     node_id,
                     blocks: std::collections::HashMap::new(),
@@ -651,7 +659,7 @@ impl PeerRpcServer {
         let tx_count = submit_req.transactions_hex.len();
 
         let mut submitter = None;
-        if let Some(ref wrapped_node) = node {
+        if let Some(wrapped_node) = node {
             submitter = wrapped_node.lock().await.transaction_submitter();
         }
 
@@ -683,7 +691,8 @@ impl PeerRpcServer {
                     Err(e) => {
                         warn!(
                             "📡 [TX SUBMIT] Failed to submit {} TXs to consensus: {}",
-                            all_tx_bytes.len(), e
+                            all_tx_bytes.len(),
+                            e
                         );
                         decode_errors.push(format!("Consensus submit error: {}", e));
                     }

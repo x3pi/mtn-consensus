@@ -81,10 +81,7 @@ pub async fn store_executable_blocks_batch(
 
 /// Load a single ExecutableBlock's protobuf bytes from disk.
 #[allow(dead_code)]
-pub async fn load_executable_block(
-    storage_path: &Path,
-    global_exec_index: u64,
-) -> Result<Vec<u8>> {
+pub async fn load_executable_block(storage_path: &Path, global_exec_index: u64) -> Result<Vec<u8>> {
     let file_path = storage_path
         .join(BLOCKS_DIR)
         .join(format!("{}.bin", global_exec_index));
@@ -116,10 +113,7 @@ pub async fn load_executable_blocks_range(
                 );
             }
             Err(e) => {
-                warn!(
-                    "⚠️ [BLOCK STORE] Failed to read block GEI={}: {}",
-                    gei, e
-                );
+                warn!("⚠️ [BLOCK STORE] Failed to read block GEI={}: {}", gei, e);
             }
         }
     }

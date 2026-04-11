@@ -19,6 +19,8 @@ use crate::{
     network::{NetworkClient, NetworkService},
 };
 
+pub(crate) type SubscriptionMap = Box<[Option<JoinHandle<()>>]>;
+
 /// Subscriber manages the block stream subscriptions to other peers, taking care of retrying
 /// when subscription streams break. Blocks returned from the peer are sent to the authority
 /// service for processing.
@@ -29,7 +31,7 @@ pub(crate) struct Subscriber<C: NetworkClient, S: NetworkService> {
     network_client: Arc<C>,
     authority_service: Arc<S>,
     dag_state: Arc<RwLock<DagState>>,
-    subscriptions: Arc<Mutex<Box<[Option<JoinHandle<()>>]>>>,
+    subscriptions: Arc<Mutex<SubscriptionMap>>,
 }
 
 impl<C: NetworkClient, S: NetworkService> Subscriber<C, S> {

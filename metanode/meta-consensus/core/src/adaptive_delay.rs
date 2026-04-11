@@ -154,27 +154,27 @@ impl AdaptiveDelayState {
 
         // Calculate adaptive delay
         let adaptive_delay_ms = 0; // Disabled for local testing
-        /*
-        let adaptive_delay_ms = if lead > SEVERE_LEAD_THRESHOLD
-            || lead_percentage > SEVERE_LEAD_PERCENTAGE
-            || (rate_diff_ratio > 0.2 && lead > MODERATE_LEAD_THRESHOLD)
-        {
-            // Severe lead or significantly faster: delay 2x base delay
-            self.base_delay_ms * 2
-        } else if lead > MODERATE_LEAD_THRESHOLD
-            || lead_percentage > MODERATE_LEAD_PERCENTAGE
-            || (rate_diff_ratio > MIN_RATE_DIFF && lead > 20)
-        {
-            // Moderate lead: delay 1.5x base delay
-            self.base_delay_ms + self.base_delay_ms / 2
-        } else if lead > 20 && rate_diff_ratio > MIN_RATE_DIFF {
-            // Small lead but faster rate: delay 1.2x base delay
-            self.base_delay_ms + self.base_delay_ms / 5
-        } else {
-            // Normal: no extra delay
-            0
-        };
-        */
+                                   /*
+                                   let adaptive_delay_ms = if lead > SEVERE_LEAD_THRESHOLD
+                                       || lead_percentage > SEVERE_LEAD_PERCENTAGE
+                                       || (rate_diff_ratio > 0.2 && lead > MODERATE_LEAD_THRESHOLD)
+                                   {
+                                       // Severe lead or significantly faster: delay 2x base delay
+                                       self.base_delay_ms * 2
+                                   } else if lead > MODERATE_LEAD_THRESHOLD
+                                       || lead_percentage > MODERATE_LEAD_PERCENTAGE
+                                       || (rate_diff_ratio > MIN_RATE_DIFF && lead > 20)
+                                   {
+                                       // Moderate lead: delay 1.5x base delay
+                                       self.base_delay_ms + self.base_delay_ms / 2
+                                   } else if lead > 20 && rate_diff_ratio > MIN_RATE_DIFF {
+                                       // Small lead but faster rate: delay 1.2x base delay
+                                       self.base_delay_ms + self.base_delay_ms / 5
+                                   } else {
+                                       // Normal: no extra delay
+                                       0
+                                   };
+                                   */
 
         // Update current adaptive delay
         *self.current_adaptive_delay_ms.write() = adaptive_delay_ms;

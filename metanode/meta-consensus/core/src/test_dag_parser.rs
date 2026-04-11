@@ -72,10 +72,12 @@ pub(crate) fn parse_dag(dag_string: &str) -> IResult<&str, DagBuilder> {
     Ok((input, dag_builder))
 }
 
+pub(crate) type ParsedRoundBlocks<'a> = IResult<&'a str, (Round, Vec<(AuthorityIndex, Vec<BlockRef>)>)>;
+
 fn parse_round<'a>(
     input: &'a str,
     dag_builder: &DagBuilder,
-) -> IResult<&'a str, (Round, Vec<(AuthorityIndex, Vec<BlockRef>)>)> {
+) -> ParsedRoundBlocks<'a> {
     let (input, _) = tuple((multispace0, tag("Round"), space1))(input)?;
     let (input, round) = take_while1(|c: char| c.is_ascii_digit())(input)?;
 

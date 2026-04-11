@@ -37,113 +37,114 @@ pub async fn start_sync_task(node: &mut ConsensusNode, _config: &NodeConfig) -> 
     // Load committee from Go - with PEER FALLBACK for slow/late starting nodes
     // If Go layer doesn't have epoch data yet (e.g., node started late or syncing slowly),
     // we fetch from peers to ensure the sync task can start
-    let (epoch, epoch_timestamp, _boundary_block, validators, _, _boundary_gei) = match executor_client
-        .get_epoch_boundary_data(node.current_epoch)
-        .await
-    {
-        Ok(data) => {
-            info!(
-                "✅ [SYNC TASK] Got epoch {} boundary data from local Go",
-                node.current_epoch
-            );
-            data
-        }
-        Err(e) => {
-            warn!(
-                "⚠️ [SYNC TASK] Local Go doesn't have epoch {} data: {}. Trying peers...",
-                node.current_epoch, e
-            );
-
-            // Fallback: Try to get epoch boundary data from peers
-            let peer_addresses = &_config.peer_rpc_addresses;
-            if peer_addresses.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "No local epoch data and no peer addresses configured for fallback"
-                ));
-            }
-
-            let mut last_error = e;
-            let mut found_data = None;
-
-            for peer_addr in peer_addresses {
+    let (epoch, epoch_timestamp, _boundary_block, validators, _, _boundary_gei) =
+        match executor_client
+            .get_epoch_boundary_data(node.current_epoch)
+            .await
+        {
+            Ok(data) => {
                 info!(
-                    "🌐 [SYNC TASK] Trying peer {} for epoch {} boundary data...",
-                    peer_addr, node.current_epoch
+                    "✅ [SYNC TASK] Got epoch {} boundary data from local Go",
+                    node.current_epoch
                 );
-                match crate::network::peer_rpc::query_peer_epoch_boundary_data(
-                    peer_addr,
-                    node.current_epoch,
-                )
-                .await
-                {
-                    Ok(response) => {
-                        if response.error.is_none() && !response.validators.is_empty() {
-                            info!(
+                data
+            }
+            Err(e) => {
+                warn!(
+                    "⚠️ [SYNC TASK] Local Go doesn't have epoch {} data: {}. Trying peers...",
+                    node.current_epoch, e
+                );
+
+                // Fallback: Try to get epoch boundary data from peers
+                let peer_addresses = &_config.peer_rpc_addresses;
+                if peer_addresses.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "No local epoch data and no peer addresses configured for fallback"
+                    ));
+                }
+
+                let mut last_error = e;
+                let mut found_data = None;
+
+                for peer_addr in peer_addresses {
+                    info!(
+                        "🌐 [SYNC TASK] Trying peer {} for epoch {} boundary data...",
+                        peer_addr, node.current_epoch
+                    );
+                    match crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                        peer_addr,
+                        node.current_epoch,
+                    )
+                    .await
+                    {
+                        Ok(response) => {
+                            if response.error.is_none() && !response.validators.is_empty() {
+                                info!(
                                 "✅ [SYNC TASK] Got epoch {} data from peer {}: boundary_block={}, validators={}, boundary_gei={}",
                                 response.epoch, peer_addr, response.boundary_block, response.validators.len(), response.boundary_gei
                             );
 
-                            // Convert ValidatorInfoSimple to ValidatorInfo
-                            let converted_validators: Vec<
-                                crate::node::executor_client::proto::ValidatorInfo,
-                            > = response
-                                .validators
-                                .into_iter()
-                                .map(|v| crate::node::executor_client::proto::ValidatorInfo {
-                                    address: v.address,
-                                    stake: v.stake.to_string(),
-                                    authority_key: v.authority_key,
-                                    protocol_key: v.protocol_key,
-                                    network_key: v.network_key,
-                                    name: v.name,
-                                    description: String::new(),
-                                    website: String::new(),
-                                    image: String::new(),
-                                    commission_rate: 0,
-                                    min_self_delegation: String::new(),
-                                    accumulated_rewards_per_share: String::new(),
-                                    p2p_address: String::new(),
-                                })
-                                .collect();
+                                // Convert ValidatorInfoSimple to ValidatorInfo
+                                let converted_validators: Vec<
+                                    crate::node::executor_client::proto::ValidatorInfo,
+                                > = response
+                                    .validators
+                                    .into_iter()
+                                    .map(|v| crate::node::executor_client::proto::ValidatorInfo {
+                                        address: v.address,
+                                        stake: v.stake.to_string(),
+                                        authority_key: v.authority_key,
+                                        protocol_key: v.protocol_key,
+                                        network_key: v.network_key,
+                                        name: v.name,
+                                        description: String::new(),
+                                        website: String::new(),
+                                        image: String::new(),
+                                        commission_rate: 0,
+                                        min_self_delegation: String::new(),
+                                        accumulated_rewards_per_share: String::new(),
+                                        p2p_address: String::new(),
+                                    })
+                                    .collect();
 
-                            found_data = Some((
-                                response.epoch,
-                                response.timestamp_ms,
-                                response.boundary_block,
-                                converted_validators,
-                                900u64, // default epoch_duration_seconds for peer fallback
-                                response.boundary_gei,
-                            ));
-                            break;
-                        } else {
+                                found_data = Some((
+                                    response.epoch,
+                                    response.timestamp_ms,
+                                    response.boundary_block,
+                                    converted_validators,
+                                    900u64, // default epoch_duration_seconds for peer fallback
+                                    response.boundary_gei,
+                                ));
+                                break;
+                            } else {
+                                warn!(
+                                    "⚠️ [SYNC TASK] Peer {} returned error: {:?}",
+                                    peer_addr, response.error
+                                );
+                            }
+                        }
+                        Err(peer_err) => {
                             warn!(
-                                "⚠️ [SYNC TASK] Peer {} returned error: {:?}",
-                                peer_addr, response.error
+                                "⚠️ [SYNC TASK] Failed to query peer {}: {}",
+                                peer_addr, peer_err
                             );
+                            last_error = peer_err;
                         }
                     }
-                    Err(peer_err) => {
-                        warn!(
-                            "⚠️ [SYNC TASK] Failed to query peer {}: {}",
-                            peer_addr, peer_err
-                        );
-                        last_error = peer_err;
+                }
+
+                match found_data {
+                    Some(data) => data,
+                    None => {
+                        return Err(anyhow::anyhow!(
+                            "Failed to get epoch {} boundary data from Go or any peer: {}",
+                            node.current_epoch,
+                            last_error
+                        ));
                     }
                 }
             }
-
-            match found_data {
-                Some(data) => data,
-                None => {
-                    return Err(anyhow::anyhow!(
-                        "Failed to get epoch {} boundary data from Go or any peer: {}",
-                        node.current_epoch,
-                        last_error
-                    ));
-                }
-            }
-        }
-    };
+        };
 
     // Build committee from validators
     let committee = crate::node::committee::build_committee_from_validator_list(validators, epoch)?;

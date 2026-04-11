@@ -97,7 +97,7 @@ impl DefaultSystemTransactionProvider {
         // FIX 5: Do NOT reset the epoch start timestamp to now() even if it is old.
         // It must remain consistent across the network and accurately reflect the boundary block timestamp.
         let effective_epoch_start = epoch_start_timestamp_ms;
-        
+
         if time_based_enabled && elapsed_seconds >= epoch_duration_seconds {
             info!(
                 "⚠️  SystemTransactionProvider: Epoch start timestamp is {}s old (>= duration {}s). \
@@ -254,7 +254,7 @@ impl DefaultSystemTransactionProvider {
             );
         } else {
             // Log periodically when close to threshold
-            if elapsed_seconds % 10 == 0
+            if elapsed_seconds.is_multiple_of(10)
                 || elapsed_seconds >= self.epoch_duration_seconds.saturating_sub(30)
             {
                 tracing::debug!(

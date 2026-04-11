@@ -267,11 +267,7 @@ pub async fn transition_to_epoch_from_system_tx(
     // DISK CLEANUP: Remove old epoch directories beyond epochs_to_keep.
     // ═══════════════════════════════════════════════════════════════
     if config.epochs_to_keep > 0 {
-        let keep_from = if new_epoch > config.epochs_to_keep as u64 {
-            new_epoch - config.epochs_to_keep as u64
-        } else {
-            0
-        };
+        let keep_from = new_epoch.saturating_sub(config.epochs_to_keep as u64);
         let epochs_dir = node.storage_path.join("epochs");
         if epochs_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&epochs_dir) {
@@ -368,7 +364,12 @@ pub async fn transition_to_epoch_from_system_tx(
     );
     // Advance Go's Epoch explicitly using the boundary block retrieved AFTER execution halt
     if let Err(e) = executor_client
-        .advance_epoch(new_epoch, provisional_timestamp, go_boundary_for_advance, effective_synced)
+        .advance_epoch(
+            new_epoch,
+            provisional_timestamp,
+            go_boundary_for_advance,
+            effective_synced,
+        )
         .await
     {
         warn!(
@@ -445,15 +446,15 @@ pub async fn transition_to_epoch_from_system_tx(
     std::fs::create_dir_all(&db_path)?;
 
     // Reset fragment offset for the new epoch to prevent GEI double-counting
-    if let Err(e) = crate::node::executor_client::persistence::reset_fragment_offset(&node.storage_path).await {
+    if let Err(e) =
+        crate::node::executor_client::persistence::reset_fragment_offset(&node.storage_path).await
+    {
         warn!("⚠️ [PERSIST] Failed to reset fragment offset: {}", e);
     }
 
     info!(
         "📋 [COMMITTEE] Fetching committee for epoch {} from {} (epoch={})",
-        new_epoch,
-        committee_source.socket_path,
-        committee_source.epoch
+        new_epoch, committee_source.socket_path, committee_source.epoch
     );
     let (committee, epoch_timestamp_to_use) = committee_source
         .fetch_committee_with_timestamp(&config.executor_send_socket_path, new_epoch)
@@ -783,14 +784,14 @@ pub(super) async fn stop_authority_and_poll_go(
                             go_last_gei, expected_last_block, attempt, wait_start.elapsed()
                         );
                         break;
-                    } else if attempt % 100 == 0 {
+                    } else if attempt.is_multiple_of(100) {
                         warn!(
                             "⏳ [SYNC WAIT] Waiting for Go to catch up: go_gei={}, expected_gei={} (waiting for {:?})",
                             go_last_gei, expected_last_block, wait_start.elapsed()
                         );
 
                         // If we've been waiting too long, try flushing buffer again
-                        if attempt % 300 == 0 {
+                        if attempt.is_multiple_of(300) {
                             if let Some(ref exec_client) = node.executor_client {
                                 warn!(
                                     "🔄 [SYNC WAIT] Re-flushing buffer after {:?} of waiting...",
@@ -819,7 +820,9 @@ pub(super) async fn stop_authority_and_poll_go(
                             &node.peer_rpc_addresses,
                             fetch_from,
                             expected_last_block,
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(blocks) if !blocks.is_empty() => {
                                 info!(
                                     "✅ [SYNC WAIT] Fetched {} executable blocks from peers, syncing...",
@@ -828,8 +831,18 @@ pub(super) async fn stop_authority_and_poll_go(
                                 if let Some(ref exec_client) = node.executor_client {
                                     let mut synced = 0u64;
                                     for (gei_num, block_bytes) in blocks {
-                                        match exec_client.send_block_data(block_bytes.as_slice(), gei_num, new_epoch, 0).await {
-                                            Ok(_) => { synced += 1; }
+                                        match exec_client
+                                            .send_block_data(
+                                                block_bytes.as_slice(),
+                                                gei_num,
+                                                new_epoch,
+                                                0,
+                                            )
+                                            .await
+                                        {
+                                            Ok(_) => {
+                                                synced += 1;
+                                            }
                                             Err(e) => {
                                                 warn!("⚠️ [SYNC WAIT] Block send failed for GEI {}: {}", gei_num, e);
                                                 break;
@@ -837,7 +850,10 @@ pub(super) async fn stop_authority_and_poll_go(
                                         }
                                     }
                                     if synced > 0 {
-                                        info!("✅ [SYNC WAIT] Synced {} executable blocks to Go", synced);
+                                        info!(
+                                            "✅ [SYNC WAIT] Synced {} executable blocks to Go",
+                                            synced
+                                        );
                                     }
                                 }
                             }
@@ -849,7 +865,7 @@ pub(super) async fn stop_authority_and_poll_go(
                     }
                 }
                 Err(e) => {
-                    if attempt % 100 == 0 {
+                    if attempt.is_multiple_of(100) {
                         error!(
                             "❌ [SYNC POLL] Cannot reach Go (attempt {}): {}. Will keep trying...",
                             attempt, e
@@ -863,14 +879,21 @@ pub(super) async fn stop_authority_and_poll_go(
 
     // Fetch final synced_index from Go
     // Try GEI first (works on executor/Node 0), then block_number as fallback
-    let raw_synced_gei = executor_client.get_last_global_exec_index().await.unwrap_or(0);
+    let raw_synced_gei = executor_client
+        .get_last_global_exec_index()
+        .await
+        .unwrap_or(0);
     // CRITICAL FIX: Also get block_number as floor!
     // On non-executor nodes (Node 1,2,3), GEI is ALWAYS 0 because only Node 0
     // updates GEI when it executes transactions. But sync_blocks correctly
     // updates block_number via storage.UpdateLastBlockNumber(). Without this
     // floor, epoch_base_index=0 after snapshot restore, causing commit_syncer
     // to search commits in the wrong global range.
-    let raw_synced_block = executor_client.get_last_block_number().await.map(|(b, _)| b).unwrap_or(0);
+    let raw_synced_block = executor_client
+        .get_last_block_number()
+        .await
+        .map(|(b, _)| b)
+        .unwrap_or(0);
     let raw_synced = std::cmp::max(raw_synced_gei, raw_synced_block);
 
     info!(
@@ -883,7 +906,11 @@ pub(super) async fn stop_authority_and_poll_go(
         info!(
             "📊 [SYNC] Committee source last block: {} (from {})",
             committee_source.last_block,
-            if committee_source.is_peer { "peer" } else { "local" }
+            if committee_source.is_peer {
+                "peer"
+            } else {
+                "local"
+            }
         );
         committee_source.last_block
     } else {
@@ -1011,8 +1038,16 @@ pub(super) async fn handle_deferred_epoch_transition(
             match exec_client.get_last_block_number().await {
                 Ok((last_block, _)) => {
                     let gei = exec_client.get_last_global_exec_index().await.unwrap_or(0);
-                    let current_gei = if synced_global_exec_index > 0 && gei > 0 { gei } else { last_block };
-                    let target = if synced_global_exec_index > 0 { synced_global_exec_index } else { required_boundary };
+                    let current_gei = if synced_global_exec_index > 0 && gei > 0 {
+                        gei
+                    } else {
+                        last_block
+                    };
+                    let target = if synced_global_exec_index > 0 {
+                        synced_global_exec_index
+                    } else {
+                        required_boundary
+                    };
 
                     if current_gei >= target {
                         info!(
@@ -1048,7 +1083,9 @@ pub(super) async fn handle_deferred_epoch_transition(
                             &node.peer_rpc_addresses,
                             fetch_from,
                             target,
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(blocks) if !blocks.is_empty() => {
                                 info!(
                                     "✅ [DEFERRED EPOCH] Re-fetched {} blocks from peers, syncing...",
@@ -1056,17 +1093,27 @@ pub(super) async fn handle_deferred_epoch_transition(
                                 );
                                 let mut synced = 0;
                                 for (gei_num, block_bytes) in blocks {
-                                    let err_str = match exec_client.send_block_data(block_bytes.as_slice(), gei_num, new_epoch, 0).await {
-                                        Ok(_) => None,
-                                        Err(e) => Some(e),
-                                    };
+                                    let err_str = (exec_client
+                                        .send_block_data(
+                                            block_bytes.as_slice(),
+                                            gei_num,
+                                            new_epoch,
+                                            0,
+                                        )
+                                        .await).err();
                                     if let Some(ref e) = err_str {
-                                        warn!("⚠️ [DEFERRED EPOCH] Re-sync failed for GEI {}: {}", gei_num, e);
+                                        warn!(
+                                            "⚠️ [DEFERRED EPOCH] Re-sync failed for GEI {}: {}",
+                                            gei_num, e
+                                        );
                                         break;
                                     }
                                     synced += 1;
                                 }
-                                info!("✅ [DEFERRED EPOCH] Re-synced {} executable blocks to Go", synced);
+                                info!(
+                                    "✅ [DEFERRED EPOCH] Re-synced {} executable blocks to Go",
+                                    synced
+                                );
                             }
                             Ok(_) => {
                                 warn!("[DEFERRED EPOCH] Re-fetch returned 0 blocks");
@@ -1077,7 +1124,7 @@ pub(super) async fn handle_deferred_epoch_transition(
                         }
                     }
 
-                    if start.elapsed().as_secs() % 5 == 0
+                    if start.elapsed().as_secs().is_multiple_of(5)
                         && start.elapsed().as_millis() % 5000 < 200
                     {
                         info!(
@@ -1317,13 +1364,13 @@ async fn catch_up_to_network_epoch(
                 "🔄 [EPOCH SYNC] Single epoch, Go behind: GEI {} < boundary_gei {}. Syncing.",
                 go_current_gei, requested_boundary_gei
             );
-            
+
             let go_current_block = executor_client
                 .get_last_block_number()
                 .await
                 .map(|(b, _)| b)
                 .unwrap_or(0);
-                
+
             handle_deferred_epoch_transition(
                 node,
                 requested_epoch,
@@ -1480,7 +1527,12 @@ async fn catch_up_to_network_epoch(
                 go_epoch, intermediate_epoch, boundary_block, boundary_gei
             );
             if let Err(e) = executor_client
-                .advance_epoch(intermediate_epoch, use_timestamp, boundary_block, boundary_gei)
+                .advance_epoch(
+                    intermediate_epoch,
+                    use_timestamp,
+                    boundary_block,
+                    boundary_gei,
+                )
                 .await
             {
                 warn!(
@@ -1551,7 +1603,12 @@ async fn catch_up_to_network_epoch(
                 go_epoch, requested_epoch, requested_boundary_block, requested_boundary_gei
             );
             if let Err(e) = executor_client
-                .advance_epoch(requested_epoch, timestamp_now, requested_boundary_block, requested_boundary_gei)
+                .advance_epoch(
+                    requested_epoch,
+                    timestamp_now,
+                    requested_boundary_block,
+                    requested_boundary_gei,
+                )
                 .await
             {
                 warn!(

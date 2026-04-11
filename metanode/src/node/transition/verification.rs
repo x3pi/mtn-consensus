@@ -145,10 +145,7 @@ pub(super) async fn wait_for_consensus_ready(node: &ConsensusNode) -> bool {
 
 async fn test_consensus_readiness(node: &ConsensusNode) -> bool {
     if let Some(proxy) = &node.transaction_client_proxy {
-        match proxy.submit(vec![vec![0u8; 64]]).await {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        (proxy.submit(vec![vec![0u8; 64]]).await).is_ok()
     } else {
         false
     }
@@ -209,7 +206,7 @@ pub(super) async fn sync_epoch_timestamp_from_go(
             Ok(go_timestamp) => {
                 // Validate timestamp is not from old epoch (should be close to expected)
                 // Timestamp should be within reasonable range of expected timestamp
-                let timestamp_diff = (go_timestamp as i64 - expected_timestamp as i64).abs() as u64;
+                let timestamp_diff = (go_timestamp as i64 - expected_timestamp as i64).unsigned_abs();
 
                 if timestamp_diff > 10000 {
                     // 10 seconds tolerance

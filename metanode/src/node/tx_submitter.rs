@@ -32,7 +32,7 @@ pub trait TransactionSubmitter: Send + Sync {
             consensus_types::block::BlockRef,
             Vec<consensus_types::block::TransactionIndex>,
             tokio::sync::oneshot::Receiver<BlockStatus>,
-        )>
+        )>,
     >;
 }
 
@@ -76,7 +76,7 @@ impl TransactionSubmitter for DirectTransactionSubmitter {
             consensus_types::block::BlockRef,
             Vec<consensus_types::block::TransactionIndex>,
             tokio::sync::oneshot::Receiver<BlockStatus>,
-        )>
+        )>,
     > {
         self.client
             .submit_no_wait(transactions)
@@ -129,7 +129,7 @@ impl TransactionSubmitter for TransactionClientProxy {
             consensus_types::block::BlockRef,
             Vec<consensus_types::block::TransactionIndex>,
             tokio::sync::oneshot::Receiver<BlockStatus>,
-        )>
+        )>,
     > {
         let client = { self.inner.read().await.clone() };
         client
@@ -167,7 +167,7 @@ impl TransactionSubmitter for NoOpTransactionSubmitter {
             consensus_types::block::BlockRef,
             Vec<consensus_types::block::TransactionIndex>,
             tokio::sync::oneshot::Receiver<BlockStatus>,
-        )>
+        )>,
     > {
         Err(anyhow::anyhow!(
             "SyncOnly node cannot submit to consensus directly"

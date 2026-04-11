@@ -20,11 +20,13 @@ mod rpc_queries;
 mod rpc_queries_epoch;
 pub mod socket_stream;
 mod transition_handoff;
+pub mod traits;
 
 // Re-export public items from submodules
 pub use connection_pool::ConnectionPool;
 pub use persistence::{load_persisted_last_index, read_last_block_number};
 pub use socket_stream::{SocketAddress, SocketStream};
+pub use traits::TExecutorClient;
 
 use anyhow::Result;
 use std::sync::atomic::AtomicU64;
@@ -411,7 +413,7 @@ impl ExecutorClient {
                     // This ensures Rust can connect even if Go Master starts later
                     if attempt == 1 {
                         info!("🔄 [EXECUTOR] Waiting for Go Master to create executor socket at {}...", self.socket_address.as_str());
-                    } else if attempt % 10 == 0 {
+                    } else if attempt.is_multiple_of(10) {
                         // Log every 10 attempts to avoid spam
                         warn!("⏳ [EXECUTOR] Still waiting for Go Master socket {} (attempt {}, delay {}ms): {}",
                             self.socket_address.as_str(), attempt, delay.as_millis(), e);
@@ -474,7 +476,7 @@ impl ExecutorClient {
                     } else {
                         warn!("⚠️  [EXECUTOR-REQ] Failed to connect to Go request socket at {} after {} attempts: {}", 
                             self.request_socket_address.as_str(), MAX_RETRIES, e);
-                        return Err(e.into());
+                        return Err(e);
                     }
                 }
             }
