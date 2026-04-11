@@ -17,9 +17,11 @@ Script `deploy_cluster.sh` đảm nhận 5 Phase tự động:
 ### 📜 Cách dùng
 
 Mặc định đọc cấu hình server tại `deploy.env`. Có thể đổi sang file sinh cho cụm test net khác bằng flag `--env`.
-``` b
+
+``` bash
 ./update_ips.sh 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1
 ```
+
 ```bash
 # Thực hiện toàn bộ (Build -> Stop -> Push -> Update IPs -> Start)
 ./deploy_cluster.sh --env deploy-3machines.env --all
