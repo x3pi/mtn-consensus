@@ -26,7 +26,6 @@ pub fn calculate_transaction_hash_single(tx_data: &[u8]) -> Vec<u8> {
     Keccak256::digest(tx_data).to_vec()
 }
 
-
 /// Calculate hash for a single Transaction using TransactionHashData
 /// This is the official hash calculation that matches Go implementation
 fn calculate_single_transaction_hash(tx: &Transaction) -> Vec<u8> {
@@ -79,7 +78,6 @@ pub fn calculate_transaction_hash_single_hex(tx_data: &[u8]) -> String {
     let hash = calculate_transaction_hash_single(tx_data);
     hex::encode(&hash[..8.min(hash.len())])
 }
-
 
 /// Verify that transaction data is valid protobuf (Transaction or Transactions)
 /// Returns true if data can be parsed as protobuf with valid fields, false otherwise

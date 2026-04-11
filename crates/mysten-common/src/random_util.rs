@@ -1,9 +1,9 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use meta_macros::nondeterministic;
 use rand::Rng;
 use rand::seq::SliceRandom;
-use meta_macros::nondeterministic;
 
 use crate::in_test_configuration;
 use crate::random::get_rng;

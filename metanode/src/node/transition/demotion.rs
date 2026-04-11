@@ -75,7 +75,7 @@ pub async fn demote_to_synconly_and_catchup(
                         );
                         break;
                     }
-                    if attempt % 100 == 0 {
+                    if attempt.is_multiple_of(100) {
                         info!(
                             "⏳ [DEMOTION] Go: {}/{} blocks (waiting {}s)",
                             b,
@@ -85,7 +85,7 @@ pub async fn demote_to_synconly_and_catchup(
                     }
                 }
                 Err(e) => {
-                    if attempt % 100 == 0 {
+                    if attempt.is_multiple_of(100) {
                         warn!("⚠️ [DEMOTION] Cannot reach Go: {}. Retrying...", e);
                     }
                 }

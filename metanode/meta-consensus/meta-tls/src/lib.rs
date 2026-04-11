@@ -274,10 +274,10 @@ mod tests {
             tls_info.public_key().unwrap().to_string()
         }
 
-        let app: axum::Router<()> = axum::Router::new().route("/", axum::routing::get(handler));
+        let _app: axum::Router<()> = axum::Router::new().route("/", axum::routing::get(handler));
         let listener = std::net::TcpListener::bind("localhost:0").unwrap();
         let server_address = listener.local_addr().unwrap();
-        let acceptor = TlsAcceptor::new(tls_config);
+        let _acceptor = TlsAcceptor::new(tls_config);
         // Commented out axum-server usage to avoid compilation issues
         // Using alternative implementation if needed
         // let _server = tokio::spawn(async move {

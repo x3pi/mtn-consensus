@@ -307,7 +307,10 @@ impl InitializedNode {
                         info!("✅ [STARTUP] SyncOnly: epoch matches network, no catchup needed.");
                     }
                     Err(e) => {
-                        warn!("⚠️ [STARTUP] SyncOnly sync status check failed: {}. Proceeding.", e);
+                        warn!(
+                            "⚠️ [STARTUP] SyncOnly sync status check failed: {}. Proceeding.",
+                            e
+                        );
                     }
                 }
             } else {
@@ -322,152 +325,154 @@ impl InitializedNode {
             if is_syncing_up_mode {
                 info!("⏳ [STARTUP] Verifying sync status before joining consensus...");
                 let timeout = std::time::Duration::from_secs(600); // 10 minutes timeout
-            let start = std::time::Instant::now();
+                let start = std::time::Instant::now();
 
                 // Node is already in SyncingUp mode, we just wait.
 
-            loop {
-                // Check timeout
-                if start.elapsed() > timeout {
-                    warn!("⚠️ [STARTUP] Catchup timed out after 600s. Forcing start (risky).");
-                    break;
-                }
+                loop {
+                    // Check timeout
+                    if start.elapsed() > timeout {
+                        warn!("⚠️ [STARTUP] Catchup timed out after 600s. Forcing start (risky).");
+                        break;
+                    }
 
-                // Get current local state
-                let (local_epoch, local_commit) = {
-                    let node = self.node.lock().await;
-                    // RocksDBStore read is expensive? No, we use in-memory counters if available?
-                    // ConsensusNode has current_commit_index (AtomicU32) but we need u64 mapping?
-                    // Let's use current_epoch.
-                    // Commit index is trickier. Let's assume passed 0 for now as catchup checks Epoch primarily.
-                    // But for Commit sync, we need local commit.
-                    // Use commit_processor's tracked index?
-                    // Node has `current_commit_index` (AtomicU32).
-                    (
-                        node.current_epoch,
-                        node.current_commit_index
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                            as u64,
-                    )
-                };
+                    // Get current local state
+                    let (local_epoch, local_commit) = {
+                        let node = self.node.lock().await;
+                        // RocksDBStore read is expensive? No, we use in-memory counters if available?
+                        // ConsensusNode has current_commit_index (AtomicU32) but we need u64 mapping?
+                        // Let's use current_epoch.
+                        // Commit index is trickier. Let's assume passed 0 for now as catchup checks Epoch primarily.
+                        // But for Commit sync, we need local commit.
+                        // Use commit_processor's tracked index?
+                        // Node has `current_commit_index` (AtomicU32).
+                        (
+                            node.current_epoch,
+                            node.current_commit_index
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                                as u64,
+                        )
+                    };
 
-                match cm.check_sync_status(local_epoch, local_commit).await {
-                    Ok(status) => {
-                        if status.ready {
-                            info!(
-                                "✅ [STARTUP] Node is synced (gap={}). Joining consensus!",
-                                status.commit_gap
-                            );
-                            // CRITICAL FIX: Update Rust's internal state to match the synced network state
-                            // If Rust started with epoch 0 but Go and the Network are at epoch N,
-                            // we must update Rust's state before joining consensus, otherwise it starts at epoch 0!
-                            {
-                                let mut node = self.node.lock().await;
-                                if node.current_epoch != status.go_epoch {
-                                    info!(
+                    match cm.check_sync_status(local_epoch, local_commit).await {
+                        Ok(status) => {
+                            if status.ready {
+                                info!(
+                                    "✅ [STARTUP] Node is synced (gap={}). Joining consensus!",
+                                    status.commit_gap
+                                );
+                                // CRITICAL FIX: Update Rust's internal state to match the synced network state
+                                // If Rust started with epoch 0 but Go and the Network are at epoch N,
+                                // we must update Rust's state before joining consensus, otherwise it starts at epoch 0!
+                                {
+                                    let mut node = self.node.lock().await;
+                                    if node.current_epoch != status.go_epoch {
+                                        info!(
                                         "🔄 [STARTUP] Updating Rust internal epoch {} -> {} (Network Epoch)",
                                         node.current_epoch, status.go_epoch
                                     );
-                                    node.current_epoch = status.go_epoch;
-                                }
-                                if node.last_global_exec_index < status.network_commit {
-                                    info!(
+                                        node.current_epoch = status.go_epoch;
+                                    }
+                                    if node.last_global_exec_index < status.network_commit {
+                                        info!(
                                         "🔄 [STARTUP] Updating Rust internal exec_index {} -> {} (Network Commit)",
                                         node.last_global_exec_index, status.network_commit
                                     );
-                                    node.last_global_exec_index = status.network_commit;
-                                }
-                            }
-                            break;
-                        }
-
-                        if status.epoch_match {
-                            info!(
-                                "🔄 [CATCHUP] Syncing blocks: LocalExec={}, Network={}, Gap={}",
-                                status.go_last_block, status.network_block_height, status.block_gap
-                            );
-
-                            // FAST SYNC: For large gaps, loop continuously fetching batches
-                            if status.block_gap > 100 {
-                                let mut remaining = status.block_gap;
-                                let mut current_go_block = status.go_last_block;
-                                let max_blocks_per_cycle = 2000u64;
-                                let mut fetched_total = 0u64;
-
-                                while remaining > 0 && fetched_total < max_blocks_per_cycle {
-                                    let fetch_to = std::cmp::min(
-                                        current_go_block + 50,
-                                        status.network_block_height,
-                                    );
-                                    match cm
-                                        .sync_blocks_from_peers(current_go_block, fetch_to)
-                                        .await
-                                    {
-                                        Ok(synced) => {
-                                            if synced == 0 {
-                                                break;
-                                            }
-                                            current_go_block += synced;
-                                            remaining = remaining.saturating_sub(synced);
-                                            fetched_total += synced;
-                                        }
-                                        Err(e) => {
-                                            warn!("⚠️ [CATCHUP] Fast sync batch failed: {}", e);
-                                            break;
-                                        }
+                                        node.last_global_exec_index = status.network_commit;
                                     }
                                 }
-                                info!(
-                                    "🚀 [CATCHUP] Fast sync cycle: fetched {} blocks total",
-                                    fetched_total
-                                );
-                                continue; // No delay - immediately re-check
+                                break;
                             }
 
-                            // Normal sync: small gap, single fetch
-                            if let Err(e) = cm
-                                .sync_blocks_from_peers(
+                            if status.epoch_match {
+                                info!(
+                                    "🔄 [CATCHUP] Syncing blocks: LocalExec={}, Network={}, Gap={}",
                                     status.go_last_block,
                                     status.network_block_height,
-                                )
-                                .await
-                            {
-                                warn!("⚠️ [CATCHUP] Block sync from peers failed: {}", e);
-                            }
-                        } else {
-                            // ═══════════════════════════════════════════════════
-                            // CROSS-EPOCH BLOCK SYNC (Snapshot Restore Support)
-                            // Go is at a different epoch than the network.
-                            // Fetch blocks from peer Go nodes until Go catches up
-                            // to the current network epoch. This enables nodes to
-                            // start from only a Go snapshot without Rust data.
-                            // ═══════════════════════════════════════════════════
-                            info!(
+                                    status.block_gap
+                                );
+
+                                // FAST SYNC: For large gaps, loop continuously fetching batches
+                                if status.block_gap > 100 {
+                                    let mut remaining = status.block_gap;
+                                    let mut current_go_block = status.go_last_block;
+                                    let max_blocks_per_cycle = 2000u64;
+                                    let mut fetched_total = 0u64;
+
+                                    while remaining > 0 && fetched_total < max_blocks_per_cycle {
+                                        let fetch_to = std::cmp::min(
+                                            current_go_block + 50,
+                                            status.network_block_height,
+                                        );
+                                        match cm
+                                            .sync_blocks_from_peers(current_go_block, fetch_to)
+                                            .await
+                                        {
+                                            Ok(synced) => {
+                                                if synced == 0 {
+                                                    break;
+                                                }
+                                                current_go_block += synced;
+                                                remaining = remaining.saturating_sub(synced);
+                                                fetched_total += synced;
+                                            }
+                                            Err(e) => {
+                                                warn!("⚠️ [CATCHUP] Fast sync batch failed: {}", e);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    info!(
+                                        "🚀 [CATCHUP] Fast sync cycle: fetched {} blocks total",
+                                        fetched_total
+                                    );
+                                    continue; // No delay - immediately re-check
+                                }
+
+                                // Normal sync: small gap, single fetch
+                                if let Err(e) = cm
+                                    .sync_blocks_from_peers(
+                                        status.go_last_block,
+                                        status.network_block_height,
+                                    )
+                                    .await
+                                {
+                                    warn!("⚠️ [CATCHUP] Block sync from peers failed: {}", e);
+                                }
+                            } else {
+                                // ═══════════════════════════════════════════════════
+                                // CROSS-EPOCH BLOCK SYNC (Snapshot Restore Support)
+                                // Go is at a different epoch than the network.
+                                // Fetch blocks from peer Go nodes until Go catches up
+                                // to the current network epoch. This enables nodes to
+                                // start from only a Go snapshot without Rust data.
+                                // ═══════════════════════════════════════════════════
+                                info!(
                                 "🔄 [CATCHUP] Epoch mismatch: GoLocal={}, Network={}. Syncing Go blocks to reach target epoch...",
                                 local_epoch, status.go_epoch
                             );
-                            match cm.sync_go_to_current_epoch(status.go_epoch).await {
-                                Ok(synced) => {
-                                    info!(
+                                match cm.sync_go_to_current_epoch(status.go_epoch).await {
+                                    Ok(synced) => {
+                                        info!(
                                         "✅ [CATCHUP] Cross-epoch sync complete: {} blocks synced. Go should now be at epoch {}.",
                                         synced, status.go_epoch
                                     );
-                                    // Don't delay — immediately re-check sync status
-                                    continue;
-                                }
-                                Err(e) => {
-                                    warn!(
+                                        // Don't delay — immediately re-check sync status
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        warn!(
                                         "⚠️ [CATCHUP] Cross-epoch sync failed: {}. Will retry...",
                                         e
                                     );
+                                    }
                                 }
                             }
                         }
+                        Err(e) => {
+                            warn!("⚠️ [STARTUP] Failed to check sync status: {}", e);
+                        }
                     }
-                    Err(e) => {
-                        warn!("⚠️ [STARTUP] Failed to check sync status: {}", e);
-                    }
-                }
 
                     // Dynamic delay: 200ms for near-caught-up (much faster than original 2s)
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -507,12 +512,28 @@ impl InitializedNode {
                             }
                         }
                     }
-                    Ok(_status) if matches!(*cm.state.read().await, crate::node::catchup::CatchupState::BehindRustLocal { .. }) => {
+                    Ok(_status)
+                        if matches!(
+                            *cm.state.read().await,
+                            crate::node::catchup::CatchupState::BehindRustLocal { .. }
+                        ) =>
+                    {
                         let state = cm.state.read().await.clone();
-                        if let crate::node::catchup::CatchupState::BehindRustLocal { target_block, current_block } = state {
+                        if let crate::node::catchup::CatchupState::BehindRustLocal {
+                            target_block,
+                            current_block,
+                        } = state
+                        {
                             warn!("🔄 [STARTUP] Go is behind local Rust storage! Fast-forwarding directly from local DB ({} -> {})...", current_block, target_block);
                             let storage_path = std::path::Path::new(&self.node_config.storage_path);
-                            match cm.sync_blocks_from_local_rust(storage_path, current_block, target_block).await {
+                            match cm
+                                .sync_blocks_from_local_rust(
+                                    storage_path,
+                                    current_block,
+                                    target_block,
+                                )
+                                .await
+                            {
                                 Ok(synced) => {
                                     info!("✅ [STARTUP] Local rust fast-forward complete: {} blocks synced directly.", synced);
                                 }
@@ -542,7 +563,9 @@ impl InitializedNode {
                             let fetch_to = std::cmp::min(current_go_block + 50, target);
                             match cm.sync_blocks_from_peers(current_go_block, fetch_to).await {
                                 Ok(synced) => {
-                                    if synced == 0 { break; }
+                                    if synced == 0 {
+                                        break;
+                                    }
                                     current_go_block += synced;
                                     total_synced += synced;
                                 }
@@ -625,8 +648,10 @@ impl InitializedNode {
                             };
 
                             match crate::network::peer_rpc::query_peer_epochs_network(
-                                &self.node_config.peer_rpc_addresses
-                            ).await {
+                                &self.node_config.peer_rpc_addresses,
+                            )
+                            .await
+                            {
                                 Ok((net_epoch, net_block, _peer, net_commit)) => {
                                     if go_block < net_block {
                                         let gap = net_block - go_block;
@@ -638,13 +663,18 @@ impl InitializedNode {
                                             last_log_block = go_block;
                                         }
                                         let fetch_to = std::cmp::min(go_block + 500, net_block);
-                                        match catchup_manager.sync_blocks_from_peers(go_block, fetch_to).await {
+                                        match catchup_manager
+                                            .sync_blocks_from_peers(go_block, fetch_to)
+                                            .await
+                                        {
                                             Ok(synced) if synced > 0 => {
                                                 info!(
                                                     "✅ [COLD-START SYNC] Synced {} blocks (Go now at ~{})",
                                                     synced, go_block + synced
                                                 );
-                                                if gap > 100 { continue; }
+                                                if gap > 100 {
+                                                    continue;
+                                                }
                                             }
                                             _ => {}
                                         }
@@ -705,26 +735,33 @@ impl InitializedNode {
                 }
 
                 // Phase 3: Start ConsensusAuthority
-                info!("✅ [STARTUP] Catch-up complete. Starting ConsensusAuthority for Validator...");
+                info!(
+                    "✅ [STARTUP] Catch-up complete. Starting ConsensusAuthority for Validator..."
+                );
                 let (new_epoch, new_exec_index) = {
                     let node_guard = self.node.lock().await;
                     (node_guard.current_epoch, node_guard.last_global_exec_index)
                 };
                 let mut node_guard = self.node.lock().await;
-                
+
                 if let Err(e) = crate::node::transition::mode_transition::transition_mode_only(
-                    &mut *node_guard,
+                    &mut node_guard,
                     new_epoch,
                     0,
                     new_exec_index,
                     &self.node_config,
-                ).await {
+                )
+                .await
+                {
                     error!("❌ [STARTUP] Failed to transition to Validator mode: {}", e);
                     node_guard.node_mode = crate::node::NodeMode::Validator;
                 } else {
-                    info!("✅ [STARTUP] Node is now a Validator at epoch {}! exec_index={}", new_epoch, new_exec_index);
+                    info!(
+                        "✅ [STARTUP] Node is now a Validator at epoch {}! exec_index={}",
+                        new_epoch, new_exec_index
+                    );
                 }
-                
+
                 let executor_client_opt = node_guard.executor_client.clone();
                 drop(node_guard);
 

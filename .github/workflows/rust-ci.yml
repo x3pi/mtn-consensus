@@ -1,0 +1,47 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [ "main", "dev" ]
+  pull_request:
+    branches: [ "main", "dev" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  build_and_test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive # Mysten repositories heavily use submodules
+
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+
+    - name: Cache Cargo Registry Integration
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: "metanode"
+        
+    - name: Install Protoc
+      uses: arduino/setup-protoc@v2
+
+    - name: Check Formatting
+      working-directory: ./metanode
+      run: cargo fmt --all -- --check
+
+    - name: Run Clippy
+      working-directory: ./metanode
+      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+    - name: Run Tests
+      working-directory: ./metanode
+      run: cargo test --workspace --all-targets --all-features

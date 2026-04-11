@@ -268,7 +268,8 @@ impl RustSyncNode {
                                 "✅ [RUST-SYNC] Imported {} blocks (last: {})",
                                 synced, last_block
                             );
-                            self.check_and_process_pending_epoch_transitions(go_last_gei).await;
+                            self.check_and_process_pending_epoch_transitions(go_last_gei)
+                                .await;
                             return Ok(synced as usize);
                         }
                         Err(e) => {
@@ -419,7 +420,11 @@ impl RustSyncNode {
                             let old_epoch_base = self.epoch_base_index.load(Ordering::SeqCst);
 
                             // Use current Go GEI as epoch_base (best effort)
-                            let new_epoch_base = match self.executor_client.get_last_global_exec_index().await {
+                            let new_epoch_base = match self
+                                .executor_client
+                                .get_last_global_exec_index()
+                                .await
+                            {
                                 Ok(gei) => {
                                     info!(
                                         "📊 [EPOCH-AUTO-SYNC] PEER-FALLBACK: Using go_last_gei={} as epoch_base",
@@ -427,7 +432,7 @@ impl RustSyncNode {
                                     );
                                     gei
                                 }
-                                Err(_) => old_epoch_base
+                                Err(_) => old_epoch_base,
                             };
 
                             // Keep existing committee — validators don't change between epochs.
@@ -437,12 +442,16 @@ impl RustSyncNode {
                                 rust_epoch, go_epoch, old_epoch_base, new_epoch_base
                             );
                             self.current_epoch.store(go_epoch, Ordering::SeqCst);
-                            self.epoch_base_index.store(new_epoch_base, Ordering::SeqCst);
+                            self.epoch_base_index
+                                .store(new_epoch_base, Ordering::SeqCst);
                             peer_success = true;
                             break;
                         }
                         Err(e) => {
-                            debug!("[EPOCH-AUTO-SYNC] Peer {} failed for epoch {} boundary: {}", peer_addr, go_epoch, e);
+                            debug!(
+                                "[EPOCH-AUTO-SYNC] Peer {} failed for epoch {} boundary: {}",
+                                peer_addr, go_epoch, e
+                            );
                         }
                     }
                 }
@@ -557,11 +566,7 @@ impl RustSyncNode {
                             .authorities()
                             .filter_map(|(_, auth)| {
                                 let addr_str = auth.address.to_string();
-                                if let Some(host) = addr_str.split('/').nth(2) {
-                                    Some(format!("{}:8000", host))
-                                } else {
-                                    None
-                                }
+                                addr_str.split('/').nth(2).map(|host| format!("{}:8000", host))
                             })
                             .collect()
                     } else {
@@ -611,7 +616,7 @@ impl RustSyncNode {
 
                 // If still not fixed, log error
                 let current_base = self.epoch_base_index.load(Ordering::SeqCst);
-                if go_last_block as u64 <= current_base {
+                if go_last_block <= current_base {
                     error!(
                         "❌ [RUST-SYNC] CRITICAL: Epoch boundary data is still corrupted! \
                          epoch={}, boundary={}, go_block={}. \

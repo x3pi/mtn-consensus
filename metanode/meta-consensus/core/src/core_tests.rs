@@ -163,7 +163,7 @@ use std::iter;
 use tokio::time::sleep;
 
 use crate::{
-    block::{genesis_blocks, BlockAPI, Slot, TestBlock, GENESIS_ROUND},
+    block::{genesis_blocks, BlockAPI, TestBlock, GENESIS_ROUND},
     commit::CommitAPI,
     leader_scoring::ReputationScores,
     storage::{Store, WriteBatch},
@@ -172,8 +172,7 @@ use crate::{
     transaction::BlockStatus,
     CommitIndex,
 };
-use consensus_config::ProtocolKeyPair;
-use consensus_types::block::{BlockRef, Round};
+use consensus_types::block::BlockRef;
 
 /// Recover Core and continue proposing from the last round which forms a quorum.
 #[tokio::test]

@@ -69,7 +69,12 @@ impl CachedOpenFile {
         &self,
         f: impl FnOnce(Option<&mut std::fs::File>) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
-        f(self.inner.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|(_, file)| file))
+        f(self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .map(|(_, file)| file))
     }
 }
 

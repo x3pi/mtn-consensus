@@ -89,7 +89,7 @@ impl ExecutorClient {
             let next_expected = self.next_expected_index.lock().await;
             if global_exec_index < *next_expected {
                 // Only log periodically or for non-empty blocks to avoid noise during replay
-                if total_tx_before > 0 || global_exec_index % 1000 == 0 {
+                if total_tx_before > 0 || global_exec_index.is_multiple_of(1000) {
                     info!(
                         "♻️ [REPLAY] Discarding already processed block: global={}, expected={}",
                         global_exec_index, *next_expected
@@ -120,7 +120,7 @@ impl ExecutorClient {
         // transaction order → deterministic split → identical GEI mapping.
         // ═══════════════════════════════════════════════════════════════
         if total_tx_before > MAX_TXS_PER_GO_BLOCK {
-            let num_fragments = (total_tx_before + MAX_TXS_PER_GO_BLOCK - 1) / MAX_TXS_PER_GO_BLOCK;
+            let num_fragments = total_tx_before.div_ceil(MAX_TXS_PER_GO_BLOCK);
             info!("🔪 [FRAGMENT] Splitting large commit: {} TXs → {} fragments of ≤{} TXs each (global_exec_index={}, commit_index={}, epoch={})",
                 total_tx_before, num_fragments, MAX_TXS_PER_GO_BLOCK, global_exec_index, subdag.commit_ref.index, epoch);
 
@@ -149,7 +149,7 @@ impl ExecutorClient {
 
             // Recalculate fragments after dedup
             let actual_fragments =
-                (total_after_dedup + MAX_TXS_PER_GO_BLOCK - 1) / MAX_TXS_PER_GO_BLOCK;
+                total_after_dedup.div_ceil(MAX_TXS_PER_GO_BLOCK);
 
             for frag_idx in 0..actual_fragments {
                 let start = frag_idx * MAX_TXS_PER_GO_BLOCK;
@@ -160,7 +160,7 @@ impl ExecutorClient {
                 let epoch_data = ExecutableBlock {
                     transactions: fragment_txs,
                     global_exec_index: fragment_gei,
-                    commit_index: subdag.commit_ref.index as u32,
+                    commit_index: subdag.commit_ref.index,
                     epoch,
                     commit_timestamp_ms: subdag.timestamp_ms,
                     leader_author_index: subdag.leader.author.value() as u32,
@@ -461,7 +461,7 @@ impl ExecutorClient {
                     for (_, data, _, _) in &batch {
                         let mut len_buf = Vec::new();
                         write_uvarint(&mut len_buf, data.len() as u64)
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                            .map_err(std::io::Error::other)?;
                         stream.write_all(&len_buf).await?;
                         stream.write_all(data).await?;
                     }
@@ -537,7 +537,7 @@ impl ExecutorClient {
 
         // Phase 4: Persist — only at intervals or end of batch (not every commit)
         if let Some(ref storage_path) = self.storage_path {
-            if last_idx % PERSIST_INTERVAL == 0 || batch_size > 1 {
+            if last_idx.is_multiple_of(PERSIST_INTERVAL) || batch_size > 1 {
                 if let Err(e) =
                     persist_last_sent_index(storage_path, last_idx, last_commit_index).await
                 {
@@ -569,7 +569,7 @@ impl ExecutorClient {
         }
 
         // Phase 5: Go verification (unchanged — periodic check)
-        if last_idx % GO_VERIFICATION_INTERVAL == 0 {
+        if last_idx.is_multiple_of(GO_VERIFICATION_INTERVAL) {
             if let Ok((go_last_block, _)) = self.get_last_block_number().await {
                 let mut last_verified = self.last_verified_go_index.lock().await;
                 if go_last_block < *last_verified {
@@ -817,7 +817,7 @@ impl ExecutorClient {
         let epoch_data = ExecutableBlock {
             transactions: Vec::new(),
             global_exec_index,
-            commit_index: subdag.commit_ref.index as u32,
+            commit_index: subdag.commit_ref.index,
             epoch,
             commit_timestamp_ms: subdag.timestamp_ms,
             leader_author_index: subdag.leader.author.value() as u32,
@@ -929,7 +929,7 @@ impl ExecutorClient {
 
         // Convert to TransactionExe messages after sorting
         let mut transactions = Vec::with_capacity(unique_txs.len());
-        for (_sorted_idx, (tx_data_ref, tx_hash)) in unique_txs.iter().enumerate() {
+        for (tx_data_ref, tx_hash) in unique_txs.iter() {
             let tx_hash_hex = hex::encode(&tx_hash[..8.min(tx_hash.len())]);
             trace!("📋 [FORK-SAFETY] Sorted transaction: hash={}", tx_hash_hex);
 
@@ -944,7 +944,7 @@ impl ExecutorClient {
         let epoch_data = ExecutableBlock {
             transactions,
             global_exec_index,
-            commit_index: subdag.commit_ref.index as u32,
+            commit_index: subdag.commit_ref.index,
             epoch,
             commit_timestamp_ms: subdag.timestamp_ms,
             leader_author_index: subdag.leader.author.value() as u32,
@@ -968,7 +968,9 @@ impl ExecutorClient {
     /// so it can be reused by the fragmentation path. Returns Vec<TransactionExe>
     /// in deterministic order (sorted by tx hash).
     fn build_sorted_transactions(&self, subdag: &CommittedSubDag) -> Result<Vec<TransactionExe>> {
-        use crate::types::tx_hash::{calculate_transaction_hash_single, verify_transaction_protobuf};
+        use crate::types::tx_hash::{
+            calculate_transaction_hash_single, verify_transaction_protobuf,
+        };
 
         let mut all_transactions_with_hash: Vec<(&[u8], Vec<u8>)> = Vec::new();
         let mut skipped_count = 0;

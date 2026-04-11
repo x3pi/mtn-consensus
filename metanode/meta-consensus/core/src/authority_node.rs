@@ -49,6 +49,7 @@ pub enum ConsensusAuthority {
 }
 
 impl ConsensusAuthority {
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         network_type: NetworkType,
         epoch_start_timestamp_ms: u64,
@@ -200,6 +201,7 @@ impl<N> AuthorityNode<N>
 where
     N: NetworkManager<AuthorityService<ChannelCoreThreadDispatcher>>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn start(
         epoch_start_timestamp_ms: u64,
         epoch_base_index: u64,
@@ -551,7 +553,9 @@ where
                         tracing::info!(
                             "🔓 [QUORUM GATE] Quorum reached: stake {}/{} ({} peers + self). \
                              Enabling round 2+ proposals.",
-                            active_stake, total_stake, peers_heard
+                            active_stake,
+                            total_stake,
+                            peers_heard
                         );
                         quorum_ready_clone.store(true, std::sync::atomic::Ordering::Relaxed);
                         break;
@@ -560,8 +564,11 @@ where
                     tracing::debug!(
                         "🔒 [QUORUM GATE] Waiting: stake {}/{} ({} peers), \
                          need {} for quorum. Elapsed: {:?}",
-                        active_stake, total_stake, peers_heard,
-                        quorum_threshold_val, start.elapsed()
+                        active_stake,
+                        total_stake,
+                        peers_heard,
+                        quorum_threshold_val,
+                        start.elapsed()
                     );
                 }
             });
@@ -639,12 +646,12 @@ mod tests {
     use consensus_config::{local_committee_and_keys, Parameters};
     use meta_protocol_config::ProtocolConfig;
     use mysten_metrics::monitored_mpsc::UnboundedReceiver;
-    use mysten_metrics::RegistryService;
+    
     use prometheus::Registry;
     use rstest::rstest;
     use tempfile::TempDir;
     use tokio::time::{sleep, timeout};
-    use typed_store::DBMetrics;
+    
 
     use super::*;
     use crate::{

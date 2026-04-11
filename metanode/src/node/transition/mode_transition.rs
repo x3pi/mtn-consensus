@@ -128,7 +128,8 @@ pub async fn transition_mode_only(
     // synced_global_exec_index is WRONG because it points to the tip of synced state,
     // not the ACTUAL base GEI of the epoch.
     let epoch_base_gei_from_go = {
-        let boundary_client = committee_source.create_executor_client(&config.executor_send_socket_path);
+        let boundary_client =
+            committee_source.create_executor_client(&config.executor_send_socket_path);
         match boundary_client.get_epoch_boundary_data(epoch).await {
             Ok((_, _, _, _, _, boundary_gei)) => {
                 info!(
@@ -338,7 +339,10 @@ pub async fn transition_mode_only(
         node.boot_counter
     };
 
-    info!("🚀 [MODE TRANSITION] Starting ConsensusAuthority for Validator mode (boot_counter={})", boot_counter_for_authority);
+    info!(
+        "🚀 [MODE TRANSITION] Starting ConsensusAuthority for Validator mode (boot_counter={})",
+        boot_counter_for_authority
+    );
     node.authority = Some(
         ConsensusAuthority::start(
             NetworkType::Tonic,
@@ -369,7 +373,9 @@ pub async fn transition_mode_only(
     if let Some(auth) = &node.authority {
         if let Some(proxy) = &node.transaction_client_proxy {
             proxy.set_client(auth.transaction_client()).await;
-            info!("✅ [MODE TRANSITION] Updated existing TransactionClientProxy with new authority");
+            info!(
+                "✅ [MODE TRANSITION] Updated existing TransactionClientProxy with new authority"
+            );
         } else {
             node.transaction_client_proxy = Some(Arc::new(
                 crate::node::tx_submitter::TransactionClientProxy::new(auth.transaction_client()),
@@ -446,7 +452,7 @@ pub(super) async fn handle_synconly_upgrade_wait(
         let go_current_block = match fresh_executor_client.get_last_block_number().await {
             Ok((b, _)) => b,
             Err(e) => {
-                if attempt % 20 == 0 {
+                if attempt.is_multiple_of(20) {
                     warn!(
                         "⚠️ [MODE TRANSITION] Cannot reach Go (attempt {}): {}. Will keep trying...",
                         attempt, e
@@ -472,17 +478,25 @@ pub(super) async fn handle_synconly_upgrade_wait(
             return Ok(());
         }
 
-        if attempt % 20 == 0 {
+        if attempt.is_multiple_of(20) {
             if !node.peer_rpc_addresses.is_empty() {
                 let fetch_from = go_current_block + 1;
-                info!("🔄 [MODE TRANSITION] Fetching blocks {} to {} from peers", fetch_from, synced_global_exec_index);
+                info!(
+                    "🔄 [MODE TRANSITION] Fetching blocks {} to {} from peers",
+                    fetch_from, synced_global_exec_index
+                );
                 if let Ok(blocks) = crate::network::peer_rpc::fetch_blocks_from_peer(
                     &node.peer_rpc_addresses,
                     fetch_from,
                     synced_global_exec_index,
-                ).await {
+                )
+                .await
+                {
                     if !blocks.is_empty() {
-                        info!("✅ [MODE TRANSITION] Fetched {} blocks from peers! Syncing...", blocks.len());
+                        info!(
+                            "✅ [MODE TRANSITION] Fetched {} blocks from peers! Syncing...",
+                            blocks.len()
+                        );
                         let _ = fresh_executor_client.sync_blocks(blocks).await;
                     }
                 }

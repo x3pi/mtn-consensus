@@ -138,21 +138,30 @@ pub fn start_unified_epoch_monitor(
                     };
 
                     let role = match crate::node::transition::demotion::determine_role_for_epoch(
-                        rust_epoch, &own_protocol_pubkey, &config_clone,
-                    ).await {
+                        rust_epoch,
+                        &own_protocol_pubkey,
+                        &config_clone,
+                    )
+                    .await
+                    {
                         Ok(r) => r,
                         Err(_) => continue,
                     };
 
                     if matches!(role, crate::node::NodeMode::Validator) {
                         // Node IS in committee — check if Go has caught up
-                        let (go_block, _) = client_arc.get_last_block_number().await.unwrap_or((0, false));
+                        let (go_block, _) = client_arc
+                            .get_last_block_number()
+                            .await
+                            .unwrap_or((0, false));
 
                         // Query network block height
                         let net_block = {
                             let peer_rpc = config_clone.peer_rpc_addresses.clone();
                             if !peer_rpc.is_empty() {
-                                match crate::network::peer_rpc::query_peer_epochs_network(&peer_rpc).await {
+                                match crate::network::peer_rpc::query_peer_epochs_network(&peer_rpc)
+                                    .await
+                                {
                                     Ok((_ep, blk, _peer, _gei)) => blk,
                                     Err(_) => go_block, // assume caught up if can't query
                                 }
@@ -169,16 +178,20 @@ pub fn start_unified_epoch_monitor(
                             );
 
                             // Get synced_global_exec_index from Go
-                            let synced_gei = client_arc.get_last_global_exec_index().await.unwrap_or(go_block);
+                            let synced_gei = client_arc
+                                .get_last_global_exec_index()
+                                .await
+                                .unwrap_or(go_block);
 
-                            if let Some(node_arc) = crate::node::get_transition_handler_node().await {
+                            if let Some(node_arc) = crate::node::get_transition_handler_node().await
+                            {
                                 let mut node_guard = node_arc.lock().await;
                                 // Update epoch/GEI state before transition
                                 node_guard.current_epoch = rust_epoch;
                                 node_guard.last_global_exec_index = synced_gei;
 
                                 match crate::node::transition::mode_transition::transition_mode_only(
-                                    &mut *node_guard,
+                                    &mut node_guard,
                                     rust_epoch,
                                     0, // boundary_block unused
                                     synced_gei,
@@ -229,7 +242,9 @@ pub fn start_unified_epoch_monitor(
                 // Fetch boundary data from peers
                 let peer_rpc = config_clone.peer_rpc_addresses.clone();
                 if peer_rpc.is_empty() {
-                    warn!("[EPOCH MONITOR] SyncOnly: no peer_rpc_addresses, cannot advance Go epoch");
+                    warn!(
+                        "[EPOCH MONITOR] SyncOnly: no peer_rpc_addresses, cannot advance Go epoch"
+                    );
                     continue;
                 }
 
@@ -240,8 +255,11 @@ pub fn start_unified_epoch_monitor(
                     let mut boundary_found = false;
                     for peer_addr in &peer_rpc {
                         match crate::network::peer_rpc::query_peer_epoch_boundary_data(
-                            peer_addr, target_epoch,
-                        ).await {
+                            peer_addr,
+                            target_epoch,
+                        )
+                        .await
+                        {
                             Ok(data) => {
                                 info!(
                                     "📦 [EPOCH MONITOR] SyncOnly: epoch {} boundary={}, timestamp={}ms (from {})",
@@ -249,12 +267,19 @@ pub fn start_unified_epoch_monitor(
                                 );
 
                                 // Fetch blocks up to boundary from peers
-                                let (go_block, _go_ready) = client_arc.get_last_block_number().await.unwrap_or((0, false));
+                                let (go_block, _go_ready) = client_arc
+                                    .get_last_block_number()
+                                    .await
+                                    .unwrap_or((0, false));
                                 if go_block < data.boundary_block {
                                     // Fetch missing blocks
                                     match crate::network::peer_rpc::fetch_blocks_from_peer(
-                                        &peer_rpc, go_block + 1, data.boundary_block,
-                                    ).await {
+                                        &peer_rpc,
+                                        go_block + 1,
+                                        data.boundary_block,
+                                    )
+                                    .await
+                                    {
                                         Ok(blocks) if !blocks.is_empty() => {
                                             match client_arc.sync_blocks(blocks).await {
                                                 Ok((synced, last)) => {
@@ -274,7 +299,15 @@ pub fn start_unified_epoch_monitor(
 
                                 // Advance Go epoch
                                 if current_go_epoch < target_epoch {
-                                    match client_arc.advance_epoch(target_epoch, data.timestamp_ms, data.boundary_block, data.boundary_gei).await {
+                                    match client_arc
+                                        .advance_epoch(
+                                            target_epoch,
+                                            data.timestamp_ms,
+                                            data.boundary_block,
+                                            data.boundary_gei,
+                                        )
+                                        .await
+                                    {
                                         Ok(_) => {
                                             info!(
                                                 "✅ [EPOCH MONITOR] SyncOnly: advanced Go to epoch {} (boundary={})",
@@ -345,17 +378,27 @@ pub fn start_unified_epoch_monitor(
                         match crate::network::peer_rpc::query_peer_epoch_boundary_data(
                             peer_addr,
                             target_epoch,
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(data) => {
                                 info!(
                                     "✅ [EPOCH MONITOR] Got boundary from PEER {}: epoch={}, timestamp={}ms, boundary={}",
                                     peer_addr, data.epoch, data.timestamp_ms, data.boundary_block
                                 );
-                                peer_data = Some((data.epoch, data.timestamp_ms, data.boundary_block, data.boundary_gei));
+                                peer_data = Some((
+                                    data.epoch,
+                                    data.timestamp_ms,
+                                    data.boundary_block,
+                                    data.boundary_gei,
+                                ));
                                 break;
                             }
                             Err(e) => {
-                                debug!("⚠️ [EPOCH MONITOR] Peer {} failed for epoch {}: {}", peer_addr, target_epoch, e);
+                                debug!(
+                                    "⚠️ [EPOCH MONITOR] Peer {} failed for epoch {}: {}",
+                                    peer_addr, target_epoch, e
+                                );
                             }
                         }
                     }
@@ -368,7 +411,10 @@ pub fn start_unified_epoch_monitor(
                     }
                 } else {
                     // LOCAL Go has this epoch data
-                    match local_executor_client.get_epoch_boundary_data(target_epoch).await {
+                    match local_executor_client
+                        .get_epoch_boundary_data(target_epoch)
+                        .await
+                    {
                         Ok((epoch, timestamp_ms, boundary_block, _validators, _, boundary_gei)) => {
                             (epoch, timestamp_ms, boundary_block, boundary_gei)
                         }
@@ -377,12 +423,18 @@ pub fn start_unified_epoch_monitor(
                             // Try peer fallback
                             let mut peer_data: Option<(u64, u64, u64, u64)> = None;
                             for peer_addr in &peer_rpc {
-                                match crate::network::peer_rpc::query_peer_epoch_boundary_data(peer_addr, target_epoch).await {
-                                    Ok(data) => {
-                                        peer_data = Some((data.epoch, data.timestamp_ms, data.boundary_block, data.boundary_gei));
-                                        break;
-                                    }
-                                    Err(_) => {}
+                                if let Ok(data) = crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                                    peer_addr,
+                                    target_epoch,
+                                )
+                                .await {
+                                    peer_data = Some((
+                                        data.epoch,
+                                        data.timestamp_ms,
+                                        data.boundary_block,
+                                        data.boundary_gei,
+                                    ));
+                                    break;
                                 }
                             }
                             match peer_data {
@@ -399,11 +451,18 @@ pub fn start_unified_epoch_monitor(
                 let (new_epoch, epoch_timestamp_ms, boundary_block, boundary_gei) = boundary_data;
 
                 // First ensure Go has enough blocks for this epoch
-                let (go_block, _go_ready) = client_arc.get_last_block_number().await.unwrap_or((0, false));
+                let (go_block, _go_ready) = client_arc
+                    .get_last_block_number()
+                    .await
+                    .unwrap_or((0, false));
                 if go_block < boundary_block && !peer_rpc.is_empty() {
                     match crate::network::peer_rpc::fetch_blocks_from_peer(
-                        &peer_rpc, go_block + 1, boundary_block,
-                    ).await {
+                        &peer_rpc,
+                        go_block + 1,
+                        boundary_block,
+                    )
+                    .await
+                    {
                         Ok(blocks) if !blocks.is_empty() => {
                             let count = blocks.len();
                             if let Ok((synced, last)) = client_arc.sync_blocks(blocks).await {
@@ -418,15 +477,27 @@ pub fn start_unified_epoch_monitor(
                 // Advance Go epoch if needed
                 let current_go_epoch = client_arc.get_current_epoch().await.unwrap_or(0);
                 if current_go_epoch < target_epoch {
-                    if let Err(e) = client_arc.advance_epoch(target_epoch, epoch_timestamp_ms, boundary_block, boundary_gei).await {
-                        warn!("⚠️ [EPOCH MONITOR] Failed to advance Go to epoch {}: {}", target_epoch, e);
+                    if let Err(e) = client_arc
+                        .advance_epoch(
+                            target_epoch,
+                            epoch_timestamp_ms,
+                            boundary_block,
+                            boundary_gei,
+                        )
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [EPOCH MONITOR] Failed to advance Go to epoch {}: {}",
+                            target_epoch, e
+                        );
                     } else {
                         info!("✅ [EPOCH MONITOR] Advanced Go to epoch {}", target_epoch);
                     }
                 }
 
                 // Try Rust transition via EpochTransitionManager
-                let epoch_manager = match crate::node::epoch_transition_manager::get_epoch_manager() {
+                let epoch_manager = match crate::node::epoch_transition_manager::get_epoch_manager()
+                {
                     Some(m) => m,
                     None => {
                         debug!("⏳ [EPOCH MONITOR] Epoch manager not initialized yet");
@@ -434,8 +505,14 @@ pub fn start_unified_epoch_monitor(
                     }
                 };
 
-                if let Err(e) = epoch_manager.try_start_epoch_transition(new_epoch, "epoch_monitor").await {
-                    debug!("⏳ [EPOCH MONITOR] Cannot start transition to epoch {}: {}", new_epoch, e);
+                if let Err(e) = epoch_manager
+                    .try_start_epoch_transition(new_epoch, "epoch_monitor")
+                    .await
+                {
+                    debug!(
+                        "⏳ [EPOCH MONITOR] Cannot start transition to epoch {}: {}",
+                        new_epoch, e
+                    );
                     // Still continue — Go epoch was advanced, sync_loop will pick up via auto_epoch_sync
                     continue;
                 }
@@ -450,19 +527,24 @@ pub fn start_unified_epoch_monitor(
                         std::cmp::max(go_gei, boundary_block)
                     };
 
-                    match node_guard.transition_to_epoch_from_system_tx(
-                        new_epoch,
-                        epoch_timestamp_ms,
-                        boundary_block,
-                        synced_global_exec_index,
-                        &config_clone,
-                    ).await {
+                    match node_guard
+                        .transition_to_epoch_from_system_tx(
+                            new_epoch,
+                            epoch_timestamp_ms,
+                            boundary_block,
+                            synced_global_exec_index,
+                            &config_clone,
+                        )
+                        .await
+                    {
                         Ok(()) => {
                             epoch_manager.complete_epoch_transition(new_epoch).await;
                             current_rust_epoch = new_epoch;
                             info!(
                                 "✅ [EPOCH MONITOR] Transitioned to epoch {} ({}/{})",
-                                new_epoch, new_epoch - rust_epoch, epoch_gap
+                                new_epoch,
+                                new_epoch - rust_epoch,
+                                epoch_gap
                             );
                         }
                         Err(e) => {

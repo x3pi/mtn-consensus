@@ -231,7 +231,6 @@ pub async fn query_peer_epoch_boundary_data(
     Ok(response)
 }
 
-
 /// Fetch blocks from a peer node via HTTP /get_blocks endpoint.
 /// Batches requests by 100 blocks (server-side limit).
 /// Returns Vec<BlockData> ready for sync_blocks().
@@ -310,7 +309,7 @@ pub async fn fetch_blocks_from_peer(
 
         // Yield execution to allow other async tasks (like socket listeners) to run
         tokio::task::yield_now().await;
-        
+
         current_from = std::cmp::max(current_from + 1, max_block_fetched + 1);
     }
 
@@ -430,7 +429,10 @@ pub async fn fetch_executable_blocks_from_peer(
     let total = to_gei.saturating_sub(from_gei) + 1;
     info!(
         "🔄 [EXEC-BLOCK-FETCH] Fetching {} executable blocks (GEI {} to {}) from {} peer(s)",
-        total, from_gei, to_gei, peer_addresses.len()
+        total,
+        from_gei,
+        to_gei,
+        peer_addresses.len()
     );
 
     let mut all_blocks = Vec::new();
@@ -449,7 +451,10 @@ pub async fn fetch_executable_blocks_from_peer(
                     }
                     info!(
                         "✅ [EXEC-BLOCK-FETCH] Got {} executable blocks (GEI {}-{}) from peer {}",
-                        blocks.len(), current_from, current_to, peer_addr
+                        blocks.len(),
+                        current_from,
+                        current_to,
+                        peer_addr
                     );
                     batch_fetched = true;
                     all_blocks.extend(blocks);

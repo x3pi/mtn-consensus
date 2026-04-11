@@ -46,7 +46,10 @@ impl ExecutorClient {
         request.encode(&mut request_buf)?;
 
         // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+        let (mut conn_guard, _slot) = self
+            .request_pool
+            .get_connection()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             // Write 4-byte length prefix (big-endian)
@@ -108,7 +111,7 @@ impl ExecutorClient {
                 .map_err(|e| {
                     anyhow::anyhow!(
                         "Failed to decode response from Go: {}. Response length: {} bytes. Response bytes (hex): {}. Response bytes (first 100): {:?}", 
-                        e, 
+                        e,
                         response_buf.len(),
                         hex::encode(&response_buf),
                         &response_buf[..response_buf.len().min(100)]
@@ -139,7 +142,7 @@ impl ExecutorClient {
                             validator.authority_key.clone()
                         };
                         info!("📥 [RUST←GO] ValidatorInfo[{}]: address={}, stake={}, name={}, authority_key={}, protocol_key={}, network_key={}",
-                            idx, validator.address, validator.stake, validator.name, 
+                            idx, validator.address, validator.stake, validator.name,
                             auth_key_preview, validator.protocol_key, validator.network_key);
                     }
                 }
@@ -188,7 +191,7 @@ impl ExecutorClient {
 
             match response.payload {
                 Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
-                    return Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"));
+                    Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
                 }
                 Some(proto::response::Payload::ValidatorInfoList(validator_info_list)) => {
                     info!("✅ [EXECUTOR-REQ] Received ValidatorInfoList from Go at block {} with {} validators, epoch_timestamp_ms={}, last_global_exec_index={}",
@@ -208,67 +211,67 @@ impl ExecutorClient {
                             auth_key_preview, validator.protocol_key, validator.network_key);
                     }
 
-                    return Ok((
+                    Ok((
                         validator_info_list.validators,
                         validator_info_list.epoch_timestamp_ms,
                         validator_info_list.last_global_exec_index,
-                    ));
+                    ))
                 }
                 Some(proto::response::Payload::Error(error_msg)) => {
-                    return Err(anyhow::anyhow!("Go returned error: {}", error_msg));
+                    Err(anyhow::anyhow!("Go returned error: {}", error_msg))
                 }
                 Some(proto::response::Payload::ValidatorList(_)) => {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "Unexpected ValidatorList response (expected ValidatorInfoList)"
-                    ));
+                    ))
                 }
                 Some(proto::response::Payload::ServerStatus(_)) => {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "Unexpected ServerStatus response (expected ValidatorInfoList)"
-                    ));
+                    ))
                 }
                 Some(proto::response::Payload::LastBlockNumberResponse(_)) => {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "Unexpected LastBlockNumberResponse response (expected ValidatorInfoList)"
-                    ));
+                    ))
                 }
                 Some(proto::response::Payload::GetCurrentEpochResponse(_)) => {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "Unexpected GetCurrentEpochResponse response (expected ValidatorInfoList)"
-                    ));
+                    ))
                 }
                 Some(proto::response::Payload::GetEpochStartTimestampResponse(_)) => {
-                    return Err(anyhow::anyhow!("Unexpected GetEpochStartTimestampResponse response (expected ValidatorInfoList)"));
+                    Err(anyhow::anyhow!("Unexpected GetEpochStartTimestampResponse response (expected ValidatorInfoList)"))
                 }
                 Some(proto::response::Payload::AdvanceEpochResponse(_)) => {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "Unexpected AdvanceEpochResponse response (expected ValidatorInfoList)"
-                    ));
+                    ))
                 }
                 Some(proto::response::Payload::EpochBoundaryData(_)) => {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "Unexpected EpochBoundaryData response (expected ValidatorInfoList)"
-                    ));
+                    ))
                 }
                 Some(proto::response::Payload::SetConsensusStartBlockResponse(_))
                 | Some(proto::response::Payload::SetSyncStartBlockResponse(_))
                 | Some(proto::response::Payload::WaitForSyncToBlockResponse(_)) => {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "Unexpected Transition Handoff response (expected ValidatorInfoList)"
-                    ));
+                    ))
                 }
                 Some(proto::response::Payload::GetBlocksRangeResponse(_))
                 | Some(proto::response::Payload::SyncBlocksResponse(_)) => {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "Unexpected Block Sync response (expected ValidatorInfoList)"
-                    ));
+                    ))
                 }
                 None => {
-                    return Err(anyhow::anyhow!("Unexpected response type from Go. Response payload: None. Response bytes (hex): {}", hex::encode(&response_buf)));
+                    Err(anyhow::anyhow!("Unexpected response type from Go. Response payload: None. Response bytes (hex): {}", hex::encode(&response_buf)))
                 }
             }
         } else {
-            return Err(anyhow::anyhow!("Request connection is not available"));
+            Err(anyhow::anyhow!("Request connection is not available"))
         }
     }
 
@@ -299,7 +302,10 @@ impl ExecutorClient {
         request.encode(&mut request_buf)?;
 
         // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+        let (mut conn_guard, _slot) = self
+            .request_pool
+            .get_connection()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             // Write 4-byte length prefix (big-endian)
@@ -346,10 +352,16 @@ impl ExecutorClient {
                 .map_err(|e| anyhow::anyhow!("Timeout reading response data: {}", e))??;
 
             // HEX DUMP: Log raw proto bytes to diagnose gei=0 decode bug
-            let hex_preview: String = response_buf.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+            let hex_preview: String = response_buf
+                .iter()
+                .take(64)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
             info!(
                 "📥 [EXECUTOR-REQ] Received {} bytes from Go, hex={}, decoding...",
-                response_buf.len(), hex_preview
+                response_buf.len(),
+                hex_preview
             );
 
             // Decode response
@@ -358,7 +370,7 @@ impl ExecutorClient {
 
             match response.payload {
                 Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
-                    return Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"));
+                    Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
                 }
                 Some(proto::response::Payload::LastBlockNumberResponse(res)) => {
                     let last_block_number = res.last_block_number;
@@ -381,19 +393,19 @@ impl ExecutorClient {
                         }
                     }
 
-                    return Ok((last_block_number, is_ready));
+                    Ok((last_block_number, is_ready))
                 }
                 Some(proto::response::Payload::Error(error_msg)) => {
-                    return Err(anyhow::anyhow!("Go returned error: {}", error_msg));
+                    Err(anyhow::anyhow!("Go returned error: {}", error_msg))
                 }
                 _ => {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "Unexpected response type from Go (expected LastBlockNumberResponse)"
-                    ));
+                    ))
                 }
             }
         } else {
-            return Err(anyhow::anyhow!("Request connection is not available"));
+            Err(anyhow::anyhow!("Request connection is not available"))
         }
     }
 
@@ -421,7 +433,10 @@ impl ExecutorClient {
         request.encode(&mut request_buf)?;
 
         // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self.request_pool.get_connection().await
+        let (mut conn_guard, _slot) = self
+            .request_pool
+            .get_connection()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
         if let Some(ref mut stream) = *conn_guard {
             let len = request_buf.len() as u32;
@@ -450,10 +465,16 @@ impl ExecutorClient {
                 .map_err(|e| anyhow::anyhow!("Timeout reading response data: {}", e))??;
 
             // HEX DUMP: Log raw proto bytes to diagnose gei=0 decode bug
-            let hex_preview: String = response_buf.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+            let hex_preview: String = response_buf
+                .iter()
+                .take(64)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
             info!(
                 "📥 [EXECUTOR-REQ-GEI] Received {} bytes from Go, hex={}",
-                response_buf.len(), hex_preview
+                response_buf.len(),
+                hex_preview
             );
 
             let response = Response::decode(&response_buf[..])
@@ -466,19 +487,19 @@ impl ExecutorClient {
                         "✅ [EXECUTOR-REQ] Go last_global_exec_index={} (block={})",
                         last_gei, res.last_block_number
                     );
-                    return Ok(last_gei);
+                    Ok(last_gei)
                 }
                 Some(proto::response::Payload::Error(error_msg)) => {
-                    return Err(anyhow::anyhow!("Go returned error: {}", error_msg));
+                    Err(anyhow::anyhow!("Go returned error: {}", error_msg))
                 }
                 _ => {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "Unexpected response type from Go (expected LastBlockNumberResponse)"
-                    ));
+                    ))
                 }
             }
         } else {
-            return Err(anyhow::anyhow!("Request connection is not available"));
+            Err(anyhow::anyhow!("Request connection is not available"))
         }
     }
 }

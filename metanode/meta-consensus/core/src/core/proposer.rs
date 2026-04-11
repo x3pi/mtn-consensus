@@ -247,11 +247,7 @@ impl Core {
                     // Convert system transactions to regular transactions
                     let system_transactions: Vec<crate::block::Transaction> = system_txs
                         .into_iter()
-                        .filter_map(|stx| {
-                            stx.to_bytes()
-                                .map(|bytes| crate::block::Transaction::new(bytes))
-                                .ok()
-                        })
+                        .filter_map(|stx| stx.to_bytes().map(crate::block::Transaction::new).ok())
                         .collect();
 
                     if !system_transactions.is_empty() {
@@ -556,11 +552,12 @@ impl Core {
         // ═══════════════════════════════════════════════════════════════════
         let is_cold_start = local_commit_index == 0 && quorum_commit_index > 200;
 
-        if !is_cold_start && self.propagation_delay
-            > self
-                .context
-                .parameters
-                .propagation_delay_stop_proposal_threshold
+        if !is_cold_start
+            && self.propagation_delay
+                > self
+                    .context
+                    .parameters
+                    .propagation_delay_stop_proposal_threshold
         {
             debug!(
                 "Skip proposing for round {clock_round}, high propagation delay {} > {}.",

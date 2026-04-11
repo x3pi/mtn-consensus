@@ -28,11 +28,13 @@ impl SelfSignedCertificate {
 
     pub fn reqwest_identity(&self) -> reqwest::tls::Identity {
         let pem = self.inner.pem() + &self.key.serialize_pem();
-        reqwest::tls::Identity::from_pem(pem.as_ref()).expect("Failed to parse reqwest identity from PEM")
+        reqwest::tls::Identity::from_pem(pem.as_ref())
+            .expect("Failed to parse reqwest identity from PEM")
     }
 
     pub fn reqwest_certificate(&self) -> reqwest::tls::Certificate {
-        reqwest::tls::Certificate::from_der(self.inner.der()).expect("Failed to parse reqwest certificate from DER")
+        reqwest::tls::Certificate::from_der(self.inner.der())
+            .expect("Failed to parse reqwest certificate from DER")
     }
 }
 
@@ -47,9 +49,12 @@ fn generate_self_signed_tls_certificate(
         public_key: None,
     };
 
-    let pkcs8 = keypair.to_pkcs8_der().expect("Failed to convert ed25519 keypair to pkcs8 der");
+    let pkcs8 = keypair
+        .to_pkcs8_der()
+        .expect("Failed to convert ed25519 keypair to pkcs8 der");
     let key_der = PrivateKeyDer::Pkcs8(pkcs8.as_bytes().to_vec().into());
-    let keypair = KeyPair::from_der_and_sign_algo(&key_der, &rcgen::PKCS_ED25519).expect("Failed to create keypair from der and sign algo");
+    let keypair = KeyPair::from_der_and_sign_algo(&key_der, &rcgen::PKCS_ED25519)
+        .expect("Failed to create keypair from der and sign algo");
 
     (generate_cert(&keypair, server_name), keypair)
 }

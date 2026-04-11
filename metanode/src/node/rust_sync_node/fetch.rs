@@ -264,7 +264,7 @@ impl RustSyncNode {
                 Ok(commit) => {
                     // Collect all block refs from this commit
                     for block_ref in commit.blocks() {
-                        all_block_refs.push(block_ref.clone());
+                        all_block_refs.push(*block_ref);
                     }
                     temp_commits.push(commit);
                 }
@@ -378,18 +378,10 @@ impl RustSyncNode {
                     global_idx >= next_expected && !queue.pending.contains_key(&global_idx);
 
                 // 🔍 DIAGNOSTIC: Detect gap and trigger global range fallback
-                let gap = if global_idx > next_expected {
-                    global_idx - next_expected
-                } else {
-                    0
-                };
+                let gap = global_idx.saturating_sub(next_expected);
 
                 // EPOCH MISMATCH DETECTION
-                let negative_gap = if next_expected > global_idx {
-                    next_expected - global_idx
-                } else {
-                    0
-                };
+                let negative_gap = next_expected.saturating_sub(global_idx);
 
                 if negative_gap > 1000 && pushed == 0 {
                     warn!(
@@ -433,7 +425,7 @@ impl RustSyncNode {
                 // (e.g., blocks committed in epoch 0 being incorrectly stamped as epoch 1).
                 let block_epoch = commit_blocks
                     .first()
-                    .map(|b| b.epoch() as u64)
+                    .map(|b| b.epoch())
                     .unwrap_or(current_epoch);
                 if block_epoch != current_epoch {
                     info!(
@@ -447,7 +439,7 @@ impl RustSyncNode {
                     write_batch.blocks.extend(commit_blocks.clone());
                     let trusted_commit = consensus_core::TrustedCommit::new_trusted(
                         commit.clone(),
-                        serialized_commit.into(),
+                        serialized_commit,
                     );
                     write_batch.commits.push(trusted_commit);
                 }
@@ -608,7 +600,7 @@ impl RustSyncNode {
             match bcs::from_bytes::<Commit>(&global_info.commit_data) {
                 Ok(commit) => {
                     for block_ref in commit.blocks() {
-                        all_block_refs.push(block_ref.clone());
+                        all_block_refs.push(*block_ref);
                     }
                     temp_commits.push((global_info, commit));
                 }
@@ -624,29 +616,18 @@ impl RustSyncNode {
             all_block_refs.sort();
             all_block_refs.dedup();
 
-            let block_refs_for_fetch: Vec<_> = all_block_refs
-                .iter()
-                .map(|cr| cr.clone())
-                .collect();
+            let block_refs_for_fetch: Vec<_> = all_block_refs.to_vec();
 
             match network_client
-                .fetch_blocks(
-                    authority_idx,
-                    block_refs_for_fetch,
-                    vec![],
-                    false,
-                    timeout,
-                )
+                .fetch_blocks(authority_idx, block_refs_for_fetch, vec![], false, timeout)
                 .await
             {
                 Ok(serialized_blocks) => {
                     for serialized in &serialized_blocks {
                         match bcs::from_bytes::<SignedBlock>(serialized) {
                             Ok(signed_block) => {
-                                let verified = VerifiedBlock::new_verified(
-                                    signed_block,
-                                    serialized.clone(),
-                                );
+                                let verified =
+                                    VerifiedBlock::new_verified(signed_block, serialized.clone());
                                 block_map.insert(verified.reference(), verified);
                             }
                             Err(e) => {
@@ -678,8 +659,8 @@ impl RustSyncNode {
                 let epoch_from_peer = global_info.epoch;
                 let global_idx = global_info.global_exec_index;
 
-                let will_add = global_idx >= queue.next_expected()
-                    && !queue.pending.contains_key(&global_idx);
+                let will_add =
+                    global_idx >= queue.next_expected() && !queue.pending.contains_key(&global_idx);
 
                 if will_add {
                     chunk_write_batch.blocks.extend(commit_blocks.clone());
@@ -694,7 +675,9 @@ impl RustSyncNode {
                 if pushed < 5 {
                     info!(
                         "📋 [GLOBAL-SYNC] Commit: gei={}, epoch={}, blocks={}",
-                        global_idx, epoch_from_peer, commit_blocks.len()
+                        global_idx,
+                        epoch_from_peer,
+                        commit_blocks.len()
                     );
                 }
 
@@ -710,9 +693,7 @@ impl RustSyncNode {
         // Persist to store if configured
         if pushed > 0 {
             if let Some(store) = &self.store {
-                if !chunk_write_batch.commits.is_empty()
-                    || !chunk_write_batch.blocks.is_empty()
-                {
+                if !chunk_write_batch.commits.is_empty() || !chunk_write_batch.blocks.is_empty() {
                     if let Err(e) = store.write(chunk_write_batch) {
                         warn!("⚠️ [GLOBAL-SYNC] Failed to persist: {}", e);
                     }
@@ -735,7 +716,7 @@ impl RustSyncNode {
     /// This is used when network_client is None (SyncOnly) or as a fallback
     /// Returns the number of blocks successfully sent to local Go
     #[allow(dead_code)]
-        pub async fn fetch_blocks_from_peer_go(
+    pub async fn fetch_blocks_from_peer_go(
         &self,
         peer_addresses: &[String],
         from_block: u64,
@@ -752,7 +733,9 @@ impl RustSyncNode {
             from_block, to_block
         );
 
-        match crate::network::peer_rpc::fetch_blocks_from_peer(peer_addresses, from_block, to_block).await {
+        match crate::network::peer_rpc::fetch_blocks_from_peer(peer_addresses, from_block, to_block)
+            .await
+        {
             Ok(blocks) => {
                 if blocks.is_empty() {
                     debug!("[PEER-GO-SYNC] Peers returned 0 blocks");
@@ -769,16 +752,22 @@ impl RustSyncNode {
                     let block_num = block.block_number;
                     let epoch = block.epoch;
 
-                    let current_epoch = self.current_epoch.load(std::sync::atomic::Ordering::SeqCst);
+                    let current_epoch =
+                        self.current_epoch.load(std::sync::atomic::Ordering::SeqCst);
                     if epoch > current_epoch {
                         info!(
                             "🎯 [PEER-GO-SYNC] Epoch transition detected in block {}: {} -> {}",
                             block_num, current_epoch, epoch
                         );
 
-                        if let Ok((_e, timestamp, boundary, _, _, _)) = self.executor_client.get_epoch_boundary_data(epoch).await {
-                            let _ = self.epoch_transition_sender.send((epoch, timestamp, boundary));
-                            self.current_epoch.store(epoch, std::sync::atomic::Ordering::SeqCst);
+                        if let Ok((_e, timestamp, boundary, _, _, _)) =
+                            self.executor_client.get_epoch_boundary_data(epoch).await
+                        {
+                            let _ = self
+                                .epoch_transition_sender
+                                .send((epoch, timestamp, boundary));
+                            self.current_epoch
+                                .store(epoch, std::sync::atomic::Ordering::SeqCst);
                         }
                     }
                 }
@@ -786,18 +775,21 @@ impl RustSyncNode {
                 match self.executor_client.sync_blocks(blocks).await {
                     Ok((synced, last_block)) => {
                         self.metrics.blocks_received_total.inc_by(synced as f64);
-                        info!("✅ [PEER-GO-SYNC] Synced {} blocks to local Go (last: {})", synced, last_block);
-                        return Ok(synced as usize);
+                        info!(
+                            "✅ [PEER-GO-SYNC] Synced {} blocks to local Go (last: {})",
+                            synced, last_block
+                        );
+                        Ok(synced as usize)
                     }
                     Err(e) => {
                         warn!("⚠️ [PEER-GO-SYNC] Failed to sync blocks to local Go: {}", e);
-                        return Err(e);
+                        Err(e)
                     }
                 }
             }
             Err(e) => {
                 debug!("[PEER-GO-SYNC] Peer fetch failed: {}", e);
-                return Err(e);
+                Err(e)
             }
         }
     }

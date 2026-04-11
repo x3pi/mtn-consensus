@@ -252,6 +252,7 @@ pub(crate) struct Synchronizer<C: NetworkClient, V: BlockVerifier, D: CoreThread
 }
 
 impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C, V, D> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         network_client: Arc<C>,
         context: Arc<Context>,
@@ -460,6 +461,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn fetch_blocks_from_authority(
         peer_index: AuthorityIndex,
         network_client: Arc<C>,
@@ -525,6 +527,7 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
 
     /// Processes the requested raw fetched blocks from peer `peer_index`. If no error is returned then
     /// the verified blocks are immediately sent to Core for processing.
+    #[allow(clippy::too_many_arguments)]
     async fn process_fetched_blocks(
         mut serialized_blocks: Vec<Bytes>,
         peer_index: AuthorityIndex,

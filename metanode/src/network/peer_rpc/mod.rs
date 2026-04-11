@@ -15,8 +15,8 @@ mod types;
 // Re-export all public items to maintain backwards-compatible paths
 // (e.g. crate::network::peer_rpc::PeerRpcServer still works)
 pub use client::{
-    fetch_blocks_from_peer, fetch_executable_blocks_from_peer,
-    query_peer_epoch_boundary_data, query_peer_epochs_network, query_peer_info,
+    fetch_blocks_from_peer, fetch_executable_blocks_from_peer, query_peer_epoch_boundary_data,
+    query_peer_epochs_network, query_peer_info,
 };
 pub use server::PeerRpcServer;
 #[allow(unused_imports)]

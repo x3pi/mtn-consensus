@@ -1,7 +1,6 @@
 // Copyright (c) MetaNode Team
 // SPDX-License-Identifier: Apache-2.0
 
-
 use crate::types::tx_hash::calculate_transaction_hash_single_hex;
 use anyhow::Result;
 use std::sync::Arc;
@@ -21,17 +20,11 @@ pub struct RpcServer {
 impl RpcServer {
     #[allow(dead_code)]
     pub fn new(port: u16) -> Self {
-        Self {
-            port,
-            node: None,
-        }
+        Self { port, node: None }
     }
 
     /// Create RPC server with node reference
-    pub fn with_node(
-        port: u16,
-        node: Arc<Mutex<crate::node::ConsensusNode>>,
-    ) -> Self {
+    pub fn with_node(port: u16, node: Arc<Mutex<crate::node::ConsensusNode>>) -> Self {
         Self {
             port,
             node: Some(node),
@@ -113,47 +106,44 @@ impl RpcServer {
                                     )
                                     .await;
 
-                                    match read_remaining_result {
-                                        Ok(Ok(n)) => {
-                                            buffer.extend_from_slice(&remaining[..n]);
-                                            let request = String::from_utf8_lossy(&buffer);
-                                            if request.starts_with("POST /submit") {
-                                                let body_start = request
-                                                    .find("\r\n\r\n")
-                                                    .or_else(|| request.find("\n\n"))
-                                                    .map(|i| i + 4)
-                                                    .unwrap_or(0);
-                                                let body = &request[body_start..];
-                                                let tx_data = if body.starts_with("0x")
-                                                    || body.chars().all(|c| c.is_ascii_hexdigit())
-                                                {
-                                                    hex::decode(
-                                                        body.trim().trim_start_matches("0x"),
-                                                    )
-                                                    .unwrap_or_else(|_| body.as_bytes().to_vec())
-                                                } else {
-                                                    body.trim().as_bytes().to_vec()
-                                                };
-                                                let is_length_prefixed = false;
-                                                if let Err(e) = Self::process_transaction_data(
-                                                    &node,
-                                                    &mut stream,
-                                                    tx_data,
-                                                    is_length_prefixed,
+                                    if let Ok(Ok(n)) = read_remaining_result {
+                                        buffer.extend_from_slice(&remaining[..n]);
+                                        let request = String::from_utf8_lossy(&buffer);
+                                        if request.starts_with("POST /submit") {
+                                            let body_start = request
+                                                .find("\r\n\r\n")
+                                                .or_else(|| request.find("\n\n"))
+                                                .map(|i| i + 4)
+                                                .unwrap_or(0);
+                                            let body = &request[body_start..];
+                                            let tx_data = if body.starts_with("0x")
+                                                || body.chars().all(|c| c.is_ascii_hexdigit())
+                                            {
+                                                hex::decode(
+                                                    body.trim().trim_start_matches("0x"),
                                                 )
-                                                .await
-                                                {
-                                                    error!(
-                                                        "Failed to process HTTP transaction: {}",
-                                                        e
-                                                    );
-                                                }
+                                                .unwrap_or_else(|_| body.as_bytes().to_vec())
                                             } else {
-                                                let response = "HTTP/1.1 404 Not Found\r\n\r\n";
-                                                let _ = stream.write_all(response.as_bytes()).await;
+                                                body.trim().as_bytes().to_vec()
+                                            };
+                                            let is_length_prefixed = false;
+                                            if let Err(e) = Self::process_transaction_data(
+                                                &node,
+                                                &mut stream,
+                                                tx_data,
+                                                is_length_prefixed,
+                                            )
+                                            .await
+                                            {
+                                                error!(
+                                                    "Failed to process HTTP transaction: {}",
+                                                    e
+                                                );
                                             }
+                                        } else {
+                                            let response = "HTTP/1.1 404 Not Found\r\n\r\n";
+                                            let _ = stream.write_all(response.as_bytes()).await;
                                         }
-                                        _ => {}
                                     }
                                 }
                                 // Invalid length on persistent connection — close
@@ -173,7 +163,8 @@ impl RpcServer {
                             match read_data_result {
                                 Ok(Ok(tx_data)) => {
                                     tx_count += 1;
-                                    let tx_hash_preview = calculate_transaction_hash_single_hex(&tx_data);
+                                    let tx_hash_preview =
+                                        calculate_transaction_hash_single_hex(&tx_data);
                                     let tx_hash_short = if tx_hash_preview.len() >= 16 {
                                         &tx_hash_preview[..16]
                                     } else {

@@ -127,7 +127,7 @@ impl ConnectionPool {
                             "⚠️ [CONN POOL] Slot {} connect failed after {} attempts: {}",
                             slot, MAX_RETRIES, e
                         );
-                        return Err(e.into());
+                        return Err(e);
                     }
                 }
             }

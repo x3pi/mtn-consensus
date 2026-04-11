@@ -72,6 +72,8 @@ pub enum LimitReached {
     AllTransactionsIncluded,
 }
 
+pub(crate) type NextTransactions = (Vec<Transaction>, Box<dyn FnOnce(BlockRef)>, LimitReached);
+
 impl TransactionConsumer {
     pub(crate) fn new(tx_receiver: Receiver<TransactionsGuard>, context: Arc<Context>) -> Self {
         // max_num_transactions_in_block - 1 is the max possible transaction index in a block.
@@ -110,7 +112,7 @@ impl TransactionConsumer {
     // and `max_num_transactions_in_block` parameters specified via protocol config.
     // This returns one or more transactions to be included in the block and a callback to acknowledge the inclusion of those transactions.
     // Also returns a `LimitReached` enum to indicate which limit type has been reached.
-    pub(crate) fn next(&mut self) -> (Vec<Transaction>, Box<dyn FnOnce(BlockRef)>, LimitReached) {
+    pub(crate) fn next(&mut self) -> NextTransactions {
         let mut transactions = Vec::new();
         let mut acks = Vec::new();
         let mut total_bytes = 0;

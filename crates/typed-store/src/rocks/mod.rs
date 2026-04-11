@@ -24,6 +24,7 @@ use crate::{
 };
 use backoff::backoff::Backoff;
 use fastcrypto::hash::{Digest, HashFunction};
+use meta_macros::{fail_point, nondeterministic};
 use mysten_common::debug_fatal;
 use prometheus::{Histogram, HistogramTimer};
 use rocksdb::properties::num_files_at_level;
@@ -43,7 +44,6 @@ use std::{
     time::Duration,
 };
 use std::{collections::HashSet, ffi::CStr};
-use meta_macros::{fail_point, nondeterministic};
 #[cfg(tidehunter)]
 use tidehunter::{db::Db as TideHunterDb, key_shape::KeySpace};
 use tokio::sync::oneshot;

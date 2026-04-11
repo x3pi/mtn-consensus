@@ -2,10 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
-    sync::{
-        atomic::AtomicBool,
-        Arc,
-    },
+    sync::{atomic::AtomicBool, Arc},
     vec,
 };
 
@@ -112,6 +109,7 @@ pub(crate) struct Core {
 }
 
 impl Core {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         context: Arc<Context>,
         leader_schedule: Arc<LeaderSchedule>,

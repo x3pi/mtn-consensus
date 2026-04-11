@@ -72,6 +72,7 @@ pub(crate) struct AuthorityService<C: CoreThreadDispatcher> {
 }
 
 impl<C: CoreThreadDispatcher> AuthorityService<C> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         context: Arc<Context>,
         block_verifier: Arc<dyn BlockVerifier>,
@@ -284,10 +285,7 @@ impl<C: CoreThreadDispatcher> NetworkService for AuthorityService<C> {
         // Process epoch change data from block before accepting into DAG
         let proposal_bytes = verified_block.epoch_change_proposal().map(|v| v.as_slice());
         let votes_bytes: Vec<Vec<u8>> = verified_block
-            .epoch_change_votes()
-            .iter()
-            .map(|v| v.clone())
-            .collect();
+            .epoch_change_votes().to_vec();
         if proposal_bytes.is_some() || !votes_bytes.is_empty() {
             crate::epoch_change_provider::process_block_epoch_change(proposal_bytes, &votes_bytes);
         }
@@ -827,7 +825,7 @@ impl<C: CoreThreadDispatcher> NetworkService for AuthorityService<C> {
                         .collect();
 
                     result.push(GlobalCommitInfo {
-                        epoch: current_epoch as u64,
+                        epoch: current_epoch,
                         global_exec_index: global_idx,
                         local_commit_index: commit_index,
                         epoch_boundary_block: current_epoch_base,

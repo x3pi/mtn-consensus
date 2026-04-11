@@ -134,12 +134,10 @@ impl CatchupManager {
 
         // 2. Get Network State from Peers (TCP-based only)
         let rust_stored_block = match &self.executor_client.storage_path {
-            Some(path) => {
-                crate::node::executor_client::block_store::get_max_stored_gei(path)
-                    .await
-                    .unwrap_or(None)
-                    .unwrap_or(local_go_last_block)
-            }
+            Some(path) => crate::node::executor_client::block_store::get_max_stored_gei(path)
+                .await
+                .unwrap_or(None)
+                .unwrap_or(local_go_last_block),
             None => local_go_last_block,
         };
 
@@ -150,7 +148,7 @@ impl CatchupManager {
                 current_block: local_go_last_block,
             };
             *self.state.write().await = state;
-            
+
             return Ok(SyncStatus {
                 go_epoch: local_go_epoch,
                 go_last_block: local_go_last_block,
@@ -294,12 +292,18 @@ impl CatchupManager {
                 .await
                 .unwrap_or(None)
                 .unwrap_or(0);
-                
+
             if rust_max >= missing_from {
                 let fetch_to = std::cmp::min(network_block, rust_max);
-                match self.sync_blocks_from_local_rust(path, go_last_block, fetch_to).await {
+                match self
+                    .sync_blocks_from_local_rust(path, go_last_block, fetch_to)
+                    .await
+                {
                     Ok(synced) if synced > 0 => {
-                        info!("🚀 [CATCHUP SYNC] Synced {} blocks from FAST local Rust DB", synced);
+                        info!(
+                            "🚀 [CATCHUP SYNC] Synced {} blocks from FAST local Rust DB",
+                            synced
+                        );
                         return Ok(synced);
                     }
                     _ => {
@@ -311,7 +315,9 @@ impl CatchupManager {
 
         // 2. Fallback to WAN peers if local Rust doesn't have it
         if self.peer_rpc_addresses.is_empty() {
-            return Err(anyhow::anyhow!("No local blocks and no peer_rpc_addresses configured"));
+            return Err(anyhow::anyhow!(
+                "No local blocks and no peer_rpc_addresses configured"
+            ));
         }
 
         info!(
@@ -370,7 +376,9 @@ impl CatchupManager {
     /// Returns total number of blocks synced.
     pub async fn sync_go_to_current_epoch(&self, network_epoch: u64) -> Result<u64> {
         if self.peer_rpc_addresses.is_empty() {
-            return Err(anyhow::anyhow!("No peer_rpc_addresses configured for epoch catchup"));
+            return Err(anyhow::anyhow!(
+                "No peer_rpc_addresses configured for epoch catchup"
+            ));
         }
 
         let mut synced_total: u64 = 0;
@@ -440,7 +448,10 @@ impl CatchupManager {
                 }
                 Err(e) => {
                     consecutive_empty += 1;
-                    warn!("⚠️ [EPOCH-CATCHUP] Fetch error #{}: {}", consecutive_empty, e);
+                    warn!(
+                        "⚠️ [EPOCH-CATCHUP] Fetch error #{}: {}",
+                        consecutive_empty, e
+                    );
                     if consecutive_empty >= max_consecutive_empty {
                         warn!(
                             "⚠️ [EPOCH-CATCHUP] Too many errors. Go epoch={}, target={}. Giving up.",
@@ -474,15 +485,15 @@ impl CatchupManager {
 
         info!(
             "🔄 [LOCAL CATCHUP] Fetching local Rust blocks {} to {} for Go executor",
-            missing_from,
-            rust_last_block
+            missing_from, rust_last_block
         );
 
         let blocks = crate::node::executor_client::block_store::load_executable_blocks_range(
             storage_path,
             missing_from,
             rust_last_block,
-        ).await?;
+        )
+        .await?;
 
         if blocks.is_empty() {
             warn!("⚠️ [LOCAL CATCHUP] Loaded 0 blocks from Rust local DB");
@@ -505,23 +516,41 @@ impl CatchupManager {
                 Ok(exec_block) => {
                     let epoch = exec_block.epoch;
                     let commit_index = exec_block.commit_index;
-                    
-                    match self.executor_client.send_block_data(&data, gei, epoch, commit_index).await {
+
+                    match self
+                        .executor_client
+                        .send_block_data(&data, gei, epoch, commit_index)
+                        .await
+                    {
                         Ok(_) => {
                             synced += 1;
                             last_block = gei;
                         }
                         Err(e) => {
-                            warn!("⚠️ [LOCAL CATCHUP] Failed to send local block {} to Go: {}", gei, e);
-                            return Err(anyhow::anyhow!("Failed to send local block {}: {}", gei, e));
+                            warn!(
+                                "⚠️ [LOCAL CATCHUP] Failed to send local block {} to Go: {}",
+                                gei, e
+                            );
+                            return Err(anyhow::anyhow!(
+                                "Failed to send local block {}: {}",
+                                gei,
+                                e
+                            ));
                         }
                     }
                 }
                 Err(e) => {
-                    warn!("⚠️ [LOCAL CATCHUP] Failed to decode local block {}: {}", gei, e);
-                    // Continue to next block instead of failing completely? 
+                    warn!(
+                        "⚠️ [LOCAL CATCHUP] Failed to decode local block {}: {}",
+                        gei, e
+                    );
+                    // Continue to next block instead of failing completely?
                     // No, if a block is corrupted, we must stop, otherwise we create a gap
-                    return Err(anyhow::anyhow!("Failed to decode local block {}: {}", gei, e));
+                    return Err(anyhow::anyhow!(
+                        "Failed to decode local block {}: {}",
+                        gei,
+                        e
+                    ));
                 }
             }
         }

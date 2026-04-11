@@ -4,9 +4,7 @@
 use crate::node::executor_client::block_sending::MAX_TXS_PER_GO_BLOCK;
 use crate::node::executor_client::ExecutorClient;
 use anyhow::Result;
-use consensus_core::{
-    storage::rocksdb_store::RocksDBStore, storage::Store, BlockAPI, CommitAPI,
-};
+use consensus_core::{storage::rocksdb_store::RocksDBStore, storage::Store, BlockAPI, CommitAPI};
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -129,8 +127,7 @@ pub async fn perform_block_recovery_check(
         // Count total TXs to determine how many GEIs this commit will consume
         let total_txs: usize = subdag.blocks.iter().map(|b| b.transactions().len()).sum();
         let geis_consumed: u64 = if total_txs > MAX_TXS_PER_GO_BLOCK {
-            let fragments =
-                (total_txs + MAX_TXS_PER_GO_BLOCK - 1) / MAX_TXS_PER_GO_BLOCK;
+            let fragments = total_txs.div_ceil(MAX_TXS_PER_GO_BLOCK);
             fragments as u64
         } else {
             1
