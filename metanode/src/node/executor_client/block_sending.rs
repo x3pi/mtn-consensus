@@ -516,8 +516,8 @@ impl ExecutorClient {
             // Re-add unsent blocks back to buffer
             if sent_count < batch_size {
                 let mut buffer = self.send_buffer.lock().await;
-                for (idx, data, epoch, ci) in batch.into_iter().skip(sent_count) {
-                    buffer.insert(idx, (data, epoch, ci));
+                for (idx, data, epoch, ci) in batch.iter().skip(sent_count) {
+                    buffer.insert(*idx, (data.clone(), *epoch, *ci));
                 }
                 warn!("🔄 [BLOCK-SEND] Re-buffered {} unsent blocks (sent {}/{})",
                     batch_size - sent_count, sent_count, batch_size);

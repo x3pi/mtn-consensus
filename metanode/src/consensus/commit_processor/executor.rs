@@ -367,6 +367,17 @@ pub async fn dispatch_commit(
                             info!("📊 [GLOBAL_EXEC_INDEX] Updated shared last_global_exec_index to {} after successful send (geis_consumed={})", last_gei, geis_consumed);
                         }
 
+                        // Track lag every 100 commits
+                        if commit_index % 100 == 0 {
+                            if let Ok(go_gei) = client.get_last_global_exec_index().await {
+                                let lag = global_exec_index.saturating_sub(go_gei);
+                                if lag > 500 {
+                                    tracing::warn!("⚠️ [EXEC-LAG] Rust GEI={} vs Go GEI={} — gap={} blocks",
+                                        global_exec_index, go_gei, lag);
+                                }
+                            }
+                        }
+
                         // Track committed transaction hashes to prevent duplicates during epoch transitions
                         // CRITICAL: Only track when commit is actually processed, not just submitted
                         //

@@ -1019,6 +1019,28 @@ impl ConsensusNode {
             .with_tx_recycler(tx_recycler.clone())
             .with_cold_start(cold_start.clone());
 
+        let (lag_alert_sender, mut lag_alert_receiver) = 
+            tokio::sync::mpsc::unbounded_channel::<crate::consensus::commit_processor::lag_monitor::LagAlert>();
+
+        commit_processor = commit_processor.with_lag_alert_sender(lag_alert_sender);
+
+        tokio::spawn(async move {
+            while let Some(alert) = lag_alert_receiver.recv().await {
+                match alert {
+                    crate::consensus::commit_processor::lag_monitor::LagAlert::ModerateLag { gap, go_rate, .. } => {
+                        tracing::warn!("⚠️ [LAG-MONITOR] Go is {} blocks behind Rust (rate: {:.1} blk/s). Monitoring...", gap, go_rate);
+                    }
+                    crate::consensus::commit_processor::lag_monitor::LagAlert::SevereLag { rust_gei, go_gei, gap, go_rate } => {
+                        tracing::error!("🚨 [LAG-MONITOR] SEVERE: Go is {} blocks behind Rust! (rust={}, go={}, rate={:.1} blk/s). Go may be stalled.",
+                            gap, rust_gei, go_gei, go_rate);
+                    }
+                    crate::consensus::commit_processor::lag_monitor::LagAlert::Recovered { .. } => {
+                        tracing::info!("✅ [LAG-MONITOR] Go has caught up with Rust. Normal operations resumed.");
+                    }
+                }
+            }
+        });
+
         // Spawn background recycler is done in setup_epoch_management where tx_client is accessible
 
         tokio::spawn(async move {

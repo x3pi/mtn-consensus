@@ -66,6 +66,8 @@ pub struct CommitProcessor {
     cold_start_skip_gei: u64,
     /// RS-2: Storage path for persisting cumulative_fragment_offset
     storage_path: Option<std::path::PathBuf>,
+    /// Channel sender for emitting lag alerts
+    lag_alert_sender: Option<tokio::sync::mpsc::UnboundedSender<crate::consensus::commit_processor::lag_monitor::LagAlert>>,
 }
 
 impl CommitProcessor {
@@ -92,6 +94,7 @@ impl CommitProcessor {
             cold_start: Arc::new(AtomicBool::new(false)),
             cold_start_skip_gei: 0,
             storage_path: None,
+            lag_alert_sender: None,
         }
     }
 
@@ -231,6 +234,15 @@ impl CommitProcessor {
         self
     }
 
+    /// Set a sender for lag alerts
+    pub fn with_lag_alert_sender(
+        mut self,
+        sender: tokio::sync::mpsc::UnboundedSender<crate::consensus::commit_processor::lag_monitor::LagAlert>,
+    ) -> Self {
+        self.lag_alert_sender = Some(sender);
+        self
+    }
+
     /// Process commits in order
     pub async fn run(self) -> Result<()> {
         let mut receiver = self.receiver;
@@ -266,6 +278,23 @@ impl CommitProcessor {
         let mut last_heartbeat_time = std::time::Instant::now();
         const HEARTBEAT_INTERVAL: u32 = 1000;
         const HEARTBEAT_TIMEOUT_SECS: u64 = 300;
+
+        // Spawn LagMonitor if configured
+        if let (Some(client), Some(shared_gei), Some(sender)) = (
+            &executor_client,
+            &self.shared_last_global_exec_index,
+            self.lag_alert_sender,
+        ) {
+            let lag_monitor = crate::consensus::commit_processor::lag_monitor::LagMonitor::new(
+                client.clone(),
+                shared_gei.clone(),
+                sender,
+            );
+            tokio::spawn(async move {
+                lag_monitor.run().await;
+            });
+            info!("🛡️ LagMonitor spawned for CommitProcessor.");
+        }
 
         info!("📡 [COMMIT PROCESSOR] Waiting for commits from consensus...");
 
@@ -353,6 +382,7 @@ impl CommitProcessor {
                             epoch_base_index,
                             cumulative_fragment_offset
                         );
+                        info!("epoch_base_index for epoch {} is set to {}", current_epoch, epoch_base_index);
 
                         let total_txs_in_commit = subdag
                             .blocks
