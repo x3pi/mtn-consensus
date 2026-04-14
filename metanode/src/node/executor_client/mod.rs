@@ -142,11 +142,36 @@ impl ExecutorClient {
         // Create connection pool for parallel RPC queries (pool_size=4, timeout=30s)
         let request_pool = Arc::new(ConnectionPool::new(request_socket_address.clone(), 4, 30));
 
+        let connection: Arc<Mutex<Option<SocketStream>>> = Arc::new(Mutex::new(None));
+        let request_connection: Arc<Mutex<Option<SocketStream>>> = Arc::new(Mutex::new(None));
+
+        if enabled {
+            let conn_arc = connection.clone();
+            if tokio::runtime::Handle::try_current().is_ok() {
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(15));
+                    loop {
+                        ticker.tick().await;
+                        let mut conn_guard = conn_arc.lock().await;
+                        if let Some(ref mut stream) = *conn_guard {
+                            match tokio::time::timeout(std::time::Duration::from_secs(2), stream.writable()).await {
+                                Ok(Ok(_)) => { /* healthy */ }
+                                _ => {
+                                    tracing::warn!("🚨 [IPC-HEALTH] Send connection unhealthy/timeout, forcing reconnect");
+                                    *conn_guard = None;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
         Self {
             socket_address,
-            connection: Arc::new(Mutex::new(None)),
+            connection,
             request_socket_address,
-            request_connection: Arc::new(Mutex::new(None)),
+            request_connection,
             enabled,
             can_commit,
             send_buffer,

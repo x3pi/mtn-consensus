@@ -481,11 +481,20 @@ pub async fn dispatch_commit(
                         // This triggers Event-Driven Block Generation in the Go execution engine
                         let client_clone = client.clone();
                         let reason = format!("commit_g{}_e{}", global_exec_index, epoch);
-                        tokio::spawn(async move {
-                            if let Err(e) = client_clone.send_force_commit(reason).await {
-                                trace!("📝 [FORCE COMMIT] Failed to send ForceCommit (non-critical): {}", e);
+                        let sem = DEFERRED_TASK_SEMAPHORE.clone();
+                        match sem.try_acquire_owned() {
+                            Ok(permit) => {
+                                tokio::spawn(async move {
+                                    let _permit = permit;
+                                    if let Err(e) = client_clone.send_force_commit(reason).await {
+                                        trace!("📝 [FORCE COMMIT] Failed to send ForceCommit (non-critical): {}", e);
+                                    }
+                                });
                             }
-                        });
+                            Err(_) => {
+                                trace!("📝 [FORCE COMMIT] Semaphore full (64 tasks), skipping force commit trigger");
+                            }
+                        }
 
                         break geis_consumed;
                     }
