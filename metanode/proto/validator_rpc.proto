@@ -133,6 +133,17 @@ message NotifyEpochChangeResponse {
     string message = 2;
 }
 
+// NEW: ForceCommit - Pushed from Rust Consensus to Go
+// Instructs Go Master to immediately flush transactions in the pool and generate a block
+message ForceCommitRequest {
+    string reason = 1;         // (Optional) Diagnostic reason for the forced commit
+}
+
+message ForceCommitResponse {
+    bool success = 1;
+    string message = 2;
+}
+
 // ============================================================================
 // SYNCONLY BLOCK SYNC APIs
 // These APIs enable SyncOnly nodes to fetch and sync blocks from peers
@@ -246,6 +257,7 @@ message Request {
         NotifyEpochChangeRequest notify_epoch_change_request = 20; // NEW: Event-driven notification (Go -> Rust)
         GetBlocksRangeRequest get_blocks_range_request = 21;  // SYNC: Get blocks by range
         SyncBlocksRequest sync_blocks_request = 22;  // SYNC: Push blocks for local sync
+        ForceCommitRequest force_commit_request = 30; // NEW: Event-driven forced commit
     }
 }
 
@@ -268,6 +280,7 @@ message Response {
         NotifyEpochChangeResponse notify_epoch_change_response = 20; // NEW: Event-driven notification (Go -> Rust)
         GetBlocksRangeResponse get_blocks_range_response = 21;  // SYNC: Get blocks response
         SyncBlocksResponse sync_blocks_response = 22;  // SYNC: Sync blocks response
+        ForceCommitResponse force_commit_response = 30; // NEW: Event-driven forced commit response
     }
 }
 

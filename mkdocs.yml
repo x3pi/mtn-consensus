@@ -27,8 +27,27 @@ theme:
 markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - admonition
   - pymdownx.details
+
+nav:
+  - Trang chủ: index.md
+  - Overview:
+    - Committee Loading: overview/committee-loading-vi.md
+    - Restart Analysis: overview/restart-analysis.md
+    - Synchronization Analysis: overview/synchronization-analysis.md
+  - Epoch Transition:
+    - Boundary Detection: epoch-transition/epoch-boundary-detection-vi.md
+    - Fork Prevention: epoch-transition/epoch-transition-fork-prevention-vi.md
+    - Fork Prevention Analysis: epoch-transition/fork-prevention-analysis-vi.md
+    - Comparison: epoch-transition/comparison-epoch-transition-vi.md
+    - SyncOnly to Validator: epoch-transition/synconly-to-validator-transition-vi.md

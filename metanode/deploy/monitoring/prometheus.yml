@@ -18,6 +18,8 @@ scrape_configs:
     static_configs:
       - targets:
         # mysten-metrics typically exposes prometheus metrics
-        - "localhost:9184" # Node 0
-        - "localhost:9185" # Node 1
-        - "localhost:9186" # Node 2
+        - "localhost:9100" # Node 0
+        - "localhost:9101" # Node 1
+        - "localhost:9102" # Node 2
+        - "localhost:9103" # Node 3
+        - "localhost:9104" # Node 4
