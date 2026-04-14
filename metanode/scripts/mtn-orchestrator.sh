@@ -446,12 +446,13 @@ cmd_start() {
         for i in $(seq 0 $((NUM_NODES - 1))); do
             rm -rf "$RUST_DIR/config/storage/node_${i}"
         done
-        log_step "Xóa Go data..."
+        log_step "Xóa Go data và snapshots..."
         for i in $(seq 0 $((NUM_NODES - 1))); do
             rm -rf "$GO_DIR/sample/node${i}/data"
             rm -rf "$GO_DIR/sample/node${i}/back_up"
             rm -rf "$GO_DIR/sample/node${i}/data-write"
             rm -rf "$GO_DIR/sample/node${i}/back_up_write"
+            rm -rf "$GO_DIR/snapshot_data_node${i}"
         done
         log_step "Xóa logs..."
         for i in $(seq 0 $((NUM_NODES - 1))); do
