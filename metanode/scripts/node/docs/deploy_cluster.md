@@ -14,12 +14,24 @@ Script `deploy_cluster.sh` đảm nhận 5 Phase tự động:
 4. **Update IPs**: Tự động tìm/cập nhật IPs của các machines để thay Core configs cho liên lạc RPC/P2P.
 5. **Start**: Dọn dẹp data cũ và khởi chạy `Go Master`, đợi Unix Sockets sẵn sàng -> mở `Go Sub` -> mở `Rust Metanode` qua các `tmux` sessions nền.
 
+### Lưu ý cần cập nhật trước khi chạy
+
+``` bash
+# ở deploy_cluster.sh
+LOCAL_CHAIN_DIR="/home/abc/nhat/con-chain-v2"
+REMOTE_DEPLOY_DIR="/home/${SSH_USER}/nhat/con-chain-v2"
+# ở update_ips.sh
+GO_DIR="$(cd "$METANODE_DIR/../../mtn-simple-2025-xapian" && pwd)"
+```
+
 ### 📜 Cách dùng
 
 Mặc định đọc cấu hình server tại `deploy.env`. Có thể đổi sang file sinh cho cụm test net khác bằng flag `--env`.
+
 ``` b
 ./update_ips.sh 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1
 ```
+
 ```bash
 # Thực hiện toàn bộ (Build -> Stop -> Push -> Update IPs -> Start)
 ./deploy_cluster.sh --env deploy-3machines.env --all

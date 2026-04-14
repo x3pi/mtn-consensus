@@ -382,6 +382,10 @@ cmd_start() {
     echo -e "${BOLD}║  Thứ tự: Go Master → Go Sub → Rust Consensus           ║${NC}"
     echo -e "${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
 
+    # Auto-update IPs configuration back to localhost
+    log_info "🔄 Cập nhật IP config về 127.0.0.1..."
+    "$SCRIPT_DIR/node/update_ips.sh" 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 || true
+
     # Build processes
     if $build_nomt; then
         log_info "🛠  Đang build NOMT FFI (Rust)..."
