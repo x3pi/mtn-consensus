@@ -211,9 +211,27 @@ START_TIME=$(date +%s)
 # ══════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BLUE}[1/7] 🛑 Dừng Node $NODE_ID...${NC}"
+
+# Chạy script stop tiêu chuẩn
 "$SCRIPT_DIR/stop_node.sh" "$NODE_ID" 2>/dev/null || true
-sleep 3
-echo -e "${GREEN}  ✅ Node $NODE_ID đã dừng${NC}"
+
+echo -e "${YELLOW}  🔪 Fallback kill (đảm bảo node đã chết hoàn toàn)...${NC}"
+# Bắt buộc kill tmux sessions riêng của node này nếu stop_node.sh không dọn sạch
+for sess in "go-master-${NODE_ID}" "go-sub-${NODE_ID}" "metanode-${NODE_ID}"; do
+    if tmux has-session -t "$sess" 2>/dev/null; then
+        tmux send-keys -t "$sess" C-c 2>/dev/null || true
+        sleep 2
+        tmux kill-session -t "$sess" 2>/dev/null || true
+    fi
+done
+
+# Pkill các tiến trình rác của riêng Node ID
+pkill -f "config-master-node${NODE_ID}.json" 2>/dev/null || true
+pkill -f "config-sub-node${NODE_ID}.json" 2>/dev/null || true
+pkill -f "config/node-${NODE_ID}.toml" 2>/dev/null || true
+
+sleep 2
+echo -e "${GREEN}  ✅ Node $NODE_ID đã dừng hoàn toàn${NC}"
 
 # ══════════════════════════════════════════════════════════════
 # Step 2: Xóa data — ENHANCED: full Rust DAG cleanup
@@ -468,44 +486,78 @@ MAX_STUCK=3  # 3 lần liên tiếp = 30s không tăng → cảnh báo
 for t in 10 20 30 40 50 60 70 80 90; do
     sleep 10
     
-    # Read current block from log
-    CURRENT_BLOCK=$(grep -a 'last_committed_block=' "$LOG_DIR/node_$NODE_ID/go-master-stdout.log" 2>/dev/null | tail -1 | sed -n 's/.*last_committed_block=\([0-9]*\).*/\1/p') || true
+    # 1. Read current block via RPC
+    RESTORED_PORT=${MASTER_RPC_PORTS[$NODE_ID]}
+    RESTORED_RESP=$(curl -sf -m 1 -X POST -H "Content-Type: application/json" \
+        --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+        "http://127.0.0.1:$RESTORED_PORT" 2>/dev/null || echo "")
+        
+    CURRENT_BLOCK=""
+    if [ -n "$RESTORED_RESP" ]; then
+        RESTORED_HEX=$(echo "$RESTORED_RESP" | python3 -c "import sys,json; r=json.load(sys.stdin).get('result',None); print(r if r else '')" 2>/dev/null || echo "")
+        if [ -n "$RESTORED_HEX" ] && [ "$RESTORED_HEX" != "0x" ]; then
+            CURRENT_BLOCK=$((16#${RESTORED_HEX#0x}))
+        fi
+    fi
     
-    # Read GEI if available
-    GEI=$(grep -a 'gei=' "$LOG_DIR/node_$NODE_ID/go-master-stdout.log" 2>/dev/null | tail -1 | grep -oP 'gei=\d+' 2>/dev/null || echo "")
+    # 2. Read GEI directly from Go's batch-drain log OR Rust's log
+    # Empty block batches do not increment CURRENT_BLOCK, but they do advance GEI
+    GO_BATCH_GEI=$(grep -a 'BATCH-DRAIN' "$LOG_DIR/node_$NODE_ID/go-master-stdout.log" 2>/dev/null | tail -1 | grep -oP '\d+→\d+' | cut -d'→' -f2 || echo "")
+    RUST_GEI=$(grep -a 'GEI ' "$LOG_DIR/node_$NODE_ID/rust.log" 2>/dev/null | tail -1 | grep -oP '\d+→\d+' | cut -d'→' -f2 || echo "")
     
-    # Check Rust status
-    RUST_STATUS=$(grep -a "commit_index\|EPOCH\|SYNC" "$LOG_DIR/node_$NODE_ID/rust.log" 2>/dev/null | tail -1 | head -c 100 || echo "")
-    
-    if [ -z "$CURRENT_BLOCK" ]; then
-        echo -e "  ${YELLOW}⏱️ +${t}s: block=? (Go chưa ghi log)${NC}"
+    # Determine the highest valid GEI found
+    CURRENT_GEI=""
+    if [ -n "$RUST_GEI" ] && [ -n "$GO_BATCH_GEI" ]; then
+        if [ "$RUST_GEI" -gt "$GO_BATCH_GEI" ]; then CURRENT_GEI=$RUST_GEI; else CURRENT_GEI=$GO_BATCH_GEI; fi
+    elif [ -n "$RUST_GEI" ]; then
+        CURRENT_GEI=$RUST_GEI
+    elif [ -n "$GO_BATCH_GEI" ]; then
+        CURRENT_GEI=$GO_BATCH_GEI
+    fi
+
+    # Formatting output for display
+    DISP_BLOCK=${CURRENT_BLOCK:-"?"}
+    DISP_GEI=${CURRENT_GEI:-"?"}
+
+    # If both block and GEI are entirely empty, the node hasn't initialized yet
+    if [ -z "$CURRENT_BLOCK" ] && [ -z "$CURRENT_GEI" ]; then
+        echo -e "  ${YELLOW}⏱️ +${t}s: node chưa khởi chạy xong (chưa có log & RPC)${NC}"
         continue
     fi
     
+    # Progress indicator prioritizes GEI (since empty blocks advance GEI but keep block static)
+    if [ -n "$CURRENT_GEI" ]; then
+        CURRENT_PROGRESS="$CURRENT_GEI"
+        PROG_LABEL="GEI"
+    else
+        CURRENT_PROGRESS="$CURRENT_BLOCK"
+        PROG_LABEL="block"
+    fi
+    
     # Detect stuck (no progress)
-    if [ "$CURRENT_BLOCK" = "$PREV_BLOCK" ]; then
+    if [ "$CURRENT_PROGRESS" = "$PREV_BLOCK" ]; then
         STUCK_COUNT=$((STUCK_COUNT + 1))
         if [ $STUCK_COUNT -ge $MAX_STUCK ]; then
-            echo -e "  ${RED}⏱️ +${t}s: block=$CURRENT_BLOCK $GEI — ⚠️ STUCK ${STUCK_COUNT}x liên tiếp!${NC}"
+            echo -e "  ${RED}⏱️ +${t}s: block=$DISP_BLOCK, GEI=$DISP_GEI — ⚠️ STUCK ${STUCK_COUNT}x liên tiếp!${NC}"
         else
-            echo -e "  ${YELLOW}⏱️ +${t}s: block=$CURRENT_BLOCK $GEI — (chưa tăng)${NC}"
+            echo -e "  ${YELLOW}⏱️ +${t}s: block=$DISP_BLOCK, GEI=$DISP_GEI — (chưa tăng)${NC}"
         fi
     else
         STUCK_COUNT=0
         # Check for big jump (potential fork indicator)
         if [ -n "$PREV_BLOCK" ]; then
-            JUMP=$((CURRENT_BLOCK - PREV_BLOCK))
+            JUMP=$((CURRENT_PROGRESS - PREV_BLOCK))
             if [ $JUMP -gt 100 ]; then
-                echo -e "  ${YELLOW}⏱️ +${t}s: block=$CURRENT_BLOCK $GEI — ⚡ jump +$JUMP blocks${NC}"
+                echo -e "  ${YELLOW}⏱️ +${t}s: block=$DISP_BLOCK, GEI=$DISP_GEI — ⚡ jump +$JUMP $PROG_LABEL${NC}"
             else
-                echo -e "  ${GREEN}⏱️ +${t}s: block=$CURRENT_BLOCK $GEI — ✅ +$JUMP blocks${NC}"
+                echo -e "  ${GREEN}⏱️ +${t}s: block=$DISP_BLOCK, GEI=$DISP_GEI — ✅ +$JUMP $PROG_LABEL${NC}"
             fi
         else
-            echo -e "  ${GREEN}⏱️ +${t}s: block=$CURRENT_BLOCK $GEI — ✅ syncing${NC}"
+            echo -e "  ${GREEN}⏱️ +${t}s: block=$DISP_BLOCK, GEI=$DISP_GEI — ✅ syncing${NC}"
         fi
     fi
     
-    PREV_BLOCK="$CURRENT_BLOCK"
+    PREV_BLOCK="$CURRENT_PROGRESS"
 done
 
 if [ $STUCK_COUNT -ge $MAX_STUCK ]; then
