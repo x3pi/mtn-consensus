@@ -177,6 +177,9 @@ impl ExecutorClient {
                 | Some(proto::response::Payload::WaitForSyncToBlockResponse(_)) => {
                     warn!("🔍 [EXECUTOR-REQ] Payload is Transition Handoff response (not expected for this request)");
                 }
+                Some(proto::response::Payload::ForceCommitResponse(_)) => {
+                    warn!("🔍 [EXECUTOR-REQ] Payload is ForceCommitResponse (not expected for this request)");
+                }
                 Some(proto::response::Payload::GetBlocksRangeResponse(_))
                 | Some(proto::response::Payload::SyncBlocksResponse(_)) => {
                     warn!("🔍 [EXECUTOR-REQ] Payload is Block Sync response (not expected for this request)");
@@ -258,6 +261,11 @@ impl ExecutorClient {
                 | Some(proto::response::Payload::WaitForSyncToBlockResponse(_)) => {
                     Err(anyhow::anyhow!(
                         "Unexpected Transition Handoff response (expected ValidatorInfoList)"
+                    ))
+                }
+                Some(proto::response::Payload::ForceCommitResponse(_)) => {
+                    Err(anyhow::anyhow!(
+                        "Unexpected ForceCommitResponse response (expected ValidatorInfoList)"
                     ))
                 }
                 Some(proto::response::Payload::GetBlocksRangeResponse(_))
@@ -496,6 +504,78 @@ impl ExecutorClient {
                     Err(anyhow::anyhow!(
                         "Unexpected response type from Go (expected LastBlockNumberResponse)"
                     ))
+                }
+            }
+        } else {
+            Err(anyhow::anyhow!("Request connection is not available"))
+        }
+    }
+
+    /// Trigger ForceCommit in Go to flush transactions immediately and generate a block
+    pub async fn send_force_commit(&self, reason: String) -> Result<bool> {
+        if !self.is_enabled() {
+            return Ok(false);
+        }
+
+        // Circuit breaker check
+        if let Err(reason_cb) = self.rpc_circuit_breaker.check("send_force_commit") {
+            return Err(anyhow::anyhow!("Circuit breaker: {}", reason_cb));
+        }
+
+        let request = Request {
+            payload: Some(proto::request::Payload::ForceCommitRequest(
+                proto::ForceCommitRequest { reason },
+            )),
+        };
+
+        let mut request_buf = Vec::new();
+        request.encode(&mut request_buf)?;
+
+        let (mut conn_guard, _slot) = self
+            .request_pool
+            .get_connection()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
+
+        if let Some(ref mut stream) = *conn_guard {
+            let len = request_buf.len() as u32;
+            let len_bytes = len.to_be_bytes();
+            stream.write_all(&len_bytes).await?;
+            stream.write_all(&request_buf).await?;
+            stream.flush().await?;
+
+            use tokio::io::AsyncReadExt;
+            use tokio::time::{timeout, Duration};
+            let read_timeout = Duration::from_secs(5);
+
+            let mut len_buf = [0u8; 4];
+            timeout(read_timeout, stream.read_exact(&mut len_buf))
+                .await
+                .map_err(|e| anyhow::anyhow!("Timeout reading response length: {}", e))??;
+            let response_len = u32::from_be_bytes(len_buf) as usize;
+
+            if response_len == 0 || response_len > 10_000_000 {
+                return Err(anyhow::anyhow!("Invalid response length: {}", response_len));
+            }
+
+            let mut response_buf = vec![0u8; response_len];
+            timeout(read_timeout, stream.read_exact(&mut response_buf))
+                .await
+                .map_err(|e| anyhow::anyhow!("Timeout reading response data: {}", e))??;
+
+            let response = Response::decode(&response_buf[..])
+                .map_err(|e| anyhow::anyhow!("Failed to decode response from Go: {}", e))?;
+
+            match response.payload {
+                Some(proto::response::Payload::ForceCommitResponse(res)) => {
+                    info!("✅ [EXECUTOR-REQ] ForceCommit successful: {}", res.message);
+                    Ok(res.success)
+                }
+                Some(proto::response::Payload::Error(error_msg)) => {
+                    Err(anyhow::anyhow!("Go returned error: {}", error_msg))
+                }
+                _ => {
+                    Err(anyhow::anyhow!("Unexpected response type for ForceCommit"))
                 }
             }
         } else {

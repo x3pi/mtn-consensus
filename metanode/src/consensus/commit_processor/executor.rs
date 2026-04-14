@@ -477,6 +477,16 @@ pub async fn dispatch_commit(
                             }
                         }
 
+                        // NEW: Send ForceCommit request to Go via isolated deferred task
+                        // This triggers Event-Driven Block Generation in the Go execution engine
+                        let client_clone = client.clone();
+                        let reason = format!("commit_g{}_e{}", global_exec_index, epoch);
+                        tokio::spawn(async move {
+                            if let Err(e) = client_clone.send_force_commit(reason).await {
+                                trace!("📝 [FORCE COMMIT] Failed to send ForceCommit (non-critical): {}", e);
+                            }
+                        });
+
                         break geis_consumed;
                     }
                     Err(e) => {
