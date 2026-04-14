@@ -397,8 +397,8 @@ cmd_start() {
     fi
     if $build_go; then
         log_info "🛠  Đang build Go (simple_chain)..."
-        # Xóa binary cũ và ép build lại hoàn toàn (quan trọng để cập nhật CGo/EVM)
-        (cd "$GO_DIR" && rm -f simple_chain && go build -a -o simple_chain .) || exit 1
+        # Dùng trình biên dịch tận dụng số luồng tối đa, bỏ cờ '-a' để dùng Build Cache (~2s thay vì 3 phút)
+        (cd "$GO_DIR" && rm -f simple_chain && CGO_ENABLED=1 go env && CGO_ENABLED=1 go build -p $(nproc) -o simple_chain .) || exit 1
     fi
     if $build_rust; then
         log_info "🛠  Đang build Rust (metanode)..."

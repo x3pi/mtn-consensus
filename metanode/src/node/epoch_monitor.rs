@@ -52,9 +52,23 @@ pub fn start_unified_epoch_monitor(
     );
 
     let handle = tokio::spawn(async move {
+        // T3-4: Adaptive polling state
+        // - Normal: poll_interval_secs (default 10s) — low IPC overhead
+        // - After epoch gap detected: 1s for 30 cycles — fast transition detection
+        let normal_interval = Duration::from_secs(poll_interval_secs);
+        let fast_interval = Duration::from_secs(1);
+        let fast_cycles_max: u32 = 30; // Stay fast for 30 cycles (30s at 1s interval)
+        let mut fast_cycles_remaining: u32 = 0;
+
         loop {
-            // Wait for poll interval
-            tokio::time::sleep(Duration::from_secs(poll_interval_secs)).await;
+            // T3-4: Use adaptive interval
+            let current_interval = if fast_cycles_remaining > 0 {
+                fast_cycles_remaining -= 1;
+                fast_interval
+            } else {
+                normal_interval
+            };
+            tokio::time::sleep(current_interval).await;
 
             // 1. Get LOCAL Go epoch (may be stale for late-joiners!)
             let local_go_epoch = match client_arc.get_current_epoch().await {
@@ -354,6 +368,9 @@ pub fn start_unified_epoch_monitor(
                 "🔄 [EPOCH MONITOR] Epoch gap detected: Rust={} Network={} (gap={})",
                 rust_epoch, network_epoch, epoch_gap
             );
+
+            // T3-4: Switch to fast polling during epoch transitions
+            fast_cycles_remaining = fast_cycles_max;
 
             // ═══════════════════════════════════════════════════════════════
             // MULTI-EPOCH CATCH-UP: Step through each intermediate epoch

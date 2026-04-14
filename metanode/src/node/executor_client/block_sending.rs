@@ -61,6 +61,9 @@ impl ExecutorClient {
         // Count total transactions BEFORE conversion (to detect if transactions are lost)
         let total_tx_before: usize = subdag.blocks.iter().map(|b| b.transactions().len()).sum();
 
+        // T2-6: Unified batch_id for cross-process tracing (matches Go format)
+        let batch_id = format!("E{}C{}G{}", epoch, subdag.commit_ref.index, global_exec_index);
+
         // 🔍 DIAGNOSTIC: Log ALL commits with transactions (not just trace level)
         if total_tx_before > 0 {
             let block_details: Vec<String> = subdag
@@ -79,8 +82,8 @@ impl ExecutorClient {
                     )
                 })
                 .collect();
-            info!("🔍 [DIAG] send_committed_subdag: global_exec_index={}, commit_index={}, epoch={}, total_tx_before={}, blocks={}, details=[{}]",
-                global_exec_index, subdag.commit_ref.index, epoch, total_tx_before, subdag.blocks.len(), block_details.join(", "));
+            info!("[batch_id={}] 🔍 [DIAG] send_committed_subdag: total_tx={}, blocks={}, details=[{}]",
+                batch_id, total_tx_before, subdag.blocks.len(), block_details.join(", "));
         }
 
         // REPLAY PROTECTION: Discard blocks that are already processed
@@ -286,8 +289,8 @@ impl ExecutorClient {
                 }
             }
             buffer.insert(global_exec_index, (epoch_data_bytes, epoch, commit_index));
-            info!("📦 [SEQUENTIAL-BUFFER] Added block to buffer: global_exec_index={}, commit_index={}, epoch={}, total_tx={}, buffer_size={}",
-                global_exec_index, commit_index, epoch, total_tx, buffer.len());
+            info!("[batch_id=E{}C{}G{}] 📦 [SEQUENTIAL-BUFFER] Added block: total_tx={}, buffer_size={}",
+                epoch, commit_index, global_exec_index, total_tx, buffer.len());
         }
 
         // CRITICAL: Flush buffer iteratively after adding commit.
@@ -475,8 +478,8 @@ impl ExecutorClient {
                         self.record_send_success().await;
                         if batch_size > 1 {
                             info!(
-                                "⚡ [BATCH-SEND] Sent {} blocks in 1 batch (GEI {}→{})",
-                                batch_size, first_idx, last_idx
+                                "[batch_id=G{}..{}] ⚡ [BATCH-SEND] Sent {} blocks in 1 batch",
+                                first_idx, last_idx, batch_size
                             );
                         }
                     }
@@ -568,7 +571,23 @@ impl ExecutorClient {
             }
         }
 
-        // Phase 5: Go verification (unchanged — periodic check)
+        // T2-2: Immediate lag estimate from buffer size (no RPC needed)
+        // This runs after every flush — provides near-real-time feedback to
+        // SystemTransactionProvider via go_lag_handle, even between GO_VERIFICATION_INTERVAL checks.
+        {
+            let buffer = self.send_buffer.lock().await;
+            let buffer_lag = buffer.len() as u64;
+            if let Some(ref handle) = self.go_lag_handle {
+                // Use buffer size as minimum lag estimate — actual lag may be higher
+                // (Go may be further behind), but buffer_lag is available immediately
+                let current_lag = handle.load(std::sync::atomic::Ordering::Relaxed);
+                if buffer_lag > current_lag {
+                    handle.store(buffer_lag, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+
+        // Phase 5: Go verification (periodic RPC check)
         if last_idx.is_multiple_of(GO_VERIFICATION_INTERVAL) {
             if let Ok((go_last_block, _)) = self.get_last_block_number().await {
                 let mut last_verified = self.last_verified_go_index.lock().await;

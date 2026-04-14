@@ -81,7 +81,7 @@ pub struct ExecutorClient {
 
 /// Production safety constants
 pub(crate) const MAX_BUFFER_SIZE: usize = 10_000; // Maximum blocks to buffer before rejecting
-pub(crate) const GO_VERIFICATION_INTERVAL: u64 = 1000; // Verify Go state every N blocks (was 10 - too aggressive, caused RPC latency)
+pub(crate) const GO_VERIFICATION_INTERVAL: u64 = 100; // T2-2: Verify Go state every 100 blocks (was 1000 — faster backpressure feedback)
 
 impl ExecutorClient {
     /// Create new executor client
