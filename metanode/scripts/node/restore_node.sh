@@ -290,7 +290,7 @@ fi
 # Copy LevelDB dirs to BOTH Master (data/data) and Sub (data-write/data)
 echo "  📁 Mapping LevelDB & Xapian dirs..."
 LEVELDB_COUNT=0
-for folder in account_state blocks mapping receipts smart_contract_code smart_contract_storage stake_db transaction_state trie_database backup_device_key_storage xapian_node; do
+for folder in account_state blocks mapping receipts smart_contract_code smart_contract_storage stake_db transaction_state trie_database backup_device_key_storage xapian_node xapian nomt_db; do
   if [ -d "$SNAP_DIR/$folder" ]; then
     cp -a "$SNAP_DIR/$folder" "$NODE_DATA/data/data/"
     cp -a "$SNAP_DIR/$folder" "$NODE_DATA/data-write/data/"
@@ -368,7 +368,7 @@ if [ -f "$NODE_DATA/back_up/epoch_data_backup.json" ]; then
 fi
 
 # Check key LevelDB dirs exist
-REQUIRED_DIRS=("blocks" "account_state" "trie_database")
+REQUIRED_DIRS=("blocks" "nomt_db")
 for dir in "${REQUIRED_DIRS[@]}"; do
     if [ -d "$NODE_DATA/data/data/$dir" ] && [ -d "$NODE_DATA/data-write/data/$dir" ]; then
         echo -e "${GREEN}  ✅ $dir/ — present in both Master & Sub${NC}"
