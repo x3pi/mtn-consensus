@@ -4,6 +4,8 @@
 # Works on Debian/Ubuntu systems
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -23,6 +25,10 @@ echo -e "${GREEN}═════════════════════
 # ==========================================
 PROM_VERSION="2.51.1" # Standard stable version
 echo -e "${YELLOW}📋 Installing Prometheus...${NC}"
+
+# Stop any running instances to avoid "Text file busy" errors
+systemctl stop prometheus 2>/dev/null || true
+systemctl stop grafana-server 2>/dev/null || true
 
 # Create Prometheus system user and directories
 useradd --no-create-home --shell /bin/false prometheus || true
@@ -46,7 +52,6 @@ cp -r "prometheus-${PROM_VERSION}.linux-amd64/console_libraries" /etc/prometheus
 chown -R prometheus:prometheus /etc/prometheus/consoles /etc/prometheus/console_libraries
 
 # Set up Config
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/prometheus.yml" ]; then
     cp "$SCRIPT_DIR/prometheus.yml" /etc/prometheus/prometheus.yml
 else
@@ -97,12 +102,16 @@ systemctl start prometheus
 # ==========================================
 echo -e "${YELLOW}📋 Installing Grafana...${NC}"
 
+# Clean up broken installations from previous failed runs
+rm -f /etc/apt/sources.list.d/grafana.list
+rm -f /etc/apt/keyrings/grafana.gpg
+
 apt-get update -qq
 apt-get install -y apt-transport-https software-properties-common wget
 
 mkdir -p /etc/apt/keyrings/
-wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor -y | tee /etc/apt/keyrings/grafana.gpg > /dev/null
-echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | tee -a /etc/apt/sources.list.d/grafana.list
+wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor --batch --yes -o /etc/apt/keyrings/grafana.gpg
+echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | tee /etc/apt/sources.list.d/grafana.list > /dev/null
 
 apt-get update -qq
 apt-get install -y grafana
