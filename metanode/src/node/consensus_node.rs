@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::config::NodeConfig;
 use crate::node::epoch_store::load_legacy_epoch_stores;
@@ -689,7 +689,64 @@ impl ConsensusNode {
             );
         }
 
-        let epoch_base_exec_index = boundary_gei;
+        // ═══════════════════════════════════════════════════════════════════════════
+        // FORK-SAFETY: Validate boundary_gei before using it as epoch_base_index.
+        // After snapshot restore, Go's epoch_data_backup.json may have boundary_gei=0
+        // for epoch>0 because the epoch transition wasn't captured in the snapshot.
+        // Using boundary_gei=0 causes wrong GEI calculation → block hash divergence.
+        // Fix: If boundary_gei=0 for epoch>0, fetch from a peer that has the correct value.
+        // ═══════════════════════════════════════════════════════════════════════════
+        let epoch_base_exec_index = if boundary_gei == 0 && current_epoch > 0 {
+            warn!(
+                "⚠️ [FORK-SAFETY] boundary_gei=0 for epoch {} — Go may lack epoch transition data (snapshot restore?). Querying peers...",
+                current_epoch
+            );
+            let mut peer_boundary_gei: Option<u64> = None;
+            for peer_addr in &config.peer_rpc_addresses {
+                match crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                    peer_addr,
+                    current_epoch,
+                ).await {
+                    Ok(pb) if pb.boundary_gei > 0 => {
+                        info!(
+                            "✅ [FORK-SAFETY] Got boundary_gei={} from peer {} for epoch {}",
+                            pb.boundary_gei, peer_addr, current_epoch
+                        );
+                        peer_boundary_gei = Some(pb.boundary_gei);
+                        // Also update Go's epoch state so future queries return correct value
+                        if let Err(e) = executor_client.advance_epoch(
+                            current_epoch,
+                            epoch_timestamp_ms,
+                            boundary_block,
+                            pb.boundary_gei,
+                        ).await {
+                            warn!("⚠️ [FORK-SAFETY] Failed to update Go epoch boundary_gei: {}", e);
+                        } else {
+                            info!("✅ [FORK-SAFETY] Updated Go epoch {} with boundary_gei={}", current_epoch, pb.boundary_gei);
+                        }
+                        break;
+                    }
+                    Ok(_) => {
+                        warn!("⚠️ [FORK-SAFETY] Peer {} returned boundary_gei=0 for epoch {}", peer_addr, current_epoch);
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [FORK-SAFETY] Peer {} epoch boundary query failed: {}", peer_addr, e);
+                    }
+                }
+            }
+            match peer_boundary_gei {
+                Some(gei) => gei,
+                None => {
+                    error!(
+                        "🚨 [FORK-SAFETY] Could not determine boundary_gei for epoch {} from any peer! Using 0 — THIS WILL LIKELY CAUSE FORK!",
+                        current_epoch
+                    );
+                    0
+                }
+            }
+        } else {
+            boundary_gei
+        };
         info!(
             "✅ [STARTUP] Using epoch_base={} from Go boundary_gei (epoch={}, boundary_block={})",
             epoch_base_exec_index, current_epoch, boundary_block
