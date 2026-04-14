@@ -8,6 +8,13 @@ use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, trace, warn};
 
+/// T2-5: Bounded semaphore for deferred TX tracking and persistence tasks.
+/// Prevents unbounded tokio::spawn accumulation under extreme commit rates
+/// (e.g., 10K+ commits/sec during epoch transitions or burst load).
+/// 64 permits = practical upper bound; exceeding this drops the task with a warning.
+static DEFERRED_TASK_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(64)));
+
 use crate::node::executor_client::ExecutorClient;
 
 pub async fn dispatch_commit(
@@ -386,27 +393,37 @@ pub async fn dispatch_commit(
                                         })
                                         .collect();
                                     let deferred_commit_index = commit_index;
-                                    tokio::spawn(async move {
-                                        // Wait for transition handler to release lock
-                                        tokio::time::sleep(Duration::from_millis(500)).await;
-                                        if let Ok(guard) = node_arc_clone.try_lock() {
-                                            let mut hashes_guard =
-                                                guard.committed_transaction_hashes.lock().await;
-                                            let mut count = 0;
-                                            for block_txs in &subdag_blocks {
-                                                for tx_data in block_txs {
-                                                    let tx_hash = crate::types::tx_hash::calculate_transaction_hash_single(tx_data);
-                                                    hashes_guard.insert(tx_hash);
-                                                    count += 1;
+                                    // T2-5: Bounded deferred task — acquire semaphore permit before spawning
+                                    let sem = DEFERRED_TASK_SEMAPHORE.clone();
+                                    match sem.try_acquire_owned() {
+                                        Ok(permit) => {
+                                            tokio::spawn(async move {
+                                                let _permit = permit; // held until task completes
+                                                // Wait for transition handler to release lock
+                                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                                if let Ok(guard) = node_arc_clone.try_lock() {
+                                                    let mut hashes_guard =
+                                                        guard.committed_transaction_hashes.lock().await;
+                                                    let mut count = 0;
+                                                    for block_txs in &subdag_blocks {
+                                                        for tx_data in block_txs {
+                                                            let tx_hash = crate::types::tx_hash::calculate_transaction_hash_single(tx_data);
+                                                            hashes_guard.insert(tx_hash);
+                                                            count += 1;
+                                                        }
+                                                    }
+                                                    if count > 0 {
+                                                        info!("💾 [TX TRACKING DEFERRED] Successfully tracked {} hashes for commit #{} after backoff", count, deferred_commit_index);
+                                                    }
+                                                } else {
+                                                    warn!("⚠️ [TX TRACKING DEFERRED] Still cannot acquire lock for commit #{}. TX tracking skipped.", deferred_commit_index);
                                                 }
-                                            }
-                                            if count > 0 {
-                                                info!("💾 [TX TRACKING DEFERRED] Successfully tracked {} hashes for commit #{} after backoff", count, deferred_commit_index);
-                                            }
-                                        } else {
-                                            warn!("⚠️ [TX TRACKING DEFERRED] Still cannot acquire lock for commit #{}. TX tracking skipped.", deferred_commit_index);
+                                            });
                                         }
-                                    });
+                                        Err(_) => {
+                                            warn!("⚠️ [TX TRACKING DEFERRED] Semaphore full (64 tasks in-flight). Dropping deferred tracking for commit #{}.", deferred_commit_index);
+                                        }
+                                    }
                                     break geis_consumed; // Exit retry loop, commit was sent successfully
                                 }
                             };
@@ -433,15 +450,25 @@ pub async fn dispatch_commit(
                                 let storage_path = node_guard.storage_path.clone();
                                 let hashes_count = batch_hashes.len();
                                 let persist_epoch = epoch;
-                                tokio::spawn(async move {
-                                    if let Err(e) = crate::node::transition::save_committed_transaction_hashes_batch(
-                                            &storage_path, persist_epoch, &batch_hashes
-                                        ).await {
-                                        warn!("⚠️ [TX TRACKING] Failed to persist committed hashes after commit: {}", e);
-                                    } else {
-                                        trace!("💾 [TX TRACKING] Persisted {} committed hashes for epoch {}", hashes_count, persist_epoch);
+                                // T2-5: Bounded persistence task — acquire semaphore permit
+                                let sem = DEFERRED_TASK_SEMAPHORE.clone();
+                                match sem.try_acquire_owned() {
+                                    Ok(permit) => {
+                                        tokio::spawn(async move {
+                                            let _permit = permit; // held until task completes
+                                            if let Err(e) = crate::node::transition::save_committed_transaction_hashes_batch(
+                                                    &storage_path, persist_epoch, &batch_hashes
+                                                ).await {
+                                                warn!("⚠️ [TX TRACKING] Failed to persist committed hashes after commit: {}", e);
+                                            } else {
+                                                trace!("💾 [TX TRACKING] Persisted {} committed hashes for epoch {}", hashes_count, persist_epoch);
+                                            }
+                                        });
                                     }
-                                });
+                                    Err(_) => {
+                                        warn!("⚠️ [TX TRACKING] Semaphore full (64 tasks). Skipping async persist for {} hashes (epoch {}). Will re-persist on next commit.", hashes_count, persist_epoch);
+                                    }
+                                }
                             }
 
                             if tracked_count > 0 {
