@@ -28,9 +28,9 @@ GO_DIR="$(cd "$METANODE_DIR/../../mtn-simple-2025-xapian" && pwd)"
 
 Mặc định đọc cấu hình server tại `deploy.env`. Có thể đổi sang file sinh cho cụm test net khác bằng flag `--env`.
 
-``` b
+``` bash
 ./update_ips.sh 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1
-```
+./fetch_logs.sh --env deploy-3machines.env
 
 ```bash
 # Thực hiện toàn bộ (Build -> Stop -> Push -> Update IPs -> Start)
@@ -54,8 +54,8 @@ Mặc định đọc cấu hình server tại `deploy.env`. Có thể đổi san
 ./deploy_cluster.sh --env deploy-3machines.env --start --keep-data
 
 # Chỉ định thao tác Stop/Start/Push trên MỘT NODE CỤ THỂ (Không chạm tới các node khác)
-./deploy_cluster.sh --env deploy-3machines.env --stop --only-node 4
-./deploy_cluster.sh --env deploy-3machines.env --start --keep-data --only-node 4
+./deploy_cluster.sh --env deploy-3machines.env --stop --only-node 1
+./deploy_cluster.sh --env deploy-3machines.env --start --keep-data --only-node 1
 ```
 
 ---

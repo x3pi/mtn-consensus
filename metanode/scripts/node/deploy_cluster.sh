@@ -28,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Support --env <file> to specify a custom env file
 # Or set ENV_FILE=deploy-3machines.env before running
 DO_BUILD=false
+DO_BUILD_EVM=false
 DO_PUSH=false
 DO_IPS=false
 DO_START=false
@@ -78,9 +79,11 @@ fi
 source "$ENV_FILE"
 
 if [ $# -eq 0 ] || [[ "$*" == *"--all"* ]]; then
-    DO_BUILD=true; DO_PUSH=true; DO_IPS=true; DO_START=true
+    DO_BUILD=true; DO_BUILD_EVM=true; DO_PUSH=true; DO_IPS=true; DO_START=true
 fi
+[[ "$*" == *"--build-all"* ]] && DO_BUILD=true && DO_BUILD_EVM=true
 [[ "$*" == *"--build"* ]] && DO_BUILD=true
+[[ "$*" == *"--evm"* ]] && DO_BUILD=true && DO_BUILD_EVM=true
 [[ "$*" == *"--push"* ]] && DO_PUSH=true
 [[ "$*" == *"--ips"* ]] && DO_IPS=true
 [[ "$*" == *"--start"* ]] && DO_START=true
@@ -222,6 +225,13 @@ fi
 if $DO_BUILD; then
     log_step "Phase 1: Building binaries locally"
 
+    if $DO_BUILD_EVM; then
+        log_info "Building EVM (C++ MVM)..."
+        (
+            cd "${LOCAL_GO_SIMPLE}/../../pkg/mvm" && chmod +x build.sh && ./build.sh
+        ) || exit 1
+    fi
+
     # Build Rust metanode
     log_info "Building Rust metanode..."
     (
@@ -235,7 +245,9 @@ if $DO_BUILD; then
     (
         cd "${LOCAL_GO_SIMPLE}"
         export GOTOOLCHAIN=${GO_TOOLCHAIN}
-        go build -o simple_chain . 2>&1
+        export CGO_ENABLED=1
+        rm -f simple_chain
+        go build -p $(nproc) -o simple_chain . 2>&1
     )
     log_ok "Go binary: ${LOCAL_GO_SIMPLE}/simple_chain"
 else
