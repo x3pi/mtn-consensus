@@ -73,6 +73,9 @@ done
 
 echo -e "${GREEN}✅ Services installed and enabled.${NC}"
 echo "To start all nodes:"
+echo "  sudo mtn-ops start 0"
+echo ""
+echo "Or use the standard loop:"
 echo "  for i in \$(seq 0 $((NUM_NODES - 1))); do"
 echo "    sudo systemctl start metanode-go-master@\${i}"
 echo "    sleep 2"
@@ -80,3 +83,11 @@ echo "    sudo systemctl start metanode-go-sub@\${i}"
 echo "    sleep 1"
 echo "    sudo systemctl start metanode-rust@\${i}"
 echo "  done"
+
+# Install mtn-ops CLI globally
+if [ -f "$DEPLOY_DIR/mtn-ops.sh" ]; then
+    echo -e "${YELLOW}📋 Installing mtn-ops CLI to /usr/local/bin...${NC}"
+    ln -sf "$DEPLOY_DIR/mtn-ops.sh" /usr/local/bin/mtn-ops
+    chmod +x "$DEPLOY_DIR/mtn-ops.sh"
+    echo -e "${GREEN}✅ mtn-ops installed! You can now run 'sudo mtn-ops help' anywhere.${NC}"
+fi
