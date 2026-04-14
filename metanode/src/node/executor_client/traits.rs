@@ -32,6 +32,7 @@ pub trait TExecutorClient: Send + Sync {
     
     // 4. RPC Epoch Queries
     async fn get_epoch_boundary_data(&self, epoch: u64) -> Result<(u64, u64, u64, Vec<ValidatorInfo>, u64, u64)>;
+    async fn get_safe_epoch_boundary_data(&self, epoch: u64, peer_rpc_addresses: &[String]) -> Result<(u64, u64, u64, Vec<ValidatorInfo>, u64, u64)>;
     async fn get_current_epoch(&self) -> Result<u64>;
     async fn get_epoch_start_timestamp(&self, epoch: u64) -> Result<u64>;
     async fn advance_epoch(&self, new_epoch: u64, epoch_start_timestamp_ms: u64, boundary_block: u64, boundary_gei: u64) -> Result<()>;
@@ -71,6 +72,7 @@ impl TExecutorClient for ExecutorClient {
     async fn get_last_global_exec_index(&self) -> Result<u64> { ExecutorClient::get_last_global_exec_index(self).await }
     
     async fn get_epoch_boundary_data(&self, epoch: u64) -> Result<(u64, u64, u64, Vec<ValidatorInfo>, u64, u64)> { ExecutorClient::get_epoch_boundary_data(self, epoch).await }
+    async fn get_safe_epoch_boundary_data(&self, epoch: u64, peer_rpc_addresses: &[String]) -> Result<(u64, u64, u64, Vec<ValidatorInfo>, u64, u64)> { ExecutorClient::get_safe_epoch_boundary_data(self, epoch, peer_rpc_addresses).await }
     async fn get_current_epoch(&self) -> Result<u64> { ExecutorClient::get_current_epoch(self).await }
     async fn get_epoch_start_timestamp(&self, epoch: u64) -> Result<u64> { ExecutorClient::get_epoch_start_timestamp(self, epoch).await }
     async fn advance_epoch(&self, new_epoch: u64, epoch_start_timestamp_ms: u64, boundary_block: u64, boundary_gei: u64) -> Result<()> { ExecutorClient::advance_epoch(self, new_epoch, epoch_start_timestamp_ms, boundary_block, boundary_gei).await }

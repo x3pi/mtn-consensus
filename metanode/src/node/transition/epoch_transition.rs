@@ -1416,8 +1416,9 @@ async fn catch_up_to_network_epoch(
             (requested_boundary_block, requested_boundary_gei, 0u64)
         } else {
             // Query local Go Master for historical epoch boundary data
+            let peer_rpc_addr = &config.peer_rpc_addresses;
             match executor_client
-                .get_epoch_boundary_data(intermediate_epoch)
+                .get_safe_epoch_boundary_data(intermediate_epoch, peer_rpc_addr)
                 .await
             {
                 Ok((_epoch, timestamp, b_block, _validators, _, b_gei)) => {

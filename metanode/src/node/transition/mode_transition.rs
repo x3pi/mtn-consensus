@@ -15,7 +15,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use super::demotion::determine_role_for_epoch;
 
@@ -130,68 +130,24 @@ pub async fn transition_mode_only(
     let epoch_base_gei_from_go = {
         let boundary_client =
             committee_source.create_executor_client(&config.executor_send_socket_path);
-        let go_boundary_gei = match boundary_client.get_epoch_boundary_data(epoch).await {
+        match boundary_client
+            .get_safe_epoch_boundary_data(epoch, &config.peer_rpc_addresses)
+            .await
+        {
             Ok((_, _, _, _, _, boundary_gei)) => {
                 info!(
-                    "📊 [MODE TRANSITION] Got epoch boundary from Go: epoch={}, boundary_gei={}, synced_global_exec_index={}",
+                    "📊 [MODE TRANSITION] Got safe epoch boundary from Go: epoch={}, boundary_gei={}, synced_global_exec_index={}",
                     epoch, boundary_gei, synced_global_exec_index
                 );
                 boundary_gei
             }
             Err(e) => {
                 warn!(
-                    "⚠️ [MODE TRANSITION] Failed to get epoch boundary from Go: {}. Falling back to synced_global_exec_index={}",
+                    "⚠️ [MODE TRANSITION] Failed to get safe epoch boundary: {}. Falling back to synced_global_exec_index={}",
                     e, synced_global_exec_index
                 );
-                0 // Will trigger peer fallback below
+                synced_global_exec_index
             }
-        };
-        // ═══════════════════════════════════════════════════════════════════════════
-        // FORK-SAFETY: Same fix as consensus_node.rs — validate boundary_gei.
-        // After snapshot restore, Go returns boundary_gei=0 for epoch>0.
-        // Must fetch correct value from peers to prevent GEI divergence.
-        // ═══════════════════════════════════════════════════════════════════════════
-        if go_boundary_gei == 0 && epoch > 0 {
-            warn!(
-                "⚠️ [MODE TRANSITION/FORK-SAFETY] boundary_gei=0 for epoch {} — querying peers...",
-                epoch
-            );
-            let mut peer_gei: Option<u64> = None;
-            for peer_addr in &config.peer_rpc_addresses {
-                match crate::network::peer_rpc::query_peer_epoch_boundary_data(
-                    peer_addr, epoch,
-                ).await {
-                    Ok(pb) if pb.boundary_gei > 0 => {
-                        info!(
-                            "✅ [MODE TRANSITION/FORK-SAFETY] Got boundary_gei={} from peer {} for epoch {}",
-                            pb.boundary_gei, peer_addr, epoch
-                        );
-                        // Update Go so subsequent queries return correct value
-                        let update_client = committee_source.create_executor_client(&config.executor_send_socket_path);
-                        if let Err(e) = update_client.advance_epoch(
-                            epoch, go_authoritative_timestamp, 0, pb.boundary_gei,
-                        ).await {
-                            warn!("⚠️ [MODE TRANSITION/FORK-SAFETY] Failed to update Go: {}", e);
-                        }
-                        peer_gei = Some(pb.boundary_gei);
-                        break;
-                    }
-                    Ok(_) => warn!("⚠️ Peer {} returned boundary_gei=0", peer_addr),
-                    Err(e) => warn!("⚠️ Peer {} query failed: {}", peer_addr, e),
-                }
-            }
-            match peer_gei {
-                Some(gei) => gei,
-                None => {
-                    error!(
-                        "🚨 [MODE TRANSITION/FORK-SAFETY] No peer has boundary_gei for epoch {}! Using 0 — WILL LIKELY CAUSE FORK!",
-                        epoch
-                    );
-                    0
-                }
-            }
-        } else {
-            go_boundary_gei
         }
     };
 

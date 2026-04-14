@@ -315,7 +315,8 @@ impl RustSyncNode {
         );
 
         // Fetch new epoch boundary data from Go
-        match self.executor_client.get_epoch_boundary_data(go_epoch).await {
+        let peer_addrs = self.config.peer_rpc_addresses.clone();
+        match self.executor_client.get_safe_epoch_boundary_data(go_epoch, &peer_addrs).await {
             Ok((_epoch, _ts, go_boundary_block, validators, _, _)) => {
                 let old_epoch_base = self.epoch_base_index.load(Ordering::SeqCst);
 

@@ -255,6 +255,97 @@ impl ExecutorClient {
     /// Get unified epoch boundary data from Go Master (NEW: single authoritative source for epoch transitions)
     /// Returns: epoch, epoch_start_timestamp_ms, boundary_block, validators snapshot, epoch_duration_seconds, and boundary_gei
     /// This ensures consistency by getting all epoch transition data in a single atomic request
+    pub async fn get_safe_epoch_boundary_data(
+        &self,
+        epoch: u64,
+        peer_rpc_addresses: &[String],
+    ) -> Result<(u64, u64, u64, Vec<ValidatorInfo>, u64, u64)> {
+        let result = self.get_epoch_boundary_data(epoch).await;
+        match result {
+            Ok((ret_epoch, timestamp, boundary_block, validators, arg5, boundary_gei)) => {
+                if boundary_gei == 0 && epoch > 0 {
+                    tracing::warn!(
+                        "⚠️ [FORK-SAFETY] boundary_gei=0 for epoch {} from Go — querying peers...",
+                        epoch
+                    );
+
+                    let mut peer_gei: Option<u64> = None;
+                    for peer_addr in peer_rpc_addresses {
+                        match crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                            peer_addr, epoch,
+                        )
+                        .await
+                        {
+                            Ok(pb) if pb.boundary_gei > 0 => {
+                                tracing::info!(
+                                    "✅ [FORK-SAFETY] Got safe boundary_gei={} from peer {} for epoch {}",
+                                    pb.boundary_gei, peer_addr, epoch
+                                );
+                                // Update Go so subsequent queries return the right value
+                                if let Err(e) = self
+                                    .advance_epoch(epoch, timestamp, boundary_block, pb.boundary_gei)
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "⚠️ [FORK-SAFETY] Failed to update Go's boundary_gei: {}",
+                                        e
+                                    );
+                                }
+                                peer_gei = Some(pb.boundary_gei);
+                                break;
+                            }
+                            Ok(_) => {
+                                tracing::warn!("⚠️ Peer {} returned boundary_gei=0", peer_addr)
+                            }
+                            Err(e) => {
+                                tracing::warn!("⚠️ Peer {} query failed: {}", peer_addr, e)
+                            }
+                        }
+                    }
+
+                    let safe_boundary_gei = match peer_gei {
+                        Some(gei) => gei,
+                        None => {
+                            tracing::error!(
+                                "🚨 [FORK-SAFETY] No peer has boundary_gei for epoch {}! Using 0 — WILL LIKELY CAUSE FORK!",
+                                epoch
+                            );
+                            0
+                        }
+                    };
+
+                    Ok((
+                        ret_epoch,
+                        timestamp,
+                        boundary_block,
+                        validators,
+                        arg5,
+                        safe_boundary_gei,
+                    ))
+                } else {
+                    Ok((
+                        ret_epoch,
+                        timestamp,
+                        boundary_block,
+                        validators,
+                        arg5,
+                        boundary_gei,
+                    ))
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "⚠️ [FORK-SAFETY] executor_client.get_epoch_boundary_data failed: {}",
+                    e
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Get unified epoch boundary data from Go Master (NEW: single authoritative source for epoch transitions)
+    /// Returns: epoch, epoch_start_timestamp_ms, boundary_block, validators snapshot, epoch_duration_seconds, and boundary_gei
+    /// This ensures consistency by getting all epoch transition data in a single atomic request
     pub async fn get_epoch_boundary_data(
         &self,
         epoch: u64,

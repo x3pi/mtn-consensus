@@ -429,7 +429,7 @@ pub fn start_unified_epoch_monitor(
                 } else {
                     // LOCAL Go has this epoch data
                     match local_executor_client
-                        .get_epoch_boundary_data(target_epoch)
+                        .get_safe_epoch_boundary_data(target_epoch, &peer_rpc)
                         .await
                     {
                         Ok((epoch, timestamp_ms, boundary_block, _validators, _, boundary_gei)) => {
