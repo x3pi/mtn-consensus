@@ -571,7 +571,23 @@ impl ExecutorClient {
             }
         }
 
-        // Phase 5: Go verification (unchanged — periodic check)
+        // T2-2: Immediate lag estimate from buffer size (no RPC needed)
+        // This runs after every flush — provides near-real-time feedback to
+        // SystemTransactionProvider via go_lag_handle, even between GO_VERIFICATION_INTERVAL checks.
+        {
+            let buffer = self.send_buffer.lock().await;
+            let buffer_lag = buffer.len() as u64;
+            if let Some(ref handle) = self.go_lag_handle {
+                // Use buffer size as minimum lag estimate — actual lag may be higher
+                // (Go may be further behind), but buffer_lag is available immediately
+                let current_lag = handle.load(std::sync::atomic::Ordering::Relaxed);
+                if buffer_lag > current_lag {
+                    handle.store(buffer_lag, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+
+        // Phase 5: Go verification (periodic RPC check)
         if last_idx.is_multiple_of(GO_VERIFICATION_INTERVAL) {
             if let Ok((go_last_block, _)) = self.get_last_block_number().await {
                 let mut last_verified = self.last_verified_go_index.lock().await;
