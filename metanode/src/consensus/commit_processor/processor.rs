@@ -300,8 +300,8 @@ impl CommitProcessor {
                     // Heartbeat logic
                     if commit_index >= last_heartbeat_commit + HEARTBEAT_INTERVAL {
                         let elapsed = last_heartbeat_time.elapsed().as_secs();
-                        info!("💓 [COMMIT PROCESSOR HEARTBEAT] Processed {} commits (last {} commits in {}s)", 
-                            commit_index, HEARTBEAT_INTERVAL, elapsed);
+                        info!("💓 [COMMIT PROCESSOR HEARTBEAT] Processed {} commits (last {} commits in {}s, pending_ooo={})", 
+                            commit_index, HEARTBEAT_INTERVAL, elapsed, pending_commits.len());
                         last_heartbeat_commit = commit_index;
                         last_heartbeat_time = std::time::Instant::now();
                     }
@@ -521,9 +521,18 @@ impl CommitProcessor {
                             break;
                         }
                     } else if commit_index > next_expected_index {
+                        // SAFETY: Limit pending_commits size to prevent OOM
+                        const MAX_PENDING_COMMITS: usize = 5000;
+                        if pending_commits.len() >= MAX_PENDING_COMMITS {
+                            warn!("🚨 [COMMIT PROCESSOR] pending_commits at capacity ({})! \
+                                Dropping out-of-order commit {} (expected {}). \
+                                This indicates severe downstream stall.",
+                                MAX_PENDING_COMMITS, commit_index, next_expected_index);
+                            continue;
+                        }
                         warn!(
-                            "Received out-of-order commit: index={}, expected={}, storing for later",
-                            commit_index, next_expected_index
+                            "Received out-of-order commit: index={}, expected={}, pending_count={}, storing for later",
+                            commit_index, next_expected_index, pending_commits.len()
                         );
                         pending_commits.insert(commit_index, subdag);
                     } else {

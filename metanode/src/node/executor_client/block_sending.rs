@@ -454,69 +454,77 @@ impl ExecutorClient {
                 }
             }
 
-            let mut conn_guard = self.connection.lock().await;
-            if let Some(ref mut stream) = *conn_guard {
-                use tokio::time::{timeout, Duration};
-                // Scale timeout with batch size (30s base + 1s per 100 blocks)
-                let send_timeout = Duration::from_secs(30 + (batch_size as u64 / 100));
+            let mut sent_count = 0usize;
+            {
+                let mut conn_guard = self.connection.lock().await;
+                if let Some(ref mut stream) = *conn_guard {
+                    use tokio::time::{timeout, Duration};
 
-                let send_result = timeout(send_timeout, async {
-                    for (_, data, _, _) in &batch {
+                    for (idx, data, _, _) in &batch {
                         let mut len_buf = Vec::new();
                         write_uvarint(&mut len_buf, data.len() as u64)
                             .map_err(std::io::Error::other)?;
-                        stream.write_all(&len_buf).await?;
-                        stream.write_all(data).await?;
-                    }
-                    stream.flush().await?; // Single flush for entire batch
-                    Ok::<(), std::io::Error>(())
-                })
-                .await;
 
-                match send_result {
-                    Ok(Ok(())) => {
-                        self.record_send_success().await;
-                        if batch_size > 1 {
-                            info!(
-                                "[batch_id=G{}..{}] ⚡ [BATCH-SEND] Sent {} blocks in 1 batch",
-                                first_idx, last_idx, batch_size
-                            );
+                        // Per-block write timeout: 10s per block (accounts for large TX blocks)
+                        let write_result = timeout(
+                            Duration::from_secs(10),
+                            async {
+                                stream.write_all(&len_buf).await?;
+                                stream.write_all(data).await?;
+                                stream.flush().await?;
+                                Ok::<(), std::io::Error>(())
+                            },
+                        ).await;
+
+                        match write_result {
+                            Ok(Ok(())) => {
+                                sent_count += 1;
+                            }
+                            Ok(Err(e)) => {
+                                warn!("⚠️  [BLOCK-SEND] Write failed at GEI={}: {}. Dropping connection.", idx, e);
+                                *conn_guard = None;
+                                break;
+                            }
+                            Err(_) => {
+                                warn!("⏱️  [BLOCK-SEND] Timeout writing GEI={} (10s). Dropping connection.", idx);
+                                *conn_guard = None;
+                                break;
+                            }
                         }
                     }
-                    Ok(Err(e)) => {
-                        warn!("⚠️  [BATCH-SEND] Write failed at batch GEI {}→{}: {}, re-adding to buffer",
-                            first_idx, last_idx, e);
-                        *conn_guard = None;
-                        self.record_send_failure().await;
-                        // Re-add all blocks to buffer
-                        let mut buffer = self.send_buffer.lock().await;
-                        for (idx, data, epoch, ci) in batch {
-                            buffer.insert(idx, (data, epoch, ci));
-                        }
-                        return Ok(());
+                } else {
+                    self.record_send_failure().await;
+                    // Re-add all blocks
+                    let mut buffer = self.send_buffer.lock().await;
+                    for (idx, data, epoch, ci) in batch {
+                        buffer.insert(idx, (data, epoch, ci));
                     }
-                    Err(_) => {
-                        warn!(
-                            "⏱️  [BATCH-SEND] Timeout sending {} blocks (GEI {}→{})",
-                            batch_size, first_idx, last_idx
-                        );
-                        *conn_guard = None;
-                        self.record_send_failure().await;
-                        let mut buffer = self.send_buffer.lock().await;
-                        for (idx, data, epoch, ci) in batch {
-                            buffer.insert(idx, (data, epoch, ci));
-                        }
-                        return Ok(());
-                    }
+                    return Err(anyhow::anyhow!("Connection lost during batch send"));
                 }
-            } else {
-                self.record_send_failure().await;
-                // Re-add all blocks
+            } // Lock `conn_guard` is released here
+
+            if sent_count > 0 {
+                self.record_send_success().await;
+                if batch_size > 1 && sent_count == batch_size {
+                    info!(
+                        "[batch_id=G{}..{}] ⚡ [BATCH-SEND] Sent {} blocks sequentially in 1 batch run",
+                        first_idx, last_idx, batch_size
+                    );
+                }
+            }
+
+            // Re-add unsent blocks back to buffer
+            if sent_count < batch_size {
                 let mut buffer = self.send_buffer.lock().await;
-                for (idx, data, epoch, ci) in batch {
+                for (idx, data, epoch, ci) in batch.into_iter().skip(sent_count) {
                     buffer.insert(idx, (data, epoch, ci));
                 }
-                return Err(anyhow::anyhow!("Connection lost during batch send"));
+                warn!("🔄 [BLOCK-SEND] Re-buffered {} unsent blocks (sent {}/{})",
+                    batch_size - sent_count, sent_count, batch_size);
+                self.record_send_failure().await;
+                if sent_count == 0 {
+                    return Ok(());
+                }
             }
         }
 

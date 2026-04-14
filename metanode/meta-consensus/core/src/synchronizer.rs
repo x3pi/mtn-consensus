@@ -48,7 +48,7 @@ use crate::{
 };
 
 /// The number of concurrent fetch blocks requests per authority
-const FETCH_BLOCKS_CONCURRENCY: usize = 5;
+const FETCH_BLOCKS_CONCURRENCY: usize = 15;
 
 /// Timeouts when fetching blocks.
 const FETCH_REQUEST_TIMEOUT: Duration = Duration::from_millis(2_000);
