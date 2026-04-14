@@ -367,6 +367,17 @@ pub async fn dispatch_commit(
                             info!("📊 [GLOBAL_EXEC_INDEX] Updated shared last_global_exec_index to {} after successful send (geis_consumed={})", last_gei, geis_consumed);
                         }
 
+                        // Track lag every 100 commits
+                        if commit_index % 100 == 0 {
+                            if let Ok(go_gei) = client.get_last_global_exec_index().await {
+                                let lag = global_exec_index.saturating_sub(go_gei);
+                                if lag > 500 {
+                                    tracing::warn!("⚠️ [EXEC-LAG] Rust GEI={} vs Go GEI={} — gap={} blocks",
+                                        global_exec_index, go_gei, lag);
+                                }
+                            }
+                        }
+
                         // Track committed transaction hashes to prevent duplicates during epoch transitions
                         // CRITICAL: Only track when commit is actually processed, not just submitted
                         //
@@ -481,11 +492,20 @@ pub async fn dispatch_commit(
                         // This triggers Event-Driven Block Generation in the Go execution engine
                         let client_clone = client.clone();
                         let reason = format!("commit_g{}_e{}", global_exec_index, epoch);
-                        tokio::spawn(async move {
-                            if let Err(e) = client_clone.send_force_commit(reason).await {
-                                trace!("📝 [FORCE COMMIT] Failed to send ForceCommit (non-critical): {}", e);
+                        let sem = DEFERRED_TASK_SEMAPHORE.clone();
+                        match sem.try_acquire_owned() {
+                            Ok(permit) => {
+                                tokio::spawn(async move {
+                                    let _permit = permit;
+                                    if let Err(e) = client_clone.send_force_commit(reason).await {
+                                        trace!("📝 [FORCE COMMIT] Failed to send ForceCommit (non-critical): {}", e);
+                                    }
+                                });
                             }
-                        });
+                            Err(_) => {
+                                trace!("📝 [FORCE COMMIT] Semaphore full (64 tasks), skipping force commit trigger");
+                            }
+                        }
 
                         break geis_consumed;
                     }

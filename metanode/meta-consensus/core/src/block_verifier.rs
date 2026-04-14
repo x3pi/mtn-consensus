@@ -528,7 +528,7 @@ mod test {
         {
             let block = test_block
                 .clone()
-                .set_transactions((0..50050).map(|_| Transaction::new(vec![4; 8])).collect())
+                .set_transactions((0..60050).map(|_| Transaction::new(vec![4; 8])).collect())
                 .build();
             let signed_block = SignedBlock::new(block, author_protocol_keypair).unwrap();
             assert!(matches!(

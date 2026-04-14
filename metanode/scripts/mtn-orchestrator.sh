@@ -365,6 +365,7 @@ cmd_start() {
     local build_evm=false
     local build_nomt=false
     local exclude_node="-1"
+    local epoch_length=""
     
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -372,6 +373,7 @@ cmd_start() {
             --build) build_go=true; build_rust=true; shift ;;
             --build-all) build_go=true; build_rust=true; build_evm=true; build_nomt=true; shift ;;
             --exclude-node) exclude_node="$2"; shift 2 ;;
+            --epoch-length) epoch_length="$2"; shift 2 ;;
             *) shift ;;
         esac
     done
@@ -516,6 +518,14 @@ cmd_start() {
         if [ "$i" = "$exclude_node" ]; then continue; fi
         rm -rf "$RUST_DIR/config/storage/node_${i}/executor_state"
     done
+
+    if [ -n "$epoch_length" ]; then
+        log_step "Ghi đè epoch_length=${epoch_length} vào file cấu hình (cho stress test)..."
+        for i in $(seq 0 $((NUM_NODES - 1))); do
+            if [ "$i" = "$exclude_node" ]; then continue; fi
+            sed -i "s/^epoch_length = .*/epoch_length = ${epoch_length}/" "${RUST_DIR}/config/node_${i}.toml"
+        done
+    fi
 
     for i in $(seq 0 $((NUM_NODES - 1))); do
         if [ "$i" = "$exclude_node" ]; then continue; fi

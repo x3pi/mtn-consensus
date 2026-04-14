@@ -32,7 +32,7 @@ use crate::{
     BlockAPI as _,
 };
 
-const CORE_THREAD_COMMANDS_CHANNEL_SIZE: usize = 2000;
+const CORE_THREAD_COMMANDS_CHANNEL_SIZE: usize = 10000;
 
 enum CoreThreadCommand {
     /// Add blocks to be processed and accepted
