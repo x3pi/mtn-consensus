@@ -1,0 +1,35 @@
+#!/bin/bash
+set -e
+
+echo "Updating Prometheus Data Sources to use correct Master Node RPC ports..."
+
+cat <<EOF > /etc/prometheus/prometheus.yml
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # MetaNode Go Execution Engine Metrics
+  - job_name: "metanode-go-execution"
+    static_configs:
+      - targets: 
+        - "localhost:8757" # Master Node 0
+        - "localhost:10747" # Master Node 1
+        - "localhost:10749" # Master Node 2
+        - "localhost:10750" # Master Node 3
+        - "localhost:10748" # Master Node 4
+
+  # MetaNode Rust Consensus Metrics
+  - job_name: "metanode-rust-consensus"
+    static_configs:
+      - targets:
+        - "localhost:9100" # Node 0
+        - "localhost:9101" # Node 1
+        - "localhost:9102" # Node 2
+        - "localhost:9103" # Node 3
+        - "localhost:9104" # Node 4
+EOF
+
+echo "Restarting Prometheus..."
+systemctl restart prometheus
+echo "Done! The Grafana dashboard should now show data."
