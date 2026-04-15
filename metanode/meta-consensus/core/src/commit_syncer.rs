@@ -291,6 +291,25 @@ impl<C: NetworkClient> CommitSyncer<C> {
                 // Cancel any pending/scheduled fetches for historical ranges that will fail
                 self.pending_fetches.clear();
                 self.highest_scheduled_index = Some(fast_forward_to);
+
+                // ═══════════════════════════════════════════════════════════════
+                // COLD-START GC ADVANCE: The DAG is empty so gc_round = 0.
+                // ALL incoming blocks (round 1..HEAD) need ancestors → they all
+                // get suspended → 40k buffer fills → HEAD blocks dropped → DEADLOCK.
+                //
+                // Fix: advance gc_round based on the highest round we've seen
+                // from peers. This causes old blocks (round < gc_round) to be
+                // skipped instead of suspended, freeing the buffer for HEAD blocks.
+                // ═══════════════════════════════════════════════════════════════
+                let highest_accepted = self.inner.dag_state.read().highest_accepted_round();
+                if highest_accepted > 0 {
+                    // Use highest_accepted as the target so gc_round = highest_accepted - gc_depth
+                    // This keeps the most recent gc_depth rounds available for consensus
+                    self.inner
+                        .dag_state
+                        .write()
+                        .cold_start_advance_gc_round(highest_accepted);
+                }
             }
         }
 

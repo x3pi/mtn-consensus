@@ -291,26 +291,91 @@ impl BlockManager {
         // validators from causing unbounded memory growth.
         let max_suspended = MAX_SUSPENDED_BLOCKS_PER_AUTHORITY * self.context.committee.size();
         if self.suspended_blocks.len() >= max_suspended {
-            let hostname = self
-                .context
-                .committee
-                .authority(block.author())
-                .hostname
-                .as_str();
-            warn!(
-                "Suspended blocks limit reached ({}/{}), skipping block {} from {}",
-                self.suspended_blocks.len(),
-                max_suspended,
-                block_ref,
-                hostname
-            );
-            self.context
-                .metrics
-                .node_metrics
-                .block_manager_skipped_blocks
-                .with_label_values(&[hostname])
-                .inc();
-            return TryAcceptResult::Skipped;
+            // ═══════════════════════════════════════════════════════════════════
+            // COLD-START EVICTION: After snapshot restore, the DAG is empty and
+            // blocks from round 1..N all have missing ancestors → they fill the
+            // entire suspended buffer. Meanwhile, HEAD blocks (round N+1000..)
+            // arrive and get skipped → threshold clock stuck → DEADLOCK.
+            //
+            // Fix: when a new block is ≥100 rounds above the oldest suspended
+            // block, evict the oldest 50% of suspended blocks by round. Those
+            // old blocks will never get their ancestors (too far behind GC on
+            // peers) so evicting them is safe and frees space for HEAD blocks.
+            // ═══════════════════════════════════════════════════════════════════
+            let oldest_round = self
+                .suspended_blocks
+                .keys()
+                .next()
+                .map(|r| r.round)
+                .unwrap_or(0);
+            let incoming_round = block.round();
+
+            if incoming_round > oldest_round + 100 {
+                // Evict oldest 50% of suspended blocks
+                let evict_count = self.suspended_blocks.len() / 2;
+                let mut evict_refs: Vec<BlockRef> = self
+                    .suspended_blocks
+                    .keys()
+                    .take(evict_count)
+                    .cloned()
+                    .collect();
+                // Sort by round ascending (BTreeMap is already sorted by BlockRef which starts with round)
+                evict_refs.sort_by_key(|r| r.round);
+
+                let evict_cutoff_round = evict_refs
+                    .last()
+                    .map(|r| r.round)
+                    .unwrap_or(0);
+
+                for evict_ref in &evict_refs {
+                    if let Some(suspended) = self.suspended_blocks.remove(evict_ref) {
+                        // Clean up missing_ancestors references
+                        for ancestor in &suspended.missing_ancestors {
+                            if let Some(children) = self.missing_ancestors.get_mut(ancestor) {
+                                children.remove(evict_ref);
+                                if children.is_empty() {
+                                    self.missing_ancestors.remove(ancestor);
+                                    self.missing_blocks.remove(ancestor);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                warn!(
+                    "🧹 [COLD-START-EVICT] Evicted {} suspended blocks (rounds ≤{}) to make room \
+                     for block {} at round {} (oldest_suspended_round={}, buffer was {}/{})",
+                    evict_refs.len(),
+                    evict_cutoff_round,
+                    block_ref,
+                    incoming_round,
+                    oldest_round,
+                    max_suspended,
+                    max_suspended,
+                );
+                // Fall through — buffer now has space for the incoming block
+            } else {
+                let hostname = self
+                    .context
+                    .committee
+                    .authority(block.author())
+                    .hostname
+                    .as_str();
+                warn!(
+                    "Suspended blocks limit reached ({}/{}), skipping block {} from {}",
+                    self.suspended_blocks.len(),
+                    max_suspended,
+                    block_ref,
+                    hostname
+                );
+                self.context
+                    .metrics
+                    .node_metrics
+                    .block_manager_skipped_blocks
+                    .with_label_values(&[hostname])
+                    .inc();
+                return TryAcceptResult::Skipped;
+            }
         }
 
         // If block has been already received and suspended, or already processed and stored, or is a genesis block, then skip it.

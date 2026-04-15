@@ -410,6 +410,61 @@ impl DagState {
     pub(crate) fn set_last_commit(&mut self, commit: TrustedCommit) {
         self.last_commit = Some(commit);
     }
+
+    /// ═══════════════════════════════════════════════════════════════════
+    /// COLD-START GC ADVANCE: After snapshot restore, the DAG is empty
+    /// and gc_round = 0. This causes ALL incoming blocks (from round 1
+    /// to HEAD) to need ancestors → they all get suspended → the suspended
+    /// buffer fills up → HEAD blocks are dropped → DEADLOCK.
+    ///
+    /// This method creates a synthetic commit at `target_round` so that
+    /// gc_round = target_round - gc_depth. Blocks below gc_round are then
+    /// GC'd instead of suspended, freeing the buffer for HEAD blocks.
+    ///
+    /// SAFETY: This is only called during cold-start (local_commit=0,
+    /// quorum far ahead). The synthetic commit doesn't affect consensus
+    /// correctness because the node has no local commits to conflict with.
+    /// ═══════════════════════════════════════════════════════════════════
+    pub fn cold_start_advance_gc_round(&mut self, target_round: Round) {
+        let gc_depth = self.context.protocol_config.gc_depth();
+        let current_gc_round = self.gc_round();
+
+        // Only advance if the target would actually help
+        let new_gc_round = target_round.saturating_sub(gc_depth);
+        if new_gc_round <= current_gc_round {
+            return;
+        }
+
+        // Create a minimal synthetic commit at the target round
+        let synthetic_commit = TrustedCommit::new_for_test(
+            1, // commit index 1 (minimal)
+            crate::commit::CommitDigest::MIN,
+            self.context.clock.timestamp_utc_ms(),
+            BlockRef::new(
+                target_round,
+                consensus_config::AuthorityIndex::ZERO,
+                consensus_types::block::BlockDigest::MIN,
+            ),
+            vec![],
+            0, // global_exec_index doesn't matter for gc_round
+        );
+
+        tracing::warn!(
+            "🧹 [COLD-START] Advancing GC round: {} → {} (synthetic commit at round {}, gc_depth={})",
+            current_gc_round,
+            new_gc_round,
+            target_round,
+            gc_depth,
+        );
+
+        self.last_commit = Some(synthetic_commit);
+
+        // Update last_committed_rounds to the target round for all authorities
+        // This ensures blocks below target_round are considered committed
+        for round in self.last_committed_rounds.iter_mut() {
+            *round = std::cmp::max(*round, target_round);
+        }
+    }
 }
 
 #[cfg(test)]
