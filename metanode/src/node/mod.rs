@@ -191,6 +191,10 @@ pub struct ConsensusNode {
     /// peer sync first. After sync completes, ConsensusAuthority starts and
     /// DualStreamController handles the overlap period (Phase 4).
     pub(crate) cold_start: bool,
+    /// CRITICAL: GEI captured at snapshot restore time (before peer sync).
+    /// Used by mode_transition.rs for cold_start_skip_gei calculation.
+    /// Must be the GEI at snapshot time, NOT after peer sync.
+    pub(crate) cold_start_snapshot_gei: u64,
 }
 
 // ConsensusNode constructors are in consensus_node.rs

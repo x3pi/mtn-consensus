@@ -620,6 +620,33 @@ impl InitializedNode {
                     );
 
                     let executor_client_opt = self.node.lock().await.executor_client.clone();
+
+                    // CRITICAL FIX (2026-04-15): Capture snapshot GEI BEFORE peer sync.
+                    // Phase 1 sync will advance Go's GEI by storing block headers.
+                    // We need the ORIGINAL snapshot GEI for cold_start_skip_gei calculation
+                    // in mode_transition.rs. Without this, cold_start_skip_gei will be
+                    // the GEI AFTER peer sync, causing Layer 1 guard to skip wrong commits.
+                    let snapshot_gei_at_restore = if let Some(ref client) = executor_client_opt {
+                        match client.get_last_global_exec_index().await {
+                            Ok(gei) => {
+                                info!(
+                                    "📸 [COLD-START] Captured snapshot GEI BEFORE peer sync: {}. \
+                                     This will be used for cold_start_skip_gei in mode transition.",
+                                    gei
+                                );
+                                gei
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "⚠️ [COLD-START] Failed to get snapshot GEI: {}. Will query in mode_transition.",
+                                    e
+                                );
+                                0u64
+                            }
+                        }
+                    } else {
+                        0u64
+                    };
                     if let Some(executor_client) = executor_client_opt {
                         let catchup_manager = crate::node::catchup::CatchupManager::new(
                             executor_client.clone(),
@@ -692,14 +719,17 @@ impl InitializedNode {
                                                 let old_exec = node_guard.last_global_exec_index;
                                                 node_guard.last_global_exec_index = net_commit;
                                                 node_guard.current_epoch = net_epoch;
+                                                // CRITICAL: Store snapshot GEI for mode_transition.rs
+                                                // This is the GEI at snapshot time, NOT after peer sync
+                                                node_guard.cold_start_snapshot_gei = snapshot_gei_at_restore;
                                                 // NOTE: Do NOT reset cold_start here!
                                                 // mode_transition.rs needs cold_start=true to enable
                                                 // amnesia recovery (FetchOwnLastBlock). It will be
                                                 // reset to false after ConsensusAuthority starts.
                                                 info!(
                                                     "📋 [COLD-START] Phase 2: Updated exec_index {} → {} (network commit). \
-                                                     Epoch set to {}. cold_start remains true for amnesia recovery.",
-                                                    old_exec, net_commit, net_epoch
+                                                     Epoch set to {}. cold_start_snapshot_gei={}. cold_start remains true for amnesia recovery.",
+                                                    old_exec, net_commit, net_epoch, snapshot_gei_at_restore
                                                 );
                                             }
                                             break;
@@ -714,12 +744,14 @@ impl InitializedNode {
                                             let old_exec = node_guard.last_global_exec_index;
                                             node_guard.last_global_exec_index = net_commit;
                                             node_guard.current_epoch = net_epoch;
+                                            // CRITICAL: Store snapshot GEI for mode_transition.rs
+                                            node_guard.cold_start_snapshot_gei = snapshot_gei_at_restore;
                                             // NOTE: Do NOT reset cold_start here!
                                             // mode_transition.rs needs cold_start=true for amnesia recovery.
                                             info!(
                                                 "📋 [COLD-START] Updated exec_index {} → {} (network commit). Epoch={}. \
-                                                 cold_start remains true for amnesia recovery.",
-                                                old_exec, net_commit, net_epoch
+                                                 cold_start_snapshot_gei={}. cold_start remains true for amnesia recovery.",
+                                                old_exec, net_commit, net_epoch, snapshot_gei_at_restore
                                             );
                                         }
                                         break;

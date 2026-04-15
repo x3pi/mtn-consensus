@@ -151,6 +151,33 @@ pub async fn transition_mode_only(
         }
     };
 
+    // CRITICAL FIX (2026-04-15): Use SNAPSHOT GEI from node.cold_start_snapshot_gei.
+    // This is captured in startup.rs BEFORE peer sync, ensuring it's the actual snapshot GEI.
+    // Using synced_global_exec_index or querying Go's live GEI would give the WRONG value
+    // because Go's state has been advanced by peer sync → wrong skip threshold → FORK.
+    let snapshot_gei_for_cold_start = if node.cold_start {
+        if node.cold_start_snapshot_gei > 0 {
+            info!(
+                "📸 [MODE TRANSITION] Cold-start: using snapshot GEI from node: {}. synced_global_exec_index={} will NOT be used",
+                node.cold_start_snapshot_gei, synced_global_exec_index
+            );
+            node.cold_start_snapshot_gei
+        } else {
+            warn!(
+                "⚠️ [MODE TRANSITION] Cold-start: node.cold_start_snapshot_gei is 0! Falling back to querying Go. \
+                 This may cause fork if Go's GEI has been advanced by peer sync."
+            );
+            // Fallback: query Go (not ideal but better than using synced_global_exec_index)
+            let client = committee_source.create_executor_client(&config.executor_send_socket_path);
+            match client.get_last_global_exec_index().await {
+                Ok(go_gei) => go_gei,
+                Err(_) => synced_global_exec_index,
+            }
+        }
+    } else {
+        0u64 // Not used when not cold-start
+    };
+
     // Update node mode (this also handles Go handoff)
     node.check_and_update_node_mode(&committee, config, true)
         .await?;
@@ -271,19 +298,21 @@ pub async fn transition_mode_only(
         .with_block_coordinator(coordinator.clone()); // Connect to BlockCoordinator
 
     // When cold_start, set the GEI threshold so commit_processor skips ALL
-    // replayed commits with GEI ≤ synced_global_exec_index (Phase 1 peer sync state).
+    // replayed commits with GEI ≤ snapshot_gei_for_cold_start (GEI at snapshot time).
     // CRITICAL FIX (2026-03-24): Also pass the cold_start Arc to the processor!
     // Without this, the processor defaults cold_start=false and queries Go's live GEI
     // (which may be inflated by peer-synced blocks without full state execution)
     // instead of using snapshot GEI → nonce gap → FORK.
+    // CRITICAL FIX (2026-04-15): Use snapshot_gei_for_cold_start (from Go's state at snapshot)
+    // instead of synced_global_exec_index (network state after peer sync).
     if node.cold_start {
         let cold_start_arc = Arc::new(std::sync::atomic::AtomicBool::new(true));
         processor = processor
             .with_cold_start(cold_start_arc)
-            .with_cold_start_skip_gei(synced_global_exec_index);
+            .with_cold_start_skip_gei(snapshot_gei_for_cold_start);
         info!(
-            "🛡️ [MODE TRANSITION] Cold-start: set cold_start=true + cold_start_skip_gei={} to prevent replayed commits from creating duplicate blocks",
-            synced_global_exec_index
+            "🛡️ [MODE TRANSITION] Cold-start: set cold_start=true + cold_start_skip_gei={} (from Go snapshot) to prevent replayed commits from creating duplicate blocks",
+            snapshot_gei_for_cold_start
         );
     }
 

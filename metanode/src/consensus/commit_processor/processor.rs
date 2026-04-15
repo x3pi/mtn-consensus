@@ -61,8 +61,9 @@ pub struct CommitProcessor {
     /// When true, skip stale DAG replay commits and wait for live rounds.
     cold_start: Arc<AtomicBool>,
     /// GEI threshold for cold-start skip: skip ALL commits with GEI ≤ this value.
-    /// Set from synced_global_exec_index (Phase 1 peer sync state) during cold-start.
-    /// This prevents replayed commits from creating duplicate blocks in Go.
+    /// Set from Go's snapshot GEI (via get_last_global_exec_index) during cold-start.
+    /// CRITICAL: Must use snapshot GEI, NOT synced_global_exec_index (network state),
+    /// otherwise commits needed for state advancement get skipped → nonce gap → FORK.
     cold_start_skip_gei: u64,
     /// RS-2: Storage path for persisting cumulative_fragment_offset
     storage_path: Option<std::path::PathBuf>,

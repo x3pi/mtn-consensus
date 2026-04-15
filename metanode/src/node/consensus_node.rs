@@ -1297,6 +1297,7 @@ impl ConsensusNode {
             block_coordinator: None,
             peer_rpc_addresses: config.peer_rpc_addresses.clone(),
             tx_recycler: Some(consensus.tx_recycler),
+            cold_start_snapshot_gei: 0, // Will be set during cold-start in startup.rs
         };
 
         // Initialize the global StateTransitionManager
