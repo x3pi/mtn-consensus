@@ -482,8 +482,24 @@ pub fn start_unified_epoch_monitor(
                     {
                         Ok(blocks) if !blocks.is_empty() => {
                             let count = blocks.len();
-                            if let Ok((synced, last)) = client_arc.sync_blocks(blocks).await {
-                                info!("✅ [EPOCH MONITOR] Synced {} blocks to Go for epoch {} boundary (last: {})", synced, target_epoch, last);
+                            // Phase 1 fix: Use sync_and_execute_blocks instead of sync_blocks.
+                            // This executes blocks through NOMT, preventing GEI inflation.
+                            // GEI now always reflects actually-executed state → no fork.
+                            match client_arc.sync_and_execute_blocks(blocks).await {
+                                Ok((synced, last, _gei)) => {
+                                    info!("✅ [EPOCH MONITOR] Executed {} blocks to Go for epoch {} boundary (last: {})", synced, target_epoch, last);
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ [EPOCH MONITOR] sync_and_execute_blocks failed, falling back to sync_blocks: {}", e);
+                                    // Fallback to store-only mode for backward compatibility
+                                    if let Ok(blocks_retry) = crate::network::peer_rpc::fetch_blocks_from_peer(
+                                        &peer_rpc, go_block + 1, boundary_block,
+                                    ).await {
+                                        if let Ok((synced, last)) = client_arc.sync_blocks(blocks_retry).await {
+                                            info!("✅ [EPOCH MONITOR] Fallback: synced {} blocks (store-only) for epoch {} (last: {})", synced, target_epoch, last);
+                                        }
+                                    }
+                                }
                             }
                             let _ = count;
                         }

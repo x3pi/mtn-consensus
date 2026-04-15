@@ -596,10 +596,18 @@ impl InitializedNode {
             };
 
             if was_syncing_up {
-                // Check if this is a cold-start restore
+                // Check if this is a snapshot-restore scenario (DAG was wiped)
                 let is_cold_start = {
                     let node_guard = self.node.lock().await;
-                    node_guard.cold_start
+                    let epoch_db = node_guard.storage_path
+                        .join("epochs")
+                        .join(format!("epoch_{}", node_guard.current_epoch))
+                        .join("consensus_db");
+                    let dag_has_history = epoch_db.exists()
+                        && std::fs::read_dir(&epoch_db)
+                            .map(|mut entries| entries.next().is_some())
+                            .unwrap_or(false);
+                    !dag_has_history && node_guard.current_epoch > 0
                 };
 
                 if is_cold_start {

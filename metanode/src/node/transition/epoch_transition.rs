@@ -985,18 +985,18 @@ pub(super) async fn handle_deferred_epoch_transition(
                             blocks.len()
                         );
 
-                        // Write fetched blocks to local Go via sync_blocks
+                        // Phase 1 fix: Execute blocks through NOMT (not just store)
                         if let Some(ref exec_client) = node.executor_client {
-                            match exec_client.sync_blocks(blocks).await {
-                                Ok((synced, last_block)) => {
+                            match exec_client.sync_and_execute_blocks(blocks).await {
+                                Ok((synced, last_block, _gei)) => {
                                     info!(
-                                        "✅ [DEFERRED EPOCH] Synced {} blocks to local Go (last: {})",
+                                        "✅ [DEFERRED EPOCH] Executed {} blocks to local Go (last: {})",
                                         synced, last_block
                                     );
                                 }
                                 Err(e) => {
                                     warn!(
-                                        "⚠️ [DEFERRED EPOCH] Failed to sync blocks to local Go: {}",
+                                        "⚠️ [DEFERRED EPOCH] Failed to execute blocks to local Go: {}",
                                         e
                                     );
                                 }
@@ -1309,14 +1309,15 @@ async fn fetch_and_sync_blocks_to_go(
     );
 
     if let Some(ref exec_client) = node.executor_client {
-        let (synced, last_block) = exec_client.sync_blocks(blocks).await?;
+        // Phase 1 fix: Execute blocks through NOMT (not just store)
+        let (synced, last_block, _gei) = exec_client.sync_and_execute_blocks(blocks).await?;
         info!(
-            "✅ [BLOCK SYNC] Synced {} blocks to Go (last_block={})",
+            "✅ [BLOCK SYNC] Executed {} blocks to Go (last_block={})",
             synced, last_block
         );
     } else {
         return Err(anyhow::anyhow!(
-            "No executor_client available for sync_blocks"
+            "No executor_client available for sync_and_execute_blocks"
         ));
     }
 

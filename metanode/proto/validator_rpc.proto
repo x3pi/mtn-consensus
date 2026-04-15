@@ -182,6 +182,7 @@ message GetBlocksRangeResponse {
 // SyncBlocksRequest - Push blocks to local Go for sync
 message SyncBlocksRequest {
     repeated BlockData blocks = 1;   // Blocks to sync
+    bool execute_mode = 2;           // When true, Go executes blocks through NOMT (not just store)
 }
 
 // SyncBlocksResponse - Response after syncing blocks
@@ -189,6 +190,7 @@ message SyncBlocksResponse {
     uint64 synced_count = 1;         // Number of blocks synced
     uint64 last_synced_block = 2;    // Last synced block number
     string error = 3;                // Error message if any
+    uint64 last_executed_gei = 4;    // GEI after execution (only set when execute_mode=true)
 }
 
 // Validator info từ Go state - các trường cần thiết cho committee.json + metadata + phí/phần thưởng

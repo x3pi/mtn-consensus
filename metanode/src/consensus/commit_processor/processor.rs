@@ -65,6 +65,7 @@ pub struct CommitProcessor {
     /// CRITICAL: Must use snapshot GEI, NOT synced_global_exec_index (network state),
     /// otherwise commits needed for state advancement get skipped → nonce gap → FORK.
     cold_start_skip_gei: u64,
+
     /// RS-2: Storage path for persisting cumulative_fragment_offset
     storage_path: Option<std::path::PathBuf>,
     /// Channel sender for emitting lag alerts
@@ -92,10 +93,10 @@ impl CommitProcessor {
             )),
             block_coordinator: None,
             tx_recycler: None,
-            cold_start: Arc::new(AtomicBool::new(false)),
-            cold_start_skip_gei: 0,
             storage_path: None,
             lag_alert_sender: None,
+            cold_start: Arc::new(AtomicBool::new(false)),
+            cold_start_skip_gei: 0,
         }
     }
 
@@ -215,20 +216,6 @@ impl CommitProcessor {
         self
     }
 
-    /// Set cold-start flag (true when DAG storage was empty at startup, e.g. snapshot restore).
-    /// When active, stale DAG replay commits are skipped to prevent fork.
-    pub fn with_cold_start(mut self, cold_start: Arc<AtomicBool>) -> Self {
-        self.cold_start = cold_start;
-        self
-    }
-
-    /// Set GEI threshold for cold-start skip. All commits with GEI ≤ this value
-    /// are skipped during cold-start to prevent duplicate blocks.
-    pub fn with_cold_start_skip_gei(mut self, gei: u64) -> Self {
-        self.cold_start_skip_gei = gei;
-        self
-    }
-
     /// RS-2: Set storage path for persisting cumulative_fragment_offset
     pub fn with_storage_path(mut self, path: std::path::PathBuf) -> Self {
         self.storage_path = Some(path);
@@ -241,6 +228,18 @@ impl CommitProcessor {
         sender: tokio::sync::mpsc::UnboundedSender<crate::consensus::commit_processor::lag_monitor::LagAlert>,
     ) -> Self {
         self.lag_alert_sender = Some(sender);
+        self
+    }
+
+    /// Set cold-start flag
+    pub fn with_cold_start(mut self, cold_start: Arc<AtomicBool>) -> Self {
+        self.cold_start = cold_start;
+        self
+    }
+
+    /// Set GEI threshold for cold-start skip
+    pub fn with_cold_start_skip_gei(mut self, skip_gei: u64) -> Self {
+        self.cold_start_skip_gei = skip_gei;
         self
     }
 
@@ -401,8 +400,6 @@ impl CommitProcessor {
                             pending_transactions_queue.clone(),
                             self.shared_last_global_exec_index.clone(),
                             self.epoch_eth_addresses.clone(), // Multi-epoch committee cache
-                            self.cold_start.clone(),
-                            self.cold_start_skip_gei,
                         )
                         .await?;
 
@@ -504,8 +501,6 @@ impl CommitProcessor {
                                 pending_transactions_queue.clone(),
                                 self.shared_last_global_exec_index.clone(),
                                 self.epoch_eth_addresses.clone(), // Multi-epoch committee cache
-                                self.cold_start.clone(),
-                                self.cold_start_skip_gei,
                             )
                             .await?;
 

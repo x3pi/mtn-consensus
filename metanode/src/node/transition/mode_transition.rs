@@ -343,33 +343,8 @@ pub async fn transition_mode_only(
     let mut params = node.parameters.clone();
     params.db_path = db_path;
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // COLD-START AMNESIA RECOVERY: When a node is restored from snapshot,
-    // its DAG is empty (cold_start=true). If we pass boot_counter > 0,
-    // the Synchronizer's FetchOwnLastBlock mechanism is DISABLED, and Core
-    // will immediately propose a new B1 block with a different timestamp
-    // than the original — causing an equivocation panic.
-    //
-    // Fix: Pass boot_counter=0 for cold-start nodes so the existing amnesia
-    // recovery mechanism kicks in:
-    //   1. Core sets last_known_proposed_round = None (blocks ALL proposals)
-    //   2. Synchronizer fetches our last own block from peers
-    //   3. Adds it to DAG, sets last_known_proposed_round = highest_round
-    //   4. Core can now safely propose from highest_round + 1
-    //
-    // This allows the node to JOIN CONSENSUS MID-EPOCH after snapshot restore
-    // without waiting for the next epoch!
-    // ═══════════════════════════════════════════════════════════════════════
-    let boot_counter_for_authority = if node.cold_start {
-        info!(
-            "🔄 [MODE TRANSITION] Cold-start detected! Using boot_counter=0 to enable amnesia recovery (FetchOwnLastBlock). \
-             This will block proposals until our last block is synced from peers."
-        );
-        0u64
-    } else {
-        node.boot_counter += 1;
-        node.boot_counter
-    };
+    node.boot_counter += 1;
+    let boot_counter_for_authority = node.boot_counter;
 
     info!(
         "🚀 [MODE TRANSITION] Starting ConsensusAuthority for Validator mode (boot_counter={})",
@@ -416,12 +391,6 @@ pub async fn transition_mode_only(
         }
     }
 
-    // Reset cold_start flag after successful authority start.
-    // The amnesia recovery mechanism in the Synchronizer will handle the rest.
-    if node.cold_start {
-        node.cold_start = false;
-        info!("✅ [MODE TRANSITION] Cold-start complete. Amnesia recovery will sync last own block from peers before proposing.");
-    }
 
     info!(
         "✅ [MODE TRANSITION] Successfully transitioned to Validator mode for epoch {}",

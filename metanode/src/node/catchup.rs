@@ -342,21 +342,22 @@ impl CatchupManager {
 
                 let fetched_count = blocks.len() as u64;
                 info!(
-                    "✅ [CATCHUP SYNC] Fetched {} blocks from peers. Syncing to local Go...",
+                    "✅ [CATCHUP SYNC] Fetched {} blocks from peers. Executing to local Go...",
                     fetched_count
                 );
 
-                match self.executor_client.sync_blocks(blocks).await {
-                    Ok((synced, last_block)) => {
+                // Phase 1 fix: Execute blocks through NOMT (not just store)
+                match self.executor_client.sync_and_execute_blocks(blocks).await {
+                    Ok((synced, last_block, _gei)) => {
                         info!(
-                            "✅ [CATCHUP SYNC] Synced {} blocks to local Go (last: {})",
+                            "✅ [CATCHUP SYNC] Executed {} blocks to local Go (last: {})",
                             synced, last_block
                         );
                         Ok(synced)
                     }
                     Err(e) => {
-                        warn!("⚠️ [CATCHUP SYNC] Failed to sync blocks to local Go: {}", e);
-                        Err(anyhow::anyhow!("Failed to sync blocks: {}", e))
+                        warn!("⚠️ [CATCHUP SYNC] Failed to execute blocks to local Go: {}", e);
+                        Err(anyhow::anyhow!("Failed to execute blocks: {}", e))
                     }
                 }
             }

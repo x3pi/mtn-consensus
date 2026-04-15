@@ -1,0 +1,58 @@
+# Yêu cầu Thiết kế Hệ thống Khởi động và Đồng bộ (Restart & Sync System Design)
+
+Tài liệu này mô tả chi tiết các yêu cầu thiết kế đối với hệ thống khởi động lại và cơ chế đồng bộ block giữa Rust Layer (Consensus) và Go Layer (Execution). **Xuyên suốt toàn bộ hệ thống này, tồn tại một nguyên tắc cốt lõi không thể vi phạm: RUST QUẢN LÝ TẬP TRUNG TOÀN BỘ QUÁ TRÌNH, GO CHỈ LÀ TRÌNH THỰC THI (PASSIVE EXECUTOR).**
+
+## 1. Nguyên tắc Trách nhiệm Tối thượng (Authority Principle)
+- **Rust (Quản lý & Thẩm quyền):** Rust đóng vai trò "nhạc trưởng". Rust chịu trách nhiệm toàn bộ về cơ chế đồng thuận, quản lý tập trung trạng thái chung, đồng bộ mạng lưới (P2P), phát hiện tụt hậu (Lag Monitor), tính toán Epoch, và kiểm soát trật tự block. Bất kỳ quyết định nào về việc thay đổi chuỗi trạng thái đều chỉ được phát ra từ Rust.
+- **Go Master (Thực thi thụ động):** Go Master mất hoàn toàn quyền tự quyết (như tự ý skip block hay tự ý hỏi peer để sync khối). Mọi luồng thay đổi trạng thái đều phải xuất phát từ lệnh UDS (Unix Domain Socket) do Rust truyền sang. Go Master chỉ đơn thuần nhận "Block X", chạy tính toán các transactions (execution) và ghi chốt vào Database theo đúng thứ tự được giao phó, không hơn không kém.
+- **Go Sub (Bản sao thuần tuý):** Go Sub nhận copy state một chiều từ Go Master của chính nó và không tham gia bất kỳ quy trình đồng thuận hay lấy block từ bên nào khác.
+
+## 2. Truy xuất thông tin khởi động từ Go Master
+
+Khi node khởi động lại (restart hoặc từ snapshot), hệ thống Rust sẽ giành quyền điều khiển ngay lập tức bằng việc truy vấn lấy thông tin trạng thái hiện tại từ Go Master để biết mạng lưới đang đứng ở đâu.
+Các thông tin cấu thành trạng thái phải bao gồm:
+- **Block number:** Số thứ tự block đã thực thi gần nhất.
+- **Epoch:** Epoch hiện tại mà luồng thực thi đang lưu giữ.
+- **GEI (Global Execution Index):** Chỉ số thực thi toàn cục, đại diện cho hệ quy chiếu định tuyến nội bộ.
+
+*Lưu ý: Ngay cả khi Go Master khởi chạy lên trước, nó vẫn phải đứng im hoàn toàn ở trạng thái chờ và không được chạm vào khối mạch cho đến khi có mệnh lệnh điều phối chính thức đầu tiên từ Rust.*
+
+## 3. Luồng nạp khối trung tâm (Centralized Sync Pipeline)
+
+Toàn bộ quá trình đồng bộ block từ các peers trong mạng lưới P2P **bắt buộc phải do Rust trực tiếp điều hướng**.
+Go Master sẽ KHÔNG BAO GIỜ chủ động lấy block từ bên ngoài.
+Thay vào đó, Go Master sẽ nhận block tuần tự từ Rust truyền sang dưới dạng UDS IPC theo hai nhánh:
+1. **Nguồn Đồng bộ (Sync Catch-up):** Rust tải các block bị rớt hoặc thiếu về từ peer khác, và ép Go Master phải chạy hàm đồng bộ (`sync_and_execute_blocks`). Luồng này sẽ nạp đúng block thiếu một cách tuyệt đối, chặn không cho Go "tự động nhảy hố" (Gap Skip) theo bất cứ logic thủ công nào.
+2. **Nguồn Đồng thuận (Consensus Stream):** Block được tạo ra và commit từ hội đồng DAG của uỷ ban Validator quyết định tại chính Epoch hành tại. 
+
+## 4. Cơ chế Khử trùng lặp và Ưu tiên (Deduplication & Priority Governed by Rust)
+
+Rust sẽ độc quyền quản lý hàng chờ để tránh gửi đúp khối cho Go Master. Giả sử có một block đi kèm từ luồng quá khứ (Sync) và hiện tại (Consensus). Khung nguyên tắc kiểm duyệt tại Rust:
+- Hệ thống chỉ được ghi nhận và đưa sang cho Go Master nạp **một lần duy nhất**.
+- **Tiêu chí Thời gian:** Ưu tiên luồng block tới trước.
+- **Tiêu chí Luồng ưu tiên:** Trong trường hợp block từ hai nguồn đến sát nhau, luồng block từ **DAG đồng thuận luôn được ưu tiên đi trước**.
+
+## 5. Cơ chế hoạt động của Validator Node
+
+Validator Node (bên nhánh Rust) có khả năng tự đánh giá sức khoẻ tiến độ và luân phiên trạng thái một cách kỷ luật:
+
+### 5.1 Cơ chế Phát hiện trễ và Đuổi kịp (Lag Detection & Catch-up do Rust điều phối)
+- Rust khởi chạy ngầm `LagMonitor` để liên tục giám sát tiến độ thực thi so với mạng (Sử dụng chênh lệch `GEI` kết hợp `go_block_number` thực tế).
+- **Khi bị nhận diện trễ nhịp:** Node (phía Rust) tự nhận ra nó đang tụt hậu xa. Nó ngắt hoàn toàn sự có mặt trong phiên đồng thuận DAG hiện tại, gõ yêu cầu block từ mạng P2P và ép Go Master xử lý miệt mài cho tới khi vượt qua khoảng cách trễ đó (Execution-First Recovery).
+- **Chuyển giao trạng thái:** Khi tiến độ bắt kịp (catch-up) đến mốc quy định, Rust mới hạ cờ và hòa vào cơ chế đồng thuận chung của uỷ ban DAG.
+
+### 5.2 Trạng thái đã đuổi kịp đồng thuận (Caught-up)
+- Khi quá trình "bắt kịp" được xác nhận, Rust quay lại với chức năng dẫn dắt block tới Go Master như thường lệ.
+- Nguồn **P2P nền sẽ bị ngắt**, để ưu tiên hoàn toàn tài nguyên CPU cho các tính toán của uỷ ban đồng thuận.
+
+## 6. Cơ chế hoạt động của SyncOnly Node
+
+Đối với những Node chỉ chạy ở chế độ SyncOnly:
+- Rust thực sự đóng vai trò cỗ máy hút khối thụ động: **Chỉ tập trung lắng nghe mạng P2P và nhận đủ khối về**.
+- Các khối được tiếp tay gửi sang UDS (cho Go Master). Do tính thụ động, Node sẽ không bao giờ ra quyết định bỏ phiếu đồng thuận DAG.
+
+## 7. Giới hạn chặt chẽ của Go Sub Node
+
+Go Sub bị siết cấu trúc với nhiệm vụ sao lưu độc quyền:
+- **Go Sub chỉ nhận block và luồng state sao lưu từ AccountBatch của duy nhất Go Master local của nó.**
+- Nó "mù" mạng lưới và hoàn toàn không giao tiếp độc lập với Rust, ngăn chặn mọi cuộc gọi ngoài luồng. Mục đích chính chỉ nằm ở việc làm bia đỡ đạn cho Master khỏi các request RPC/Websocket từ phía dApp Client.

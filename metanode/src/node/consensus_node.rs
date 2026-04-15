@@ -61,11 +61,8 @@ struct StorageSetup {
 struct ConsensusSetup {
     authority: Option<ConsensusAuthority>,
     /// Whether DAG storage has prior history. False after snapshot restore (DAG deleted).
-    /// When false, CommitProcessor uses timestamp-based guard to skip stale replay commits.
-    dag_has_history: bool,
-    /// Cold-start flag shared with CommitProcessor for timestamp-based stale commit filtering
     #[allow(dead_code)]
-    cold_start: Arc<std::sync::atomic::AtomicBool>,
+    dag_has_history: bool,
     commit_consumer_holder: Option<CommitConsumerArgs>,
     transaction_client_proxy: Option<Arc<TransactionClientProxy>>,
     executor_client_for_proc: Arc<ExecutorClient>,
@@ -694,12 +691,43 @@ impl ConsensusNode {
         // After snapshot restore, Go's epoch_data_backup.json may have boundary_gei=0
         // for epoch>0 because the epoch transition wasn't captured in the snapshot.
         // Using boundary_gei=0 causes wrong GEI calculation → block hash divergence.
-        // Fix: If boundary_gei=0 for epoch>0, fetch from a peer that has the correct value.
+        //
+        // CRITICAL FIX (2026-04-15): Also validate when DAG storage is empty (cold_start).
+        // After snapshot restore, Go may have non-zero but STALE boundary_gei that doesn't
+        // match the network. This causes epoch_base_index to be wrong → global_exec_index
+        // calculation diverges → FORK.
+        //
+        // Fix: Validate from peers if:
+        //   1. boundary_gei == 0 && epoch > 0 (original fix), OR
+        //   2. DAG storage is empty (cold_start) - indicates snapshot restore
         // ═══════════════════════════════════════════════════════════════════════════
-        let epoch_base_exec_index = if boundary_gei == 0 && current_epoch > 0 {
+        let epoch_db_path = config
+            .storage_path
+            .join("epochs")
+            .join(format!("epoch_{}", current_epoch))
+            .join("consensus_db");
+        let dag_has_history = epoch_db_path.exists()
+            && std::fs::read_dir(&epoch_db_path)
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(false);
+
+        let epoch_base_exec_index = if (boundary_gei == 0 && current_epoch > 0) || (!dag_has_history && current_epoch > 0) {
+            let force_peer_check = !dag_has_history && current_epoch > 0;
+            if force_peer_check {
+                warn!(
+                    "⚠️ [FORK-SAFETY] Cold-start detected (empty DAG). Validating boundary_gei={} from peers for epoch {}...",
+                    boundary_gei, current_epoch
+                );
+            }
             let (_, _, _, _, _, safe_gei) = executor_client
-                .get_safe_epoch_boundary_data(current_epoch, &config.peer_rpc_addresses)
+                .get_safe_epoch_boundary_data_with_force(current_epoch, &config.peer_rpc_addresses, force_peer_check)
                 .await?;
+            if safe_gei != boundary_gei {
+                warn!(
+                    "🔄 [FORK-SAFETY] Corrected boundary_gei: {} → {} (from peers)",
+                    boundary_gei, safe_gei
+                );
+            }
             safe_gei
         } else {
             boundary_gei
@@ -903,10 +931,9 @@ impl ConsensusNode {
             Arc::new(tokio::sync::Mutex::new(storage.epoch_base_exec_index));
 
         // ═══════════════════════════════════════════════════════════════════
-        // FORK-SAFETY: Detect empty DAG BEFORE commit_processor creation.
-        // When DAG is empty (snapshot restore), create cold_start flag for
-        // CommitProcessor's GEI-based stale commit filter.
-        // MOVED HERE so commit_processor can use cold_start immediately.
+        // Detect empty DAG (snapshot restore) for startup logging and
+        // boundary GEI validation. No longer used for cold_start guard
+        // since Phase 1 ensures Go's GEI is always accurate.
         // ═══════════════════════════════════════════════════════════════════
         let dag_has_history = {
             let epoch_db = config
@@ -919,13 +946,10 @@ impl ConsensusNode {
                     .map(|mut entries| entries.next().is_some())
                     .unwrap_or(false)
         };
-        let cold_start = Arc::new(std::sync::atomic::AtomicBool::new(
-            !dag_has_history && storage.is_in_committee && storage.current_epoch > 0,
-        ));
         if !dag_has_history && storage.is_in_committee && storage.current_epoch > 0 {
             warn!(
-                "⚠️ [FORK-SAFETY] DAG storage empty for epoch {} — cold-start guard active. \
-                 Node will vote in DAG but skip stale replay commits until live rounds detected.",
+                "⚠️ [FORK-SAFETY] DAG storage empty for epoch {} — snapshot restore detected. \
+                 GEI guard in executor will skip commits Go has already executed.",
                 storage.current_epoch
             );
         }
@@ -968,14 +992,6 @@ impl ConsensusNode {
             );
             Arc::new(tokio::sync::RwLock::new(map))
         })
-        .with_cold_start(cold_start.clone())
-        .with_cold_start_skip_gei(
-            if !dag_has_history && storage.is_in_committee && storage.current_epoch > 0 {
-                u64::MAX // Block ALL commits — mode_transition processor will handle them
-            } else {
-                0 // Normal operation — no GEI skip needed
-            },
-        )
         .with_storage_path(config.storage_path.clone());
 
         // ExecutorClient for commit processing
@@ -1030,13 +1046,15 @@ impl ConsensusNode {
 
         commit_processor = commit_processor
             .with_executor_client(executor_client_for_proc.clone())
-            .with_tx_recycler(tx_recycler.clone())
-            .with_cold_start(cold_start.clone());
+            .with_tx_recycler(tx_recycler.clone());
 
         let (lag_alert_sender, mut lag_alert_receiver) = 
             tokio::sync::mpsc::unbounded_channel::<crate::consensus::commit_processor::lag_monitor::LagAlert>();
 
         commit_processor = commit_processor.with_lag_alert_sender(lag_alert_sender);
+
+        let lag_executor_client = executor_client_for_proc.clone();
+        let lag_peer_addresses = config.peer_rpc_addresses.clone();
 
         tokio::spawn(async move {
             while let Some(alert) = lag_alert_receiver.recv().await {
@@ -1045,8 +1063,38 @@ impl ConsensusNode {
                         tracing::warn!("⚠️ [LAG-MONITOR] Go is {} blocks behind Rust (rate: {:.1} blk/s). Monitoring...", gap, go_rate);
                     }
                     crate::consensus::commit_processor::lag_monitor::LagAlert::SevereLag { rust_gei, go_gei, gap, go_rate } => {
-                        tracing::error!("🚨 [LAG-MONITOR] SEVERE: Go is {} blocks behind Rust! (rust={}, go={}, rate={:.1} blk/s). Go may be stalled.",
+                        tracing::error!("🚨 [LAG-MONITOR] SEVERE: Go is {} blocks behind Rust! (rust={}, go={}, rate={:.1} blk/s).",
                             gap, rust_gei, go_gei, go_rate);
+                        
+                        if lag_peer_addresses.is_empty() {
+                            tracing::warn!("⚠️ [LAG-RECOVERY] No peer_rpc_addresses configured! Cannot fetch missing blocks from P2P.");
+                            continue;
+                        }
+
+                        tracing::info!("🔄 [LAG-RECOVERY] Triggering P2P block fetch for missing blocks: {} -> {}", go_gei + 1, rust_gei);
+                        let missing_from = go_gei + 1;
+                        let missing_to = rust_gei;
+
+                        match crate::network::peer_rpc::fetch_blocks_from_peer(&lag_peer_addresses, missing_from, missing_to).await {
+                            Ok(blocks) => {
+                                if blocks.is_empty() {
+                                    tracing::warn!("⚠️ [LAG-RECOVERY] Fetched 0 blocks from peers.");
+                                } else {
+                                    tracing::info!("✅ [LAG-RECOVERY] Fetched {} blocks. Sending to Go for execution...", blocks.len());
+                                    match lag_executor_client.sync_and_execute_blocks(blocks).await {
+                                        Ok((synced, last_block, _gei)) => {
+                                            tracing::info!("✅ [LAG-RECOVERY] Successfully executed {} P2P blocks (last_block={})", synced, last_block);
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("❌ [LAG-RECOVERY] Failed to execute blocks via UDS: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("❌ [LAG-RECOVERY] P2P block fetch failed: {}", e);
+                            }
+                        }
                     }
                     crate::consensus::commit_processor::lag_monitor::LagAlert::Recovered { .. } => {
                         tracing::info!("✅ [LAG-MONITOR] Go has caught up with Rust. Normal operations resumed.");
@@ -1101,12 +1149,11 @@ impl ConsensusNode {
         // system_transaction_provider and epoch_duration_seconds are created earlier
         // (before executor_client_for_proc) for backpressure wiring
 
-        // Start authority or hold commit_consumer for SyncOnly
-        let start_as_validator = storage.is_in_committee
-            && !storage.is_lagging
-            && (dag_has_history || storage.current_epoch == 0);
+        // Phase 2 fix: Validator always starts ConsensusAuthority.
+        // DAG sync will fetch missing blocks from peers (amnesia recovery).
+        let start_as_validator = storage.is_in_committee;
         let (authority, commit_consumer_holder) = if start_as_validator {
-            info!("🚀 Starting consensus authority node...");
+            info!("🚀 Starting consensus authority node (Phase 2: amnesia recovery enabled)...");
             (
                 Some(
                     ConsensusAuthority::start(
@@ -1133,12 +1180,8 @@ impl ConsensusNode {
                 None,
             )
         } else {
-            if storage.is_in_committee {
-                info!("🔄 Node is a Validator but is lagging behind. Starting as SyncOnly temporarily for catch-up...");
-            } else {
-                info!("🔄 Starting as sync-only node");
-            }
-            info!("📡 Keeping commit_consumer alive for SyncOnly/Catch-up mode to prevent channel close");
+            info!("🔄 Starting as sync-only node (not in committee)");
+            info!("📡 Keeping commit_consumer alive for SyncOnly mode to prevent channel close");
             (None, Some(commit_consumer))
         };
 
@@ -1149,7 +1192,6 @@ impl ConsensusNode {
         Ok(ConsensusSetup {
             authority,
             dag_has_history,
-            cold_start,
             commit_consumer_holder,
             transaction_client_proxy,
             executor_client_for_proc,
@@ -1241,18 +1283,13 @@ impl ConsensusNode {
             legacy_store_manager: Arc::new(consensus_core::LegacyEpochStoreManager::new(
                 config.epochs_to_keep,
             )),
+            // Phase 2: In-committee nodes always start as Validator (no SyncingUp mode).
+            // DAG sync will fetch missing blocks from peers (amnesia recovery).
             node_mode: if storage.is_in_committee {
-                if storage.is_lagging || (!consensus.dag_has_history && storage.current_epoch > 0) {
-                    NodeMode::SyncingUp
-                } else {
-                    NodeMode::Validator
-                }
+                NodeMode::Validator
             } else {
                 NodeMode::SyncOnly
             },
-            cold_start: !consensus.dag_has_history
-                && storage.is_in_committee
-                && storage.current_epoch > 0,
             execution_lock: Arc::new(tokio::sync::RwLock::new(storage.current_epoch)),
             reconfig_state: Arc::new(tokio::sync::RwLock::new(ReconfigState::default())),
             transaction_client_proxy: consensus.transaction_client_proxy,

@@ -255,18 +255,40 @@ impl ExecutorClient {
     /// Get unified epoch boundary data from Go Master (NEW: single authoritative source for epoch transitions)
     /// Returns: epoch, epoch_start_timestamp_ms, boundary_block, validators snapshot, epoch_duration_seconds, and boundary_gei
     /// This ensures consistency by getting all epoch transition data in a single atomic request
+    ///
+    /// CRITICAL FIX (2026-04-15): Added force_peer_check parameter. When true, always query peers
+    /// for the correct boundary_gei regardless of Go's value. This is needed for cold-start
+    /// after snapshot restore when Go may have stale non-zero boundary_gei.
     pub async fn get_safe_epoch_boundary_data(
         &self,
         epoch: u64,
         peer_rpc_addresses: &[String],
     ) -> Result<(u64, u64, u64, Vec<ValidatorInfo>, u64, u64)> {
+        self.get_safe_epoch_boundary_data_with_force(epoch, peer_rpc_addresses, false).await
+    }
+
+    /// Internal implementation with force_peer_check flag.
+    /// When force_peer_check=true, always validates boundary_gei from peers (for cold-start).
+    pub async fn get_safe_epoch_boundary_data_with_force(
+        &self,
+        epoch: u64,
+        peer_rpc_addresses: &[String],
+        force_peer_check: bool,
+    ) -> Result<(u64, u64, u64, Vec<ValidatorInfo>, u64, u64)> {
         let result = self.get_epoch_boundary_data(epoch).await;
         match result {
             Ok((ret_epoch, timestamp, boundary_block, validators, arg5, boundary_gei)) => {
-                if boundary_gei == 0 && epoch > 0 {
+                // CRITICAL FIX (2026-04-15): Also query peers if force_peer_check is true (cold-start).
+                // After snapshot restore, Go may have non-zero but stale boundary_gei.
+                if (boundary_gei == 0 && epoch > 0) || (force_peer_check && epoch > 0) {
+                    let reason = if boundary_gei == 0 {
+                        "boundary_gei=0"
+                    } else {
+                        "cold-start validation (force_peer_check)"
+                    };
                     tracing::warn!(
-                        "⚠️ [FORK-SAFETY] boundary_gei=0 for epoch {} from Go — querying peers...",
-                        epoch
+                        "⚠️ [FORK-SAFETY] {} for epoch {} from Go — querying peers...",
+                        reason, epoch
                     );
 
                     let mut peer_gei: Option<u64> = None;

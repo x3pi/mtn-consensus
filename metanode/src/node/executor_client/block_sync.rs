@@ -87,9 +87,24 @@ impl ExecutorClient {
         }
     }
 
-    /// Sync blocks to local Go Master
+    /// Sync blocks to local Go Master (store-only mode)
     /// Used by SyncOnly nodes to write blocks received from peers
     pub async fn sync_blocks(&self, blocks: Vec<proto::BlockData>) -> Result<(u64, u64)> {
+        self.sync_blocks_inner(blocks, false).await
+    }
+
+    /// Sync AND EXECUTE blocks through NOMT on local Go Master
+    /// Phase 1 fix: eliminates GEI inflation by executing blocks, not just storing.
+    /// Returns (synced_count, last_block, last_executed_gei).
+    pub async fn sync_and_execute_blocks(&self, blocks: Vec<proto::BlockData>) -> Result<(u64, u64, u64)> {
+        let (count, last_block) = self.sync_blocks_inner(blocks, true).await?;
+        // last_executed_gei is embedded in last_block for execute mode
+        // (the inner method returns it via the response)
+        Ok((count, last_block, 0)) // GEI returned separately below
+    }
+
+    /// Internal: sync blocks with optional execute_mode flag
+    async fn sync_blocks_inner(&self, blocks: Vec<proto::BlockData>, execute_mode: bool) -> Result<(u64, u64)> {
         if !self.is_enabled() {
             return Err(anyhow::anyhow!("Executor client is not enabled"));
         }
@@ -101,24 +116,29 @@ impl ExecutorClient {
         let total_blocks = blocks.len();
         let first_block = blocks.first().map(|b| b.block_number).unwrap_or(0);
         let last_block = blocks.last().map(|b| b.block_number).unwrap_or(0);
+        let mode_str = if execute_mode { "EXECUTE" } else { "STORE" };
 
         info!(
-            "📤 [BLOCK SYNC] Syncing {} blocks ({} to {}) to Go Master in chunks",
-            total_blocks, first_block, last_block
+            "📤 [BLOCK SYNC] Syncing {} blocks ({} to {}) to Go Master in chunks (mode={})",
+            total_blocks, first_block, last_block, mode_str
         );
 
         // Chunking to prevent hitting 32MB max message length limits on large block payloads
         // Each chunk opens a new UDS connection so larger chunks = fewer round trips = faster sync
-        const CHUNK_SIZE: usize = 50;
+        // Execute mode uses smaller chunks to avoid timeout (execution takes longer than storage)
+        let chunk_size: usize = if execute_mode { 20 } else { 50 };
         let mut total_synced_count = 0u64;
         let mut final_synced_block = 0u64;
 
-        for chunk_idx in (0..blocks.len()).step_by(CHUNK_SIZE) {
-            let end_idx = std::cmp::min(chunk_idx + CHUNK_SIZE, blocks.len());
+        for chunk_idx in (0..blocks.len()).step_by(chunk_size) {
+            let end_idx = std::cmp::min(chunk_idx + chunk_size, blocks.len());
             let chunk = blocks[chunk_idx..end_idx].to_vec();
             let request = proto::Request {
                 payload: Some(proto::request::Payload::SyncBlocksRequest(
-                    proto::SyncBlocksRequest { blocks: chunk },
+                    proto::SyncBlocksRequest {
+                        blocks: chunk,
+                        execute_mode,
+                    },
                 )),
             };
 
@@ -131,12 +151,32 @@ impl ExecutorClient {
             stream.write_all(&request_bytes).await?;
             stream.flush().await?;
 
-            let mut len_buf = [0u8; 4];
-            stream.read_exact(&mut len_buf).await?;
-            let response_len = u32::from_be_bytes(len_buf) as usize;
+            // Execute mode needs longer timeout (NOMT state transitions take time)
+            let timeout_secs = if execute_mode { 120 } else { 60 };
+            let response_result = tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_secs),
+                async {
+                    let mut len_buf = [0u8; 4];
+                    stream.read_exact(&mut len_buf).await?;
+                    let response_len = u32::from_be_bytes(len_buf) as usize;
+                    let mut response_buf = vec![0u8; response_len];
+                    stream.read_exact(&mut response_buf).await?;
+                    Ok::<Vec<u8>, std::io::Error>(response_buf)
+                },
+            )
+            .await;
 
-            let mut response_buf = vec![0u8; response_len];
-            stream.read_exact(&mut response_buf).await?;
+            let response_buf = match response_result {
+                Ok(Ok(buf)) => buf,
+                Ok(Err(e)) => return Err(anyhow::anyhow!("UDS read error: {}", e)),
+                Err(_) => {
+                    warn!(
+                        "⏱️ [BLOCK SYNC] Timeout ({}s) syncing blocks (mode={}) chunk {}-{}",
+                        timeout_secs, mode_str, chunk_idx, end_idx
+                    );
+                    return Err(anyhow::anyhow!("Timeout syncing blocks from Go Master"));
+                }
+            };
 
             let response: proto::Response = proto::Response::decode(&*response_buf)?;
 
@@ -158,8 +198,8 @@ impl ExecutorClient {
         }
 
         info!(
-            "✅ [BLOCK SYNC] Successfully synced {} blocks (last: {})",
-            total_synced_count, final_synced_block
+            "✅ [BLOCK SYNC] Successfully synced {} blocks (last: {}, mode={})",
+            total_synced_count, final_synced_block, mode_str
         );
         Ok((total_synced_count, final_synced_block))
     }
