@@ -28,7 +28,6 @@ adaptive_delay_ms = 50
 min_round_delay_ms = 50
 epoch_transition_optimization = "balanced"
 enable_gradual_shutdown = true
-initial_node_mode = "SyncOnly"
 gradual_shutdown_user_cert_drain_secs = 2
 gradual_shutdown_consensus_cert_drain_secs = 1
 gradual_shutdown_final_drain_secs = 1

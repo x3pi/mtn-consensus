@@ -262,8 +262,8 @@ impl RustSyncNode {
                     );
 
                     // Import blocks directly into Go — NO re-execution
-                    match self.executor_client.sync_blocks(blocks).await {
-                        Ok((synced, last_block)) => {
+                    match self.executor_client.sync_and_execute_blocks(blocks).await {
+                        Ok((synced, last_block, _gei)) => {
                             info!(
                                 "✅ [RUST-SYNC] Imported {} blocks (last: {})",
                                 synced, last_block
@@ -273,7 +273,7 @@ impl RustSyncNode {
                             return Ok(synced as usize);
                         }
                         Err(e) => {
-                            warn!("⚠️ [RUST-SYNC] sync_blocks failed: {}", e);
+                            warn!("⚠️ [RUST-SYNC] sync_and_execute_blocks failed: {}", e);
                         }
                     }
                 }

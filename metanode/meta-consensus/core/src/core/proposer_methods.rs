@@ -441,7 +441,16 @@ fn try_propose(&mut self, force: bool) -> ConsensusResult<Option<VerifiedBlock>>
         let is_recovering = lag <= moderate_lag_threshold_with_hysteresis
             && lag_percentage <= moderate_lag_percentage_with_hysteresis;
 
-        if should_skip_consensus {
+        // ═══════════════════════════════════════════════════════════════════
+        // COLD-START EXEMPTION: After snapshot restore, the DAG is wiped
+        // but local_commit_index may be non-zero (set from snapshot GEI).
+        // The node is stuck at round 1 with massive lag vs quorum, which
+        // would block proposals forever. Detect cold-start by checking if
+        // the DAG is fresh (clock_round <= 1).
+        // ═══════════════════════════════════════════════════════════════════
+        let is_cold_start = clock_round <= 1 && quorum_commit_index > 200;
+
+        if should_skip_consensus && !is_cold_start {
             if is_severe_lag {
                 // Severe lag: Skip consensus aggressively
                 debug!(
@@ -462,6 +471,11 @@ fn try_propose(&mut self, force: bool) -> ConsensusResult<Option<VerifiedBlock>>
                     .inc();
             }
             return false;
+        } else if is_cold_start && should_skip_consensus {
+            debug!(
+                "🚀 [COLD-START] Allowing proposal at round {} despite lag={} (clock_round={}, local_commit={}, cold-start bootstrap)",
+                clock_round, lag, clock_round, local_commit_index
+            );
         }
 
         // If we're recovering from sync mode (lag dropped below hysteresis threshold), log transition
@@ -472,7 +486,8 @@ fn try_propose(&mut self, force: bool) -> ConsensusResult<Option<VerifiedBlock>>
             );
         }
 
-        if self.propagation_delay
+        if !is_cold_start
+            && self.propagation_delay
             > self
                 .context
                 .parameters
@@ -492,15 +507,23 @@ fn try_propose(&mut self, force: bool) -> ConsensusResult<Option<VerifiedBlock>>
         }
 
         let Some(last_known_proposed_round) = self.last_known_proposed_round else {
+            if !is_cold_start {
+                debug!(
+                    "Skip proposing for round {clock_round}, last known proposed round has not been synced yet."
+                );
+                core_skipped_proposals
+                    .with_label_values(&["no_last_known_proposed_round"])
+                    .inc();
+                return false;
+            }
+            // Cold-start: allow proposing even without synced proposed round
             debug!(
-                "Skip proposing for round {clock_round}, last known proposed round has not been synced yet."
+                "🚀 [COLD-START] Allowing proposal at round {} without last_known_proposed_round (cold-start bootstrap)",
+                clock_round
             );
-            core_skipped_proposals
-                .with_label_values(&["no_last_known_proposed_round"])
-                .inc();
-            return false;
+            return true;
         };
-        if clock_round <= last_known_proposed_round {
+        if !is_cold_start && clock_round <= last_known_proposed_round {
             debug!(
                 "Skip proposing for round {clock_round} as last known proposed round is {last_known_proposed_round}"
             );

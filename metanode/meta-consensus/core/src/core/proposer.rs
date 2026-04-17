@@ -498,18 +498,21 @@ impl Core {
         // generate identical genesis hashes and can safely join consensus mid-epoch.
 
         // ═══════════════════════════════════════════════════════════════════
-        // COLD-START EXEMPTION: When local_commit_index == 0 (after snapshot
-        // restore), the node has NO local commits yet. Lag = quorum - 0 = 100%,
-        // which would block proposals forever. But proposing is ESSENTIAL:
-        // the node must create DAG blocks to participate in consensus, which
-        // produces local commits, which reduces lag. Without this exemption
-        // there's a deadlock: no proposals → no commits → lag stays 100%.
+        // COLD-START EXEMPTION: After snapshot restore, the DAG is wiped
+        // but local_commit_index may be non-zero (set from snapshot GEI).
+        // The node is stuck at round 1 with massive lag vs quorum, which
+        // would block proposals forever. Detect cold-start by checking if
+        // the DAG is fresh (clock_round <= 1) — this is always true after
+        // a DAG wipe regardless of the commit index value.
+        // Proposing is ESSENTIAL: the node must create DAG blocks to
+        // participate in consensus. Without this exemption there's a
+        // deadlock: no proposals → no commits → lag never decreases.
         // ═══════════════════════════════════════════════════════════════════
-        if local_commit_index == 0 && quorum_commit_index > 200 {
+        if clock_round <= 1 && quorum_commit_index > 200 {
             // Cold-start: allow proposing despite lag
             debug!(
-                "🚀 [COLD-START] Allowing proposal at round {} despite lag={} (local_commit=0, cold-start bootstrap)",
-                clock_round, lag
+                "🚀 [COLD-START] Allowing proposal at round {} despite lag={} (clock_round={}, local_commit={}, cold-start bootstrap)",
+                clock_round, lag, clock_round, local_commit_index
             );
             // Fall through to remaining checks (propagation delay, etc.)
         } else if should_skip_consensus {
@@ -549,8 +552,10 @@ impl Core {
         // round 4828). But the fresh DAG starts at round 1, so clock_round(1)
         // <= last_known_proposed_round(4828) → proposal blocked forever.
         // During cold-start, skip propagation delay and proposed round checks.
+        // Uses clock_round <= 1 (fresh DAG) instead of local_commit_index == 0
+        // because snapshot restore sets local_commit_index to snapshot GEI.
         // ═══════════════════════════════════════════════════════════════════
-        let is_cold_start = local_commit_index == 0 && quorum_commit_index > 200;
+        let is_cold_start = clock_round <= 1 && quorum_commit_index > 200;
 
         if !is_cold_start
             && self.propagation_delay
