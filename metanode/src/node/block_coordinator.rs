@@ -116,6 +116,13 @@ pub struct BlockCoordinator {
     /// Whether sync is in standby mode (only gap-fill)
     sync_standby: Arc<AtomicBool>,
 
+    /// Consensus lock — when true, sync blocks are immediately rejected.
+    /// This prevents buffering sync blocks when consensus is actively producing,
+    /// eliminating unnecessary resource usage and race conditions.
+    /// Toggled ON by DualStreamController on convergence or startup catch-up complete.
+    /// Toggled OFF when node needs to catch up from peers (cold start, lag recovery).
+    consensus_locked: Arc<AtomicBool>,
+
     /// Executor client for sending to Go
     executor_client: Option<Arc<ExecutorClient>>,
 
@@ -153,6 +160,7 @@ impl BlockCoordinator {
             next_expected: Arc::new(AtomicU64::new(initial_next_expected)),
             mode: Arc::new(RwLock::new(NodeMode::SyncOnly)),
             sync_standby: Arc::new(AtomicBool::new(false)),
+            consensus_locked: Arc::new(AtomicBool::new(false)),
             executor_client: None,
             gap_fill_tx: None,
             config,
@@ -203,11 +211,40 @@ impl BlockCoordinator {
         self.sync_standby.load(Ordering::SeqCst)
     }
 
+    /// Lock consensus — reject all sync blocks immediately.
+    /// Called when consensus is active and producing blocks.
+    pub fn set_consensus_locked(&self, locked: bool) {
+        let was_locked = self.consensus_locked.swap(locked, Ordering::SeqCst);
+        if was_locked != locked {
+            info!(
+                "📦 [COORDINATOR] Consensus lock: {} → {}",
+                if was_locked { "LOCKED" } else { "UNLOCKED" },
+                if locked { "LOCKED" } else { "UNLOCKED" }
+            );
+        }
+    }
+
+    /// Check if consensus is locked (sync blocks are rejected)
+    pub fn is_consensus_locked(&self) -> bool {
+        self.consensus_locked.load(Ordering::Relaxed)
+    }
+
     /// Push a block from any source with deduplication and priority
     pub async fn push_block(&self, block: QueuedBlock) -> bool {
-        let mut queue = self.queue.lock().await;
         let index = block.global_exec_index;
         let source = block.source;
+
+        // CONSENSUS LOCK: When consensus is active, reject sync blocks immediately
+        // without even acquiring the queue lock (fast path).
+        if source == BlockSource::Sync && self.consensus_locked.load(Ordering::Relaxed) {
+            trace!(
+                "📦 [COORDINATOR] Consensus locked — dropping sync block GEI={}",
+                index
+            );
+            return false;
+        }
+
+        let mut queue = self.queue.lock().await;
 
         // Check if already processed
         let next = self.next_expected.load(Ordering::SeqCst);

@@ -1,0 +1,9 @@
+{
+  "hash": "0x6e55d4a3692f25f69fbd7a4e7f1fcec7714a7d1d6fa8d83d28aec2b040f51e3c",
+  "parentHash": "0x735dd0ad4f097815a41f9013be4f061762973e2a98cfceb37d3c61488d3fd0ff",
+  "stateRoot": "0x7de72fda7a8104d823a8016e3b3641d5277f75b35e740e45e8946434ee91a95b",
+  "receiptsRoot": "0x3a5a8d4f8ceac91817d62ffe50aa1c87e00e39e438a3e34aa9326d559aff9dcf",
+  "timestamp": "0x69e1a012",
+  "number": "0x327",
+  "gasUsed": "0x0"
+}

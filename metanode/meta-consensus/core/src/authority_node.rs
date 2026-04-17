@@ -54,6 +54,7 @@ impl ConsensusAuthority {
         network_type: NetworkType,
         epoch_start_timestamp_ms: u64,
         epoch_base_index: u64,
+        last_global_exec_index: u64,
         own_index: AuthorityIndex,
         committee: Committee,
         parameters: Parameters,
@@ -78,6 +79,7 @@ impl ConsensusAuthority {
                 let authority = AuthorityNode::start(
                     epoch_start_timestamp_ms,
                     epoch_base_index,
+                    last_global_exec_index,
                     own_index,
                     committee,
                     parameters,
@@ -205,6 +207,7 @@ where
     pub(crate) async fn start(
         epoch_start_timestamp_ms: u64,
         epoch_base_index: u64,
+        last_global_exec_index: u64,
         own_index: AuthorityIndex,
         committee: Committee,
         parameters: Parameters,
@@ -303,7 +306,16 @@ where
             "consensus db_path must be valid UTF-8 — check Parameters::db_path configuration",
         );
         let store = Arc::new(RocksDBStore::new(store_path));
-        let dag_state = Arc::new(RwLock::new(DagState::new(context.clone(), store.clone())));
+        let mut dag_state = DagState::new(context.clone(), store.clone());
+
+        // FORK PREVENTION: If DAG is empty (snapshot restore) but Go is already ahead,
+        // we MUST align the initial commit index with Go's expected state
+        if last_global_exec_index > epoch_base_index {
+            let next_commit_index = (last_global_exec_index - epoch_base_index) as u32 + 1;
+            dag_state.align_commit_index_with_go(next_commit_index);
+        }
+
+        let dag_state = Arc::new(RwLock::new(dag_state));
 
         let block_verifier = Arc::new(SignedBlockVerifier::new(
             context.clone(),
@@ -683,6 +695,7 @@ mod tests {
 
         let authority = ConsensusAuthority::start(
             network_type,
+            0,
             0,
             0,
             own_index,
@@ -1069,6 +1082,7 @@ mod tests {
 
         let authority = ConsensusAuthority::start(
             network_type,
+            0,
             0,
             0,
             index,

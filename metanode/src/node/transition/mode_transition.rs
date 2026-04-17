@@ -354,6 +354,7 @@ pub async fn transition_mode_only(
         ConsensusAuthority::start(
             NetworkType::Tonic,
             epoch_timestamp_to_use,
+            epoch_base_gei_from_go,
             synced_global_exec_index,
             node.own_index,
             committee,

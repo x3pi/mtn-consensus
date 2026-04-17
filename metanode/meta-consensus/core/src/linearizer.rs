@@ -313,6 +313,25 @@ impl Linearizer {
         let had_deferred = !all_leaders.is_empty();
         all_leaders.extend(committed_leaders);
 
+        let gc_round = self.dag_state.read().gc_round();
+        
+        // Filter out leaders that are <= gc_round.
+        // This is crucial for handling cold-start fast-forwards, where gc_round
+        // is synthetically advanced. Without this, the linearizer would panic
+        // when evaluating old leaders that were passed down before Core was synced.
+        all_leaders.retain(|leader| {
+            if leader.round() <= gc_round {
+                tracing::warn!(
+                    "⚠️ [LINEARIZER] Discarding leader {} (round {}) because it is <= gc_round ({}). \
+                     This usually happens after a cold-start fast-forward.",
+                    leader.reference(), leader.round(), gc_round
+                );
+                false
+            } else {
+                true
+            }
+        });
+
         if all_leaders.is_empty() {
             return vec![];
         }

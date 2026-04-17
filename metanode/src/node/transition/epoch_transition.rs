@@ -530,7 +530,7 @@ pub async fn transition_to_epoch_from_system_tx(
         setup_validator_consensus(
             node,
             new_epoch,
-            epoch_boundary_block,
+            effective_synced,
             epoch_timestamp_to_use,
             db_path,
             committee,
@@ -541,7 +541,7 @@ pub async fn transition_to_epoch_from_system_tx(
         setup_synconly_sync(
             node,
             new_epoch,
-            epoch_boundary_block,
+            effective_synced,
             epoch_timestamp_to_use,
             committee,
             config,
@@ -590,7 +590,7 @@ pub async fn transition_to_epoch_from_system_tx(
                 node,
                 new_epoch,
                 epoch_boundary_block, // boundary_block from get_epoch_boundary_data
-                epoch_boundary_block, // synced_global_exec_index
+                effective_synced, // synced_global_exec_index
                 config,
             )
             .await;

@@ -15,6 +15,7 @@ pub enum LagAlert {
     ModerateLag {
         rust_gei: u64,
         go_gei: u64,
+        go_block_number: u64,
         gap: u64,
         go_rate: f64,
     },
@@ -22,6 +23,7 @@ pub enum LagAlert {
     SevereLag {
         rust_gei: u64,
         go_gei: u64,
+        go_block_number: u64,
         gap: u64,
         go_rate: f64,
     },
@@ -49,8 +51,8 @@ impl LagMonitor {
             executor_client,
             shared_last_global_exec_index,
             lag_alert_sender,
-            moderate_lag_threshold: 500,  // Warn if Go is 500 blocks behind
-            severe_lag_threshold: 2000,   // Critical alert if 2000 blocks behind
+            moderate_lag_threshold: 100,  // Warn if Go is 100 blocks behind
+            severe_lag_threshold: 200,    // Critical alert if 200 blocks behind
         }
     }
 
@@ -80,6 +82,9 @@ impl LagMonitor {
 
             // 2. Get current Go GEI (what Go has finished executing)
             let go_gei = self.executor_client.get_last_global_exec_index().await.unwrap_or(0);
+            
+            // 2.5 Get current Go block number
+            let go_block_number = self.executor_client.get_last_block_number().await.map(|(n, _)| n).unwrap_or(0);
 
             // 3. Calculate metrics
             let gap = rust_gei.saturating_sub(go_gei);
@@ -99,6 +104,7 @@ impl LagMonitor {
                     let _ = self.lag_alert_sender.send(LagAlert::SevereLag {
                         rust_gei,
                         go_gei,
+                        go_block_number,
                         gap,
                         go_rate,
                     });
@@ -108,6 +114,7 @@ impl LagMonitor {
                     let _ = self.lag_alert_sender.send(LagAlert::ModerateLag {
                         rust_gei,
                         go_gei,
+                        go_block_number,
                         gap,
                         go_rate,
                     });

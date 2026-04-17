@@ -320,3 +320,6 @@ metanode/config-copy
 # ===== MkDocs =====
 site/
 metanode/config-copy
+
+# ===== Resolved doc scratch files =====
+**/*.resolved

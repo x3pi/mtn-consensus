@@ -269,6 +269,67 @@ pub async fn dispatch_commit(
                     );
                 }
             }
+
+            // ═══════════════════════════════════════════════════════════════
+            // GEI GAP GUARD: Block sending when commit is WAY ahead of Go.
+            //
+            // After snapshot restore, the DAG cold-starts and the first
+            // commit may have GEI=2342 while Go is only at GEI=1575. Sending
+            // this immediately would cause Go to skip ~767 GEIs, resulting
+            // in out-of-order processing and stalled execution.
+            //
+            // Instead, wait for SYNC-FIRST GEI sync (or epoch transition)
+            // to fill the gap. The buffered sender's RESTORE-GAP-BRIDGE
+            // logic handles the actual Go-side advancement.
+            //
+            // Max wait: 60s (300 * 200ms). EndOfEpoch commits bypass.
+            // ═══════════════════════════════════════════════════════════════
+            const MAX_ALLOWED_GEI_GAP: u64 = 200;
+            const GAP_WAIT_INTERVAL_MS: u64 = 200;
+            const MAX_GAP_WAIT_ATTEMPTS: u64 = 300; // 60 seconds
+
+            if global_exec_index > go_current_gei + MAX_ALLOWED_GEI_GAP
+                && go_current_gei > 0
+                && subdag.extract_end_of_epoch_transaction().is_none()
+            {
+                info!(
+                    "⏳ [GEI GAP GUARD] Commit GEI={} is {} ahead of Go GEI={}. Waiting for gap to close...",
+                    global_exec_index, global_exec_index - go_current_gei, go_current_gei
+                );
+
+                for attempt in 0..MAX_GAP_WAIT_ATTEMPTS {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(GAP_WAIT_INTERVAL_MS)).await;
+                    let current_go_gei = client.get_last_global_exec_index().await.unwrap_or(0);
+
+                    if global_exec_index <= current_go_gei + MAX_ALLOWED_GEI_GAP {
+                        info!(
+                            "✅ [GEI GAP GUARD] Gap closed! Go GEI={}, commit GEI={}, gap={}. Proceeding after {}ms.",
+                            current_go_gei, global_exec_index,
+                            global_exec_index.saturating_sub(current_go_gei),
+                            (attempt + 1) * GAP_WAIT_INTERVAL_MS
+                        );
+                        break;
+                    }
+
+                    // Re-check if Go already processed this commit
+                    if current_go_gei >= global_exec_index {
+                        info!(
+                            "⏭️ [GEI GAP GUARD] Go caught up past commit: Go GEI={} >= commit GEI={}. Skipping.",
+                            current_go_gei, global_exec_index
+                        );
+                        return Ok(1);
+                    }
+
+                    if attempt % 25 == 0 {
+                        warn!(
+                            "⏳ [GEI GAP GUARD] Still waiting: commit GEI={}, Go GEI={}, gap={}, elapsed={}s",
+                            global_exec_index, current_go_gei,
+                            global_exec_index.saturating_sub(current_go_gei),
+                            (attempt + 1) * GAP_WAIT_INTERVAL_MS / 1000
+                        );
+                    }
+                }
+            }
         }
 
         if let Some(ref client) = executor_client {

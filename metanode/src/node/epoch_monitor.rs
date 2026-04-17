@@ -140,7 +140,7 @@ pub fn start_unified_epoch_monitor(
                 // This makes snapshot restore behave like a node restart:
                 // sync up → join consensus immediately.
                 // ═══════════════════════════════════════════════════════════
-                if matches!(_current_mode, crate::node::NodeMode::SyncOnly) {
+                if matches!(_current_mode, crate::node::NodeMode::SyncOnly) || matches!(_current_mode, crate::node::NodeMode::SyncingUp) {
                     // Check if this node should be a Validator
                     let own_protocol_pubkey = {
                         if let Some(node_arc) = crate::node::get_transition_handler_node().await {
@@ -185,10 +185,10 @@ pub fn start_unified_epoch_monitor(
                         };
 
                         let gap = net_block.saturating_sub(go_block);
-                        if gap <= 5 {
+                        if gap <= 3 {
                             info!(
-                                "🚀 [EPOCH MONITOR] Same-epoch promotion! SyncOnly → Validator in epoch {} (Go block={}, network={})",
-                                rust_epoch, go_block, net_block
+                                "🚀 [EPOCH MONITOR] Same-epoch promotion! {:?} → Validator in epoch {} (Go block={}, network={})",
+                                _current_mode, rust_epoch, go_block, net_block
                             );
 
                             // Get synced_global_exec_index from Go
@@ -227,8 +227,8 @@ pub fn start_unified_epoch_monitor(
                             }
                         } else {
                             debug!(
-                                "⏳ [EPOCH MONITOR] SyncOnly node in committee but Go still catching up: gap={} blocks (Go={}, network={})",
-                                gap, go_block, net_block
+                                "⏳ [EPOCH MONITOR] {:?} node in committee but Go still catching up: gap={} blocks (Go={}, network={})",
+                                _current_mode, gap, go_block, net_block
                             );
                         }
                     }
@@ -243,7 +243,7 @@ pub fn start_unified_epoch_monitor(
             // SyncOnly nodes don't run full transitions, but Go must advance epoch
             // to serve blocks at the correct epoch to other nodes and to itself.
             // ═══════════════════════════════════════════════════════════════
-            if matches!(_current_mode, crate::node::NodeMode::SyncOnly) {
+            if matches!(_current_mode, crate::node::NodeMode::SyncOnly) || matches!(_current_mode, crate::node::NodeMode::SyncingUp) {
                 // Skip if Go is already caught up
                 if local_go_epoch >= network_epoch {
                     continue;

@@ -19,7 +19,7 @@ use tracing::{info, warn};
 pub(super) async fn setup_validator_consensus(
     node: &mut ConsensusNode,
     new_epoch: u64,
-    epoch_boundary_block: u64,
+    boundary_gei: u64,
     epoch_timestamp: u64,
     db_path: std::path::PathBuf,
     committee: consensus_config::Committee,
@@ -30,16 +30,13 @@ pub(super) async fn setup_validator_consensus(
         node.epoch_transition_sender.clone(),
     );
 
-    // Use node.last_global_exec_index for epoch_base — this is the correct value for NORMAL startup.
-    // For epoch 1 genesis: last_global_exec_index = 0, so GEI = 0 + commit_index = commit_index.
-    // NOTE: Do NOT use epoch_boundary_block here — Go returns boundary_block=1 for epoch 1,
-    // which causes GEI = 1 + commit_index (off by one → fork).
-    // Cold-start restore uses mode_transition.rs which has its own fix.
-    let actual_epoch_base = node.last_global_exec_index;
-    let initial_next_expected = actual_epoch_base + 1;
+    // Use boundary_gei for epoch_base — this is the correct value for NORMAL startup.
+    // For epoch 1 genesis: boundary_gei = 0, so GEI = 0 + commit_index = commit_index.
+    let actual_epoch_base = boundary_gei;
+    let initial_next_expected = node.last_global_exec_index + 1;
     info!(
-        "📊 [EXECUTOR INIT] epoch_boundary_block={}, node.last_global_exec_index={}, initial_next_expected={}",
-        epoch_boundary_block, actual_epoch_base, initial_next_expected
+        "📊 [EXECUTOR INIT] boundary_gei={}, node.last_global_exec_index={}, initial_next_expected={}",
+        boundary_gei, node.last_global_exec_index, initial_next_expected
     );
     let exec_client_proc = if node.executor_commit_enabled {
         Some(Arc::new(ExecutorClient::new_with_initial_index(
@@ -106,7 +103,8 @@ pub(super) async fn setup_validator_consensus(
         ConsensusAuthority::start(
             NetworkType::Tonic,
             epoch_timestamp,
-            epoch_boundary_block,
+            actual_epoch_base,
+            node.last_global_exec_index,
             node.own_index,
             committee,
             params,
@@ -144,7 +142,7 @@ pub(super) async fn setup_validator_consensus(
 pub(super) async fn setup_synconly_sync(
     node: &mut ConsensusNode,
     new_epoch: u64,
-    epoch_boundary_block: u64,
+    boundary_gei: u64,
     epoch_timestamp: u64,
     committee: consensus_config::Committee,
     config: &NodeConfig,
@@ -156,13 +154,12 @@ pub(super) async fn setup_synconly_sync(
         node.epoch_transition_sender.clone(),
     );
 
-    // Use node.last_global_exec_index for epoch_base — same as Validator path.
-    // Do NOT use epoch_boundary_block here (Go returns 1 for epoch 1, not 0).
-    let actual_epoch_base = node.last_global_exec_index;
-    let initial_next_expected = actual_epoch_base + 1;
+    // Use boundary_gei for epoch_base
+    let actual_epoch_base = boundary_gei;
+    let initial_next_expected = node.last_global_exec_index + 1;
     info!(
-        "📊 [EXECUTOR INIT] SyncOnly: epoch_boundary_block={}, node.last_global_exec_index={}, initial_next_expected={}",
-        epoch_boundary_block, actual_epoch_base, initial_next_expected
+        "📊 [EXECUTOR INIT] SyncOnly: boundary_gei={}, node.last_global_exec_index={}, initial_next_expected={}",
+        boundary_gei, node.last_global_exec_index, initial_next_expected
     );
     let exec_client_proc = if node.executor_commit_enabled {
         Some(Arc::new(ExecutorClient::new_with_initial_index(

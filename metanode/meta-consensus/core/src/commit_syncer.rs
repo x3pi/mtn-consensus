@@ -260,14 +260,15 @@ impl<C: NetworkClient> CommitSyncer<C> {
 
         // ═══════════════════════════════════════════════════════════════════════
         // COLD-START FAST-FORWARD (Snapshot Restore Support)
-        // When a node starts fresh from a Go snapshot (local_commit=0) and the
+        // When a node starts fresh from a Go snapshot (DAG wiped) and the
         // network is far ahead, skip historical consensus commits. Go already has
         // the blockchain state from the snapshot — we only need recent commits so
         // the DAG can continue. Without this, verify_commits() fails with
         // "Not enough votes (0)" because the committee from the stale epoch can't
         // validate vote blocks from the current epoch.
         // ═══════════════════════════════════════════════════════════════════════
-        if local_commit_index == 0 && quorum_commit_index > 200 {
+        let highest_accepted_round = self.inner.dag_state.read().highest_accepted_round();
+        if highest_accepted_round == 0 && quorum_commit_index > 200 {
             // SNAPSHOT RESTORE: Fast-forward to the current quorum. Historical
             // commits can never be verified (DAG was wiped — vote blocks reference
             // digests that don't exist). The node will only process NEW commits
@@ -293,23 +294,10 @@ impl<C: NetworkClient> CommitSyncer<C> {
                 self.highest_scheduled_index = Some(fast_forward_to);
 
                 // ═══════════════════════════════════════════════════════════════
-                // COLD-START GC ADVANCE: The DAG is empty so gc_round = 0.
-                // ALL incoming blocks (round 1..HEAD) need ancestors → they all
-                // get suspended → 40k buffer fills → HEAD blocks dropped → DEADLOCK.
-                //
-                // Fix: advance gc_round based on the highest round we've seen
-                // from peers. This causes old blocks (round < gc_round) to be
-                // skipped instead of suspended, freeing the buffer for HEAD blocks.
+                // We do NOT call `cold_start_advance_gc_round` here anymore because
+                // highest_accepted_round is 0 and we don't know the exact target round!
+                // Instead, we will do it in `handle_fetch_result` when the first payload arrives.
                 // ═══════════════════════════════════════════════════════════════
-                let highest_accepted = self.inner.dag_state.read().highest_accepted_round();
-                if highest_accepted > 0 {
-                    // Use highest_accepted as the target so gc_round = highest_accepted - gc_depth
-                    // This keeps the most recent gc_depth rounds available for consensus
-                    self.inner
-                        .dag_state
-                        .write()
-                        .cold_start_advance_gc_round(highest_accepted);
-                }
             }
         }
 
@@ -512,6 +500,30 @@ impl<C: NetworkClient> CommitSyncer<C> {
                 .expect("certified_commits checked non-empty above")
                 .index(),
         );
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // COLD-START GC ADVANCE: The DAG is empty (highest_accepted_round = 0).
+        // ALL incoming HEAD blocks (round 10k+) need ancestors → they all
+        // suspend → buffer fills → DEADLOCK.
+        // By looking at the leader round of the FIRST commits we fetch from peers,
+        // we instantly know the network's HEAD round! We advance gc_round to this
+        // round, causing all historical blocks to be GC'd instead of fetched.
+        // ═══════════════════════════════════════════════════════════════════════
+        if self.inner.dag_state.read().highest_accepted_round() == 0 {
+            let highest_commit_round = certified_commits
+                .commits()
+                .iter()
+                .map(|c| c.leader().round)
+                .max()
+                .unwrap_or(0);
+            if highest_commit_round > 0 {
+                self.inner
+                    .dag_state
+                    .write()
+                    .cold_start_advance_gc_round(highest_commit_round, commit_end);
+            }
+        }
+
         self.highest_fetched_commit_index = self.highest_fetched_commit_index.max(commit_end);
         metrics
             .commit_sync_highest_fetched_index

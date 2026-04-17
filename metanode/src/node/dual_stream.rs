@@ -47,6 +47,8 @@ pub struct DualStreamController {
     peer_rpc_addresses: Vec<String>,
     /// Signal to stop block sync stream
     shutdown: Arc<AtomicBool>,
+    /// Consensus lock from BlockCoordinator — set to true on convergence
+    consensus_locked: Option<Arc<AtomicBool>>,
 }
 
 impl DualStreamController {
@@ -56,7 +58,16 @@ impl DualStreamController {
             executor_client,
             peer_rpc_addresses,
             shutdown: Arc::new(AtomicBool::new(false)),
+            consensus_locked: None,
         }
+    }
+
+    /// Attach the consensus_locked flag from BlockCoordinator.
+    /// On convergence, the flag will be set to true to reject sync blocks.
+    #[allow(dead_code)]
+    pub fn with_consensus_lock(mut self, lock: Arc<AtomicBool>) -> Self {
+        self.consensus_locked = Some(lock);
+        self
     }
 
     /// Get shutdown signal handle (for external stop).
@@ -77,6 +88,13 @@ impl DualStreamController {
         let executor = self.executor_client.clone();
         let peer_addrs = self.peer_rpc_addresses.clone();
         let shutdown = self.shutdown.clone();
+        let consensus_locked = self.consensus_locked.clone();
+
+        // Disengage consensus lock while sync stream is active
+        if let Some(ref lock) = consensus_locked {
+            lock.store(false, Ordering::SeqCst);
+            info!("🔓 [DUAL-STREAM] Consensus lock DISENGAGED — sync stream starting");
+        }
 
         tokio::spawn(async move {
             info!(
@@ -222,6 +240,11 @@ impl DualStreamController {
                          Stopping block sync. Stats: peer_synced={}, rounds={}",
                         consensus_driven_streak, total_peer_synced, total_rounds
                     );
+                    // Engage consensus lock — reject all future sync blocks
+                    if let Some(ref lock) = consensus_locked {
+                        lock.store(true, Ordering::SeqCst);
+                        info!("🔒 [DUAL-STREAM] Consensus lock ENGAGED on convergence");
+                    }
                     break;
                 }
 
@@ -235,6 +258,11 @@ impl DualStreamController {
                         go_block, net_block, CONVERGENCE_GAP,
                         consensus_driven_streak, total_peer_synced
                     );
+                    // Engage consensus lock — reject all future sync blocks
+                    if let Some(ref lock) = consensus_locked {
+                        lock.store(true, Ordering::SeqCst);
+                        info!("🔒 [DUAL-STREAM] Consensus lock ENGAGED on fast convergence");
+                    }
                     break;
                 }
             }

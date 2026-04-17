@@ -425,7 +425,7 @@ impl DagState {
     /// quorum far ahead). The synthetic commit doesn't affect consensus
     /// correctness because the node has no local commits to conflict with.
     /// ═══════════════════════════════════════════════════════════════════
-    pub fn cold_start_advance_gc_round(&mut self, target_round: Round) {
+    pub fn cold_start_advance_gc_round(&mut self, target_round: Round, synced_commit_index: crate::commit::CommitIndex) {
         let gc_depth = self.context.protocol_config.gc_depth();
         let current_gc_round = self.gc_round();
 
@@ -436,8 +436,11 @@ impl DagState {
         }
 
         // Create a minimal synthetic commit at the target round
+        // FRAGMENTATION & GEI FIX: Inherit the network's commit index instead of resetting to 1.
+        // If we reset to 1, the Linearizer will output local commits starting at 2, completely 
+        // misaligning local GEI with network GEI, leading to consensus forks!
         let synthetic_commit = TrustedCommit::new_for_test(
-            1, // commit index 1 (minimal)
+            synced_commit_index.max(1), // use synced commit index from network quorum
             crate::commit::CommitDigest::MIN,
             self.context.clock.timestamp_utc_ms(),
             BlockRef::new(
@@ -464,6 +467,48 @@ impl DagState {
         for round in self.last_committed_rounds.iter_mut() {
             *round = std::cmp::max(*round, target_round);
         }
+    }
+
+    /// ═══════════════════════════════════════════════════════════════════
+    /// SYNC-FIRST ALIGNMENT: After snapshot restore, the DAG is empty
+    /// (last_commit_index = 0). But Go may have advanced significantly via 
+    /// SYNC-FIRST (e.g. GEI = 2338, epoch_base = 1332). 
+    /// If Rust starts creating commits from index 1, it will output GEI 1333,
+    /// which overlaps with old blocks and is rejected by Go, causing a massive divergence.
+    /// This method explicitly sets the last_commit to the correct index so that
+    /// the first generated commit perfectly aligns with Go's expected GEI.
+    /// ═══════════════════════════════════════════════════════════════════
+    pub fn align_commit_index_with_go(&mut self, next_commit_index_from_go: crate::commit::CommitIndex) {
+        if self.last_commit.is_some() {
+            // Only align if DAG is empty (cold start)
+            return;
+        }
+
+        let target_index = next_commit_index_from_go.saturating_sub(1);
+        if target_index == 0 {
+            return;
+        }
+
+        tracing::warn!(
+            "🔧 [SYNC-FIRST ALIGNMENT] Empty DAG detected. Injecting synthetic commit \
+             at index {} so the next commit perfectly aligns with Go's expected state.",
+            target_index
+        );
+
+        let synthetic_commit = TrustedCommit::new_for_test(
+            target_index,
+            crate::commit::CommitDigest::MIN,
+            self.context.clock.timestamp_utc_ms(),
+            BlockRef::new(
+                0,
+                consensus_config::AuthorityIndex::ZERO,
+                consensus_types::block::BlockDigest::MIN,
+            ),
+            vec![],
+            0, // GEI doesn't matter here
+        );
+
+        self.last_commit = Some(synthetic_commit);
     }
 }
 

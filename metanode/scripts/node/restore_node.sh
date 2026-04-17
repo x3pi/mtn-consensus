@@ -145,7 +145,7 @@ else
     
     # Lấy tên snapshot mới nhất từ API
     SNAP_NAME=$(curl -sf "$SNAP_API" 2>/dev/null \
-        | python3 -c "import sys,json; snaps=json.load(sys.stdin); print(snaps[-1]['snapshot_name'])" 2>/dev/null) || true
+        | python3 -c "import sys,json; snaps=json.load(sys.stdin); print(max(snaps, key=lambda x: x['block_number'])['snapshot_name'])" 2>/dev/null) || true
     
     if [ -z "$SNAP_NAME" ]; then
         echo -e "${RED}❌ Không lấy được snapshot từ API!${NC}"
@@ -156,25 +156,25 @@ else
     echo -e "${GREEN}  ✅ API trả về: ${NC}$SNAP_NAME"
 fi
 
-# Validate snapshot tồn tại — thử HTTP trước, local fallback
-# 1) Kiểm tra qua HTTP
-HTTP_CHECK=$(curl -sf -o /dev/null -w "%{http_code}" "$SNAP_FILES_URL/$SNAP_NAME/" 2>/dev/null || echo "000")
-
-if [ "$HTTP_CHECK" = "200" ]; then
-    echo -e "${GREEN}  ✅ Snapshot có sẵn qua HTTP${NC}"
-    SNAP_MODE="network"
+# Validate snapshot tồn tại — thử LOCAL trước (nhanh + đáng tin), HTTP fallback
+# 1) Kiểm tra trên LOCAL filesystem (chế độ dev, tất cả nodes cùng máy)
+LOCAL_DIR=$(find_snap_dir_local "$SNAP_NAME")
+if [ -n "$LOCAL_DIR" ]; then
+    SNAP_DIR="$LOCAL_DIR"
+    SNAP_MODE="local"
+    echo -e "${GREEN}  ✅ Tìm thấy local: ${NC}$(basename $(dirname $SNAP_DIR))/$SNAP_NAME"
 else
-    echo -e "${YELLOW}  ⚠️  HTTP check failed (code=$HTTP_CHECK). Thử tìm trên filesystem local...${NC}"
-    # 2) Fallback: tìm trên LOCAL filesystem (chế độ dev, tất cả nodes cùng máy)
-    LOCAL_DIR=$(find_snap_dir_local "$SNAP_NAME")
-    if [ -n "$LOCAL_DIR" ]; then
-        SNAP_DIR="$LOCAL_DIR"
-        SNAP_MODE="local"
-        echo -e "${GREEN}  ✅ Tìm thấy local: ${NC}$(basename $(dirname $SNAP_DIR))/$SNAP_NAME"
+    # 2) Fallback: Kiểm tra qua HTTP
+    HTTP_CHECK=$(curl -s -o /dev/null -w "%{http_code}" "$SNAP_FILES_URL/$SNAP_NAME/" 2>/dev/null)
+    [ -z "$HTTP_CHECK" ] && HTTP_CHECK="000"
+
+    if [ "$HTTP_CHECK" = "200" ]; then
+        echo -e "${GREEN}  ✅ Snapshot có sẵn qua HTTP${NC}"
+        SNAP_MODE="network"
     else
-        echo -e "${RED}❌ Snapshot $SNAP_NAME không tìm thấy qua HTTP lẫn local!${NC}"
-        echo "   HTTP: $SNAP_FILES_URL/$SNAP_NAME/"
+        echo -e "${RED}❌ Snapshot $SNAP_NAME không tìm thấy qua local lẫn HTTP!${NC}"
         echo "   Local: $GO_SIMPLE_ROOT/snapshot_data_node*/$SNAP_NAME"
+        echo "   HTTP: $SNAP_FILES_URL/$SNAP_NAME/ (code=$HTTP_CHECK)"
         exit 1
     fi
 fi
@@ -326,6 +326,19 @@ if [ -d "$SNAP_DIR/back_up_write" ]; then
     cp -a "$SNAP_DIR/back_up_write/"* "$NODE_DATA/back_up_write/" 2>/dev/null || true
 fi
 
+# ATOMIC METADATA: Copy metadata.json to ensure Go starts accurately aligned
+if [ -f "$SNAP_DIR/metadata.json" ]; then
+    echo "  📁 Copying atomic snapshot metadata.json..."
+    cp -a "$SNAP_DIR/metadata.json" "$NODE_DATA/data/data/metadata.json" 2>/dev/null || true
+    cp -a "$SNAP_DIR/metadata.json" "$NODE_DATA/data/metadata.json" 2>/dev/null || true
+    cp -a "$SNAP_DIR/metadata.json" "$NODE_DATA/data-write/data/metadata.json" 2>/dev/null || true
+    cp -a "$SNAP_DIR/metadata.json" "$NODE_DATA/data-write/metadata.json" 2>/dev/null || true
+    cp -a "$SNAP_DIR/metadata.json" "$NODE_DATA/metadata.json" 2>/dev/null || true
+    echo -e "${GREEN}  ✅ metadata.json restored${NC}"
+else
+    echo -e "${YELLOW}  ⚠️  Warning: metadata.json not found in snapshot${NC}"
+fi
+
 # CRITICAL: Copy epoch_data_backup.json — without this, Go starts at epoch 0
 echo "  📁 Copying epoch data..."
 EPOCH_RESTORED=false
@@ -473,17 +486,17 @@ tmux new-session -d -s "${RUST_SESSION[$NODE_ID]}" -c "$METANODE_ROOT" \
 echo -e "${GREEN}    🚀 Rust Metanode started (${RUST_SESSION[$NODE_ID]})${NC}"
 
 # ══════════════════════════════════════════════════════════════
-# Step 6: Sequential Sync Monitoring (90s)
+# Step 6: Sequential Sync Monitoring (180s)
 # ══════════════════════════════════════════════════════════════
 echo ""
-echo -e "${BLUE}[6/7] 📊 Giám sát sync tuần tự (90s)...${NC}"
+echo -e "${BLUE}[6/7] 📊 Giám sát sync tuần tự (180s)...${NC}"
 echo -e "${BLUE}       Kiểm tra block đang tăng tuần tự, không bị stuck hay jump${NC}"
 
 PREV_BLOCK=""
 STUCK_COUNT=0
 MAX_STUCK=3  # 3 lần liên tiếp = 30s không tăng → cảnh báo
 
-for t in 10 20 30 40 50 60 70 80 90; do
+for t in 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150 160 170 180; do
     sleep 10
     
     # 1. Read current block via RPC
@@ -502,8 +515,8 @@ for t in 10 20 30 40 50 60 70 80 90; do
     
     # 2. Read GEI directly from Go's batch-drain log OR Rust's log
     # Empty block batches do not increment CURRENT_BLOCK, but they do advance GEI
-    GO_BATCH_GEI=$(grep -a 'BATCH-DRAIN' "$LOG_DIR/node_$NODE_ID/go-master-stdout.log" 2>/dev/null | tail -1 | grep -oP '\d+→\d+' | cut -d'→' -f2 || echo "")
-    RUST_GEI=$(grep -a 'GEI ' "$LOG_DIR/node_$NODE_ID/rust.log" 2>/dev/null | tail -1 | grep -oP '\d+→\d+' | cut -d'→' -f2 || echo "")
+    GO_BATCH_GEI=$(grep -a 'BATCH-DRAIN' "$LOG_DIR/node_$NODE_ID/go-master-stdout.log" 2>/dev/null | tail -1 | grep -oP '\d+→\d+' | awk -F'→' '{print $2}' || echo "")
+    RUST_GEI=$(grep -a 'GEI ' "$LOG_DIR/node_$NODE_ID/rust.log" 2>/dev/null | tail -1 | grep -oP '\d+→\d+' | awk -F'→' '{print $2}' || echo "")
     
     # Determine the highest valid GEI found
     CURRENT_GEI=""

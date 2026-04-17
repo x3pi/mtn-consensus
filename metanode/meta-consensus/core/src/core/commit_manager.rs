@@ -77,6 +77,20 @@ impl Core {
         let mut committed_sub_dags = Vec::new();
         // TODO: Add optimization to abort early without quorum for a round.
         loop {
+            // CRITICAL: Sync last_decided_leader with DAG state.
+            // If CommitSyncer performs a cold-start fast-forward (restoring from snapshot),
+            // it will synthetically advance the DagState's last commit. We must update
+            // Core's local last_decided_leader to prevent it from evaluating old leaders
+            // against the new updated gc_round, which would cause the linearizer to panic.
+            let current_dag_leader = self.dag_state.read().last_commit_leader();
+            if self.last_decided_leader.round < current_dag_leader.round {
+                tracing::warn!(
+                    "🚀 [COLD-START] Fast-forwarding Core::last_decided_leader from round {} to {}",
+                    self.last_decided_leader.round, current_dag_leader.round
+                );
+                self.last_decided_leader = current_dag_leader;
+            }
+
             // LeaderSchedule has a limit to how many sequenced leaders can be committed
             // before a change is triggered. Calling into leader schedule will get you
             // how many commits till next leader change. We will loop back and recalculate
