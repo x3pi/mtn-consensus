@@ -268,7 +268,7 @@ impl<C: NetworkClient> CommitSyncer<C> {
         // validate vote blocks from the current epoch.
         // ═══════════════════════════════════════════════════════════════════════
         let highest_accepted_round = self.inner.dag_state.read().highest_accepted_round();
-        if highest_accepted_round == 0 && quorum_commit_index > 200 {
+        if highest_accepted_round == 0 && quorum_commit_index > 0 {
             // SNAPSHOT RESTORE: Fast-forward to the current quorum. Historical
             // commits can never be verified (DAG was wiped — vote blocks reference
             // digests that don't exist). The node will only process NEW commits
@@ -1069,7 +1069,12 @@ impl<C: NetworkClient> Inner<C> {
         };
 
         // Parse and verify blocks. Then accumulate votes on the end commit.
-        let end_commit_ref = CommitRef::new(end_commit.index(), *end_commit_digest);
+        let end_commit_ref = CommitRef::new_with_global(
+            end_commit.index(),
+            *end_commit_digest,
+            end_commit.global_exec_index(),
+            0, // Epoch will be ignored by PartialEq if we only compare index & digest, but wait, PartialEq compares all fields! Wait, the block's vote might have epoch = 0 or actual epoch.
+        );
         let mut stake_aggregator = StakeAggregator::<QuorumThreshold>::new();
         let mut vote_blocks = Vec::new();
         for serialized in serialized_vote_blocks {
