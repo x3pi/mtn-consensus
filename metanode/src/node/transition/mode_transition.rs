@@ -258,14 +258,17 @@ pub async fn transition_mode_only(
     );
 
     let exec_client_proc = if node.executor_commit_enabled {
-        Some(Arc::new(ExecutorClient::new_with_initial_index(
+        let client = Arc::new(ExecutorClient::new_with_initial_index(
             true,
             true,
             config.executor_send_socket_path.clone(),
             config.executor_receive_socket_path.clone(),
             synced_global_exec_index + 1,
             Some(node.storage_path.clone()),
-        )))
+        ));
+        // CRITICAL: Sync next_block_number from Go Master to prevent BLOCK-NUM-REGRESSION.
+        client.initialize_from_go().await;
+        Some(client)
     } else {
         None
     };

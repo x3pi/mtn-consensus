@@ -321,34 +321,43 @@ impl ExecutorClient {
         }
 
         // Query Go Master for last_block_number and last_global_exec_index directly
-        let last_go_state_opt = match self.get_last_block_number().await {
-            Ok((bn, gei, _is_ready)) => Some((bn, gei)),
-            Err(e) => {
-                warn!("⚠️  [INIT] Failed to get state from Go Master: {}. Attempting to read persisted value.", e);
-                // Fallback to persisted last block number if available
-                if let Some(ref storage_path) = self.storage_path {
-                    let fallback_bn = match read_last_block_number(storage_path).await {
-                        Ok(n) => {
-                            info!("📊 [INIT] Loaded persisted last block number {}", n);
-                            Some(n)
-                        }
-                        Err(_) => None,
-                    };
-                    let fallback_gei = match load_persisted_last_index(storage_path) {
-                        Some((gei, _commit)) => {
-                            info!("📊 [INIT] Loaded persisted last global exec index {}", gei);
-                            Some(gei)
-                        }
-                        None => None,
-                    };
-
-                    if let (Some(bn), Some(gei)) = (fallback_bn, fallback_gei) {
-                        Some((bn, gei))
+        let last_go_state_opt = loop {
+            match self.get_last_block_number().await {
+                Ok((bn, gei, is_ready)) => {
+                    if is_ready {
+                        break Some((bn, gei));
                     } else {
-                        None
+                        warn!("⏳ [INIT] Go Master is connected but not fully ready (DB loading). Retrying in 1s...");
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
-                } else {
-                    None
+                },
+                Err(e) => {
+                    warn!("⚠️  [INIT] Failed to get state from Go Master: {}. Attempting to read persisted value.", e);
+                    // Fallback to persisted last block number if available
+                    if let Some(ref storage_path) = self.storage_path {
+                        let fallback_bn = match read_last_block_number(storage_path).await {
+                            Ok(n) => {
+                                info!("📊 [INIT] Loaded persisted last block number {}", n);
+                                Some(n)
+                            }
+                            Err(_) => None,
+                        };
+                        let fallback_gei = match load_persisted_last_index(storage_path) {
+                            Some((gei, _commit)) => {
+                                info!("📊 [INIT] Loaded persisted last global exec index {}", gei);
+                                Some(gei)
+                            }
+                            None => None,
+                        };
+
+                        if let (Some(bn), Some(gei)) = (fallback_bn, fallback_gei) {
+                            break Some((bn, gei));
+                        } else {
+                            break None;
+                        }
+                    } else {
+                        break None;
+                    }
                 }
             }
         };

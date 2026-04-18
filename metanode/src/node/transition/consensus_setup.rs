@@ -39,14 +39,19 @@ pub(super) async fn setup_validator_consensus(
         boundary_gei, node.last_global_exec_index, initial_next_expected
     );
     let exec_client_proc = if node.executor_commit_enabled {
-        Some(Arc::new(ExecutorClient::new_with_initial_index(
+        let client = Arc::new(ExecutorClient::new_with_initial_index(
             true,
             true,
             config.executor_send_socket_path.clone(),
             config.executor_receive_socket_path.clone(),
             initial_next_expected,
             Some(node.storage_path.clone()),
-        )))
+        ));
+        // CRITICAL: Sync next_block_number and last_processed_epoch from Go Master.
+        // Without this, next_block_number starts at 0 after epoch transition,
+        // causing Go to reject all blocks as BLOCK-NUM-REGRESSION (e.g. block_number=3 ≤ last=831).
+        client.initialize_from_go().await;
+        Some(client)
     } else {
         None
     };
@@ -162,14 +167,17 @@ pub(super) async fn setup_synconly_sync(
         boundary_gei, node.last_global_exec_index, initial_next_expected
     );
     let exec_client_proc = if node.executor_commit_enabled {
-        Some(Arc::new(ExecutorClient::new_with_initial_index(
+        let client = Arc::new(ExecutorClient::new_with_initial_index(
             true,
             true,
             config.executor_send_socket_path.clone(),
             config.executor_receive_socket_path.clone(),
             initial_next_expected,
             Some(node.storage_path.clone()),
-        )))
+        ));
+        // CRITICAL: Sync next_block_number from Go Master during epoch transition.
+        client.initialize_from_go().await;
+        Some(client)
     } else {
         None
     };
