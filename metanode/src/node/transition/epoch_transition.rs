@@ -353,7 +353,7 @@ pub async fn transition_to_epoch_from_system_tx(
                 "⚠️ [EPOCH ADVANCE] Failed to get Go's last_block_number: {}. Using effective_synced={} as fallback.",
                 e, effective_synced
             );
-            (effective_synced, false)
+            (effective_synced, 0, false)
         }
     };
     let go_boundary_for_advance = go_boundary_for_advance_tuple.0;
@@ -892,7 +892,7 @@ pub(super) async fn stop_authority_and_poll_go(
     let raw_synced_block = executor_client
         .get_last_block_number()
         .await
-        .map(|(b, _)| b)
+        .map(|(b, _, _)| b)
         .unwrap_or(0);
     let raw_synced = std::cmp::max(raw_synced_gei, raw_synced_block);
 
@@ -1036,7 +1036,7 @@ pub(super) async fn handle_deferred_epoch_transition(
     if let Some(ref exec_client) = node.executor_client {
         loop {
             match exec_client.get_last_block_number().await {
-                Ok((last_block, _)) => {
+                Ok((last_block, _, _)) => {
                     let gei = exec_client.get_last_global_exec_index().await.unwrap_or(0);
                     let current_gei = if synced_global_exec_index > 0 && gei > 0 {
                         gei
@@ -1369,7 +1369,7 @@ async fn catch_up_to_network_epoch(
             let go_current_block = executor_client
                 .get_last_block_number()
                 .await
-                .map(|(b, _)| b)
+                .map(|(b, _, _)| b)
                 .unwrap_or(0);
 
             handle_deferred_epoch_transition(
@@ -1444,7 +1444,7 @@ async fn catch_up_to_network_epoch(
         let go_current = executor_client
             .get_last_block_number()
             .await
-            .map(|(b, _)| b)
+            .map(|(b, _, _)| b)
             .unwrap_or(0);
         if go_current < boundary_block {
             info!(
@@ -1476,7 +1476,7 @@ async fn catch_up_to_network_epoch(
             let go_after = executor_client
                 .get_last_block_number()
                 .await
-                .map(|(b, _)| b)
+                .map(|(b, _, _)| b)
                 .unwrap_or(0);
             if go_after < boundary_block {
                 warn!(
@@ -1498,7 +1498,7 @@ async fn catch_up_to_network_epoch(
                     let current = executor_client
                         .get_last_block_number()
                         .await
-                        .map(|(b, _)| b)
+                        .map(|(b, _, _)| b)
                         .unwrap_or(0);
                     if current >= boundary_block {
                         break;
@@ -1568,7 +1568,7 @@ async fn catch_up_to_network_epoch(
         let go_current = executor_client
             .get_last_block_number()
             .await
-            .map(|(b, _)| b)
+            .map(|(b, _, _)| b)
             .unwrap_or(0);
         if go_current < requested_boundary_block {
             info!(

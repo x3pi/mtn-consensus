@@ -210,7 +210,7 @@ impl PeerRpcServer {
         };
 
         let last_block = match executor.get_last_block_number().await {
-            Ok((b, _)) => b,
+            Ok((b, _, _)) => b,
             Err(e) => {
                 error!("🌐 [PEER RPC] Failed to get last block: {}", e);
                 let response = format!(

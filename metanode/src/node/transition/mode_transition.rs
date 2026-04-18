@@ -452,7 +452,7 @@ pub(super) async fn handle_synconly_upgrade_wait(
         }
 
         let go_current_block = match fresh_executor_client.get_last_block_number().await {
-            Ok((b, _)) => b,
+            Ok((b, _, _)) => b,
             Err(e) => {
                 if attempt.is_multiple_of(20) {
                     warn!(

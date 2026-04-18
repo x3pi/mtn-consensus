@@ -83,7 +83,7 @@ impl CommitteeSource {
         let local_block = local_client
             .get_last_block_number()
             .await
-            .map(|(b, _)| b)
+            .map(|(b, _, _)| b)
             .unwrap_or(0);
 
         info!(

@@ -119,7 +119,7 @@ impl DualStreamController {
             let mut last_go_block: u64 = 0;
 
             // Initialize last_go_block
-            if let Ok((b, _)) = executor.get_last_block_number().await {
+            if let Ok((b, _, _)) = executor.get_last_block_number().await {
                 last_go_block = b;
             }
 
@@ -135,7 +135,7 @@ impl DualStreamController {
 
                 // 1. Get Go's current block number
                 let go_block = match executor.get_last_block_number().await {
-                    Ok((b, _)) => {
+                    Ok((b, _, _)) => {
                         consecutive_errors = 0;
                         b
                     }

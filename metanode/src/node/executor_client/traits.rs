@@ -27,7 +27,7 @@ pub trait TExecutorClient: Send + Sync {
 
     // 3. RPC Queries
     async fn get_validators_at_block(&self, block_number: u64) -> Result<(Vec<ValidatorInfo>, u64, u64)>;
-    async fn get_last_block_number(&self) -> Result<(u64, bool)>;
+    async fn get_last_block_number(&self) -> Result<(u64, u64, bool)>;
     async fn get_last_global_exec_index(&self) -> Result<u64>;
     
     // 4. RPC Epoch Queries
@@ -68,7 +68,7 @@ impl TExecutorClient for ExecutorClient {
     async fn reset_connections(&self) { ExecutorClient::reset_connections(self).await }
 
     async fn get_validators_at_block(&self, block_number: u64) -> Result<(Vec<ValidatorInfo>, u64, u64)> { ExecutorClient::get_validators_at_block(self, block_number).await }
-    async fn get_last_block_number(&self) -> Result<(u64, bool)> { ExecutorClient::get_last_block_number(self).await }
+    async fn get_last_block_number(&self) -> Result<(u64, u64, bool)> { ExecutorClient::get_last_block_number(self).await }
     async fn get_last_global_exec_index(&self) -> Result<u64> { ExecutorClient::get_last_global_exec_index(self).await }
     
     async fn get_epoch_boundary_data(&self, epoch: u64) -> Result<(u64, u64, u64, Vec<ValidatorInfo>, u64, u64)> { ExecutorClient::get_epoch_boundary_data(self, epoch).await }

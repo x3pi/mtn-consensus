@@ -84,7 +84,7 @@ impl LagMonitor {
             let go_gei = self.executor_client.get_last_global_exec_index().await.unwrap_or(0);
             
             // 2.5 Get current Go block number
-            let go_block_number = self.executor_client.get_last_block_number().await.map(|(n, _)| n).unwrap_or(0);
+            let go_block_number = self.executor_client.get_last_block_number().await.map(|(n, _, _)| n).unwrap_or(0);
 
             // 3. Calculate metrics
             let gap = rust_gei.saturating_sub(go_gei);

@@ -288,7 +288,7 @@ impl ExecutorClient {
     /// CRITICAL: last_block_number counts only non-empty commits (actual blocks)
     ///           last_global_exec_index counts ALL commits (including empty ones)
     ///           Use last_global_exec_index for epoch transition SYNC WAIT comparison
-    pub async fn get_last_block_number(&self) -> Result<(u64, bool)> {
+    pub async fn get_last_block_number(&self) -> Result<(u64, u64, bool)> {
         if !self.is_enabled() {
             return Err(anyhow::anyhow!("Executor client is not enabled"));
         }
@@ -401,7 +401,7 @@ impl ExecutorClient {
                         }
                     }
 
-                    Ok((last_block_number, is_ready))
+                    Ok((last_block_number, last_gei, is_ready))
                 }
                 Some(proto::response::Payload::Error(error_msg)) => {
                     Err(anyhow::anyhow!("Go returned error: {}", error_msg))

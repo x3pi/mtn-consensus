@@ -133,11 +133,28 @@ impl ExecutorClient {
 
             if total_after_dedup == 0 {
                 // All TXs were filtered out — send as empty commit
+                let block_number = {
+                    let mut next_bn = self.next_block_number.lock().await;
+                    let mut last_ep = self.last_processed_epoch.lock().await;
+                    let is_epoch_boundary = epoch > *last_ep;
+                    if epoch > *last_ep {
+                        *last_ep = epoch;
+                    }
+                    if is_epoch_boundary {
+                        let bn = *next_bn;
+                        *next_bn += 1;
+                        bn
+                    } else {
+                        0
+                    }
+                };
+
                 let empty_bytes = self.convert_to_protobuf_empty(
                     subdag,
                     epoch,
                     global_exec_index,
                     leader_address,
+                    block_number,
                 )?;
                 self.buffer_and_flush(
                     global_exec_index,
@@ -160,6 +177,21 @@ impl ExecutorClient {
                 let fragment_txs: Vec<TransactionExe> = all_proto_txs[start..end].to_vec();
                 let fragment_gei = global_exec_index + frag_idx as u64;
 
+                let block_number = {
+                    let mut next_bn = self.next_block_number.lock().await;
+                    let mut last_ep = self.last_processed_epoch.lock().await;
+                    // Fragment with txs > 0 ALWAYS consumes a block number
+                    if epoch > *last_ep {
+                        *last_ep = epoch;
+                    }
+                    // Since fragment total_tx_before > MAX_TXS_PER_GO_BLOCK, it definitely has txs > 0
+                    // unless somehow after dedup all fragments have 0 txs, which is handled above. 
+                    // So we always allocate a block number.
+                    let bn = *next_bn;
+                    *next_bn += 1;
+                    bn
+                };
+
                 let epoch_data = ExecutableBlock {
                     transactions: fragment_txs,
                     global_exec_index: fragment_gei,
@@ -168,6 +200,7 @@ impl ExecutorClient {
                     commit_timestamp_ms: subdag.timestamp_ms,
                     leader_author_index: subdag.leader.author.value() as u32,
                     leader_address: leader_address.clone().unwrap_or_default(),
+                    block_number,
                 };
 
                 let tx_count = epoch_data.transactions.len();
@@ -202,15 +235,31 @@ impl ExecutorClient {
         // NORMAL PATH: Commit fits within MAX_TXS_PER_GO_BLOCK
         // ═══════════════════════════════════════════════════════════════
 
+        let block_number = {
+            let mut next_bn = self.next_block_number.lock().await;
+            let mut last_ep = self.last_processed_epoch.lock().await;
+            let is_epoch_boundary = epoch > *last_ep;
+            if epoch > *last_ep {
+                *last_ep = epoch;
+            }
+            if total_tx_before > 0 || is_epoch_boundary {
+                let bn = *next_bn;
+                *next_bn += 1;
+                bn
+            } else {
+                0
+            }
+        };
+
         // Convert CommittedSubDag to protobuf CommittedEpochData
         // OPTIMIZATION: For empty commits (0 transactions), use fast-path that bypasses
         // the expensive per-tx hash/filter/sort logic in convert_to_protobuf
         let epoch_data_bytes = if total_tx_before == 0 {
-            self.convert_to_protobuf_empty(subdag, epoch, global_exec_index, leader_address)?
+            self.convert_to_protobuf_empty(subdag, epoch, global_exec_index, leader_address, block_number)?
         } else {
             info!("🔍 [DIAG] Using FULL convert_to_protobuf path for global_exec_index={} (total_tx_before={})",
                 global_exec_index, total_tx_before);
-            self.convert_to_protobuf(subdag, epoch, global_exec_index, leader_address)?
+            self.convert_to_protobuf(subdag, epoch, global_exec_index, leader_address, block_number)?
         };
 
         // Count total transactions after conversion (should match before)
@@ -597,7 +646,7 @@ impl ExecutorClient {
 
         // Phase 5: Go verification (periodic RPC check)
         if last_idx.is_multiple_of(GO_VERIFICATION_INTERVAL) {
-            if let Ok((go_last_block, _)) = self.get_last_block_number().await {
+            if let Ok((go_last_block, _, _)) = self.get_last_block_number().await {
                 let mut last_verified = self.last_verified_go_index.lock().await;
                 if go_last_block < *last_verified {
                     error!("🚨 [FORK DETECTED] Go's block number DECREASED! last_verified={}, go_now={}. CRITICAL: Possible fork or Go state corruption!",
@@ -685,7 +734,7 @@ impl ExecutorClient {
 
         // Convert to protobuf bytes
         let epoch_data_bytes =
-            self.convert_to_protobuf(subdag, epoch, global_exec_index, leader_address)?;
+            self.convert_to_protobuf(subdag, epoch, global_exec_index, leader_address, 0)?;
 
         info!("📤 [SYNC-DIRECT] Sending block directly: global_exec_index={}, epoch={}, size={} bytes",
             global_exec_index, epoch, epoch_data_bytes.len());
@@ -840,6 +889,7 @@ impl ExecutorClient {
         epoch: u64,
         global_exec_index: u64,
         leader_address: Option<Vec<u8>>,
+        block_number: u64,
     ) -> Result<Vec<u8>> {
         let epoch_data = ExecutableBlock {
             transactions: Vec::new(),
@@ -849,6 +899,7 @@ impl ExecutorClient {
             commit_timestamp_ms: subdag.timestamp_ms,
             leader_author_index: subdag.leader.author.value() as u32,
             leader_address: leader_address.unwrap_or_default(),
+            block_number,
         };
 
         let mut buf = Vec::new();
@@ -870,6 +921,7 @@ impl ExecutorClient {
         epoch: u64,
         global_exec_index: u64,
         leader_address: Option<Vec<u8>>,
+        block_number: u64,
     ) -> Result<Vec<u8>> {
         // Extract all transactions with hash for deterministic deduplication and sorting
         // CRITICAL FORK-SAFETY: Deduplicate and sort transactions by hash to ensure all nodes send same order
@@ -976,6 +1028,7 @@ impl ExecutorClient {
             commit_timestamp_ms: subdag.timestamp_ms,
             leader_author_index: subdag.leader.author.value() as u32,
             leader_address: leader_address.unwrap_or_default(),
+            block_number,
         };
 
         // Encode to protobuf bytes using prost::Message::encode

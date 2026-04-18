@@ -30,9 +30,14 @@ for i in $(seq 1 $TOTAL_RUNS); do
     # 2. Chờ một chút đảm bảo mọi thứ đã tắt hẳn
     sleep 3
     
-    # 3. Khởi động lại cluster (KHÔNG dùng --fresh để test data persistence)
-    echo "🚀 Đang khởi động cluster..."
-    "$ORCHESTRATOR" start > /dev/null 2>&1
+    # 3. Khởi động lại cluster
+    if [ "$i" -eq 1 ]; then
+        echo "🚀 Đang khởi động cluster (WITH --fresh for run 1)..."
+        "$ORCHESTRATOR" start --fresh > /dev/null 2>&1
+    else
+        echo "🚀 Đang khởi động cluster (KHÔNG dùng --fresh để test data persistence)..."
+        "$ORCHESTRATOR" start > /dev/null 2>&1
+    fi
     
     # 4. Chờ cluster ổn định
     echo "⏳ Đang chờ 30s để cluster ổn định và khôi phục trạng thái..."

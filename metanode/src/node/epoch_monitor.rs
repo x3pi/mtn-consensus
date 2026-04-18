@@ -164,10 +164,10 @@ pub fn start_unified_epoch_monitor(
 
                     if matches!(role, crate::node::NodeMode::Validator) {
                         // Node IS in committee — check if Go has caught up
-                        let (go_block, _) = client_arc
+                        let (go_block, _, _) = client_arc
                             .get_last_block_number()
                             .await
-                            .unwrap_or((0, false));
+                            .unwrap_or((0, 0, false));
 
                         // Query network block height
                         let net_block = {
@@ -281,10 +281,10 @@ pub fn start_unified_epoch_monitor(
                                 );
 
                                 // Fetch blocks up to boundary from peers
-                                let (go_block, _go_ready) = client_arc
+                                let (go_block, _, _go_ready) = client_arc
                                     .get_last_block_number()
                                     .await
-                                    .unwrap_or((0, false));
+                                    .unwrap_or((0, 0, false));
                                 if go_block < data.boundary_block {
                                     // Fetch missing blocks
                                     match crate::network::peer_rpc::fetch_blocks_from_peer(
@@ -468,10 +468,10 @@ pub fn start_unified_epoch_monitor(
                 let (new_epoch, epoch_timestamp_ms, boundary_block, boundary_gei) = boundary_data;
 
                 // First ensure Go has enough blocks for this epoch
-                let (go_block, _go_ready) = client_arc
+                let (go_block, _, _go_ready) = client_arc
                     .get_last_block_number()
                     .await
-                    .unwrap_or((0, false));
+                    .unwrap_or((0, 0, false));
                 if go_block < boundary_block && !peer_rpc.is_empty() {
                     match crate::network::peer_rpc::fetch_blocks_from_peer(
                         &peer_rpc,
@@ -542,12 +542,13 @@ pub fn start_unified_epoch_monitor(
                     .try_start_epoch_transition(new_epoch, "epoch_monitor")
                     .await
                 {
-                    debug!(
-                        "⏳ [EPOCH MONITOR] Cannot start transition to epoch {}: {}",
+                    warn!(
+                        "⏳ [EPOCH MONITOR] Cannot start transition to Rust epoch {}: {}",
                         new_epoch, e
                     );
-                    // Still continue — Go epoch was advanced, sync_loop will pick up via auto_epoch_sync
-                    continue;
+                    // Break the loop! If Rust cannot transition natively yet (maybe it's still syncing),
+                    // we MUST NOT skip to the next epoch and push Go further ahead.
+                    break;
                 }
 
                 if let Some(node_arc) = crate::node::get_transition_handler_node().await {

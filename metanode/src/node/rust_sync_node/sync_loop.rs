@@ -230,7 +230,7 @@ impl RustSyncNode {
             // Use Go's last block number as the sync cursor
             // HandleSyncBlocksRequest works with block numbers from block headers
             let go_block = match self.executor_client.get_last_block_number().await {
-                Ok((b, _)) => b,
+                Ok((b, _, _)) => b,
                 Err(e) => {
                     warn!("[RUST-SYNC] Failed to get last block number: {}", e);
                     return Ok(0);

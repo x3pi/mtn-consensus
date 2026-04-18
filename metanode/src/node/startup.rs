@@ -668,7 +668,7 @@ impl InitializedNode {
                         info!("📋 [COLD-START] Phase 1: Syncing Go blocks from peers...");
                         loop {
                             let go_block = match executor_client.get_last_block_number().await {
-                                Ok((b, is_ready)) => {
+                                Ok((b, _, is_ready)) => {
                                     if !is_ready {
                                         info!("⏳ [COLD-START] Go Master DB is not yet ready. Waiting...");
                                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;

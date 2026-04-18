@@ -77,6 +77,10 @@ pub struct ExecutorClient {
     /// BACKPRESSURE: Shared handle to update Go lag in SystemTransactionProvider
     /// When set, flush_buffer() will update this value with the computed lag
     pub(crate) go_lag_handle: Option<Arc<AtomicU64>>,
+    /// CRITICAL FORK-SAFETY: Explicit block number tracker, passed to Go inside ExecutableBlock
+    pub(crate) next_block_number: Arc<tokio::sync::Mutex<u64>>,
+    /// CRITICAL FORK-SAFETY: Tracks the last epoch we processed to identify epoch boundaries
+    pub(crate) last_processed_epoch: Arc<tokio::sync::Mutex<u64>>,
 }
 
 /// Production safety constants
@@ -184,6 +188,8 @@ impl ExecutorClient {
             send_cb_open_until: Arc::new(tokio::sync::RwLock::new(None)),
             request_pool,
             go_lag_handle: None, // Set via set_go_lag_handle() after construction
+            next_block_number: Arc::new(tokio::sync::Mutex::new(0)),
+            last_processed_epoch: Arc::new(tokio::sync::Mutex::new(0)),
         }
     }
 
@@ -298,25 +304,48 @@ impl ExecutorClient {
             return;
         }
 
-        // Query Go Master for last_global_exec_index directly
-        let last_global_exec_index_opt = match self.get_last_global_exec_index().await {
-            Ok(gei) => Some(gei),
+        // Fetch current epoch from Go to track epoch boundaries
+        let go_current_epoch = match self.get_current_epoch().await {
+            Ok(e) => {
+                info!("📊 [INIT] Fetched current epoch from Go: {}", e);
+                e
+            }
             Err(e) => {
-                warn!("⚠️  [INIT] Failed to get last block number from Go Master: {}. Attempting to read persisted value.", e);
+                warn!("⚠️ [INIT] Failed to fetch current epoch: {}. Defaulting to 0.", e);
+                0
+            }
+        };
+        {
+            let mut last_processed_epoch_guard = self.last_processed_epoch.lock().await;
+            *last_processed_epoch_guard = go_current_epoch;
+        }
+
+        // Query Go Master for last_block_number and last_global_exec_index directly
+        let last_go_state_opt = match self.get_last_block_number().await {
+            Ok((bn, gei, _is_ready)) => Some((bn, gei)),
+            Err(e) => {
+                warn!("⚠️  [INIT] Failed to get state from Go Master: {}. Attempting to read persisted value.", e);
                 // Fallback to persisted last block number if available
                 if let Some(ref storage_path) = self.storage_path {
-                    match read_last_block_number(storage_path).await {
+                    let fallback_bn = match read_last_block_number(storage_path).await {
                         Ok(n) => {
                             info!("📊 [INIT] Loaded persisted last block number {}", n);
                             Some(n)
                         }
-                        Err(e) => {
-                            warn!(
-                                "⚠️  [INIT] No persisted last block number available: {}.",
-                                e
-                            );
-                            None
+                        Err(_) => None,
+                    };
+                    let fallback_gei = match load_persisted_last_index(storage_path) {
+                        Some((gei, _commit)) => {
+                            info!("📊 [INIT] Loaded persisted last global exec index {}", gei);
+                            Some(gei)
                         }
+                        None => None,
+                    };
+
+                    if let (Some(bn), Some(gei)) = (fallback_bn, fallback_gei) {
+                        Some((bn, gei))
+                    } else {
+                        None
                     }
                 } else {
                     None
@@ -324,19 +353,22 @@ impl ExecutorClient {
             }
         };
 
-        if let Some(last_global_exec_index) = last_global_exec_index_opt {
+        if let Some((last_block_number, last_global_exec_index)) = last_go_state_opt {
             let go_next_expected = last_global_exec_index + 1;
-
             let current_next_expected = {
                 let next_expected_guard = self.next_expected_index.lock().await;
                 *next_expected_guard
             };
 
+            // Initialize next_block_number (Explicit tracking)
+            {
+                let mut next_bn_guard = self.next_block_number.lock().await;
+                *next_bn_guard = last_block_number + 1;
+                info!("📊 [INIT] Initialized next_block_number to {}", *next_bn_guard);
+            }
+
             // CRITICAL FIX: Sync with Go's state to prevent data loss or duplicate commits
-            // - If Go is behind (crash data loss): We MUST wind back our index to allow WAL replay.
-            // - If Go is ahead: Update to Go's state (prevent sending duplicate commits)
             if go_next_expected < current_next_expected {
-                // Go is behind - we must rewind to Go's expected state so that we replay the lost blocks to Go.
                 {
                     let mut next_expected_guard = self.next_expected_index.lock().await;
                     *next_expected_guard = go_next_expected;
@@ -344,16 +376,13 @@ impl ExecutorClient {
                 warn!("⚠️ [INIT] Go Master is behind (last_global_exec_index={}, go_next_expected={} < current_next_expected={}). Winding back next_expected_index to allow WAL replay of lost blocks.",
                     last_global_exec_index, go_next_expected, current_next_expected);
             } else if go_next_expected > current_next_expected {
-                // Go is ahead - update to Go's state to prevent sending duplicate commits
-                // Go has already processed commits up to last_block_number, so we should start from go_next_expected
                 {
                     let mut next_expected_guard = self.next_expected_index.lock().await;
                     *next_expected_guard = go_next_expected;
                 }
-                info!("📊 [INIT] Updating next_expected_index from {} to {} (last_block_number={}, go_next_expected={})",
+                info!("📊 [INIT] Updating next_expected_index from {} to {} (last_global_exec_index={}, go_next_expected={})",
                     current_next_expected, go_next_expected, last_global_exec_index, go_next_expected);
 
-                // Clear any buffered commits that Go has already processed
                 let mut buffer = self.send_buffer.lock().await;
                 let before_clear = buffer.len();
                 buffer.retain(|&k, _| k >= go_next_expected);
@@ -363,17 +392,16 @@ impl ExecutorClient {
                         before_clear - after_clear, after_clear);
                 }
             } else {
-                // Perfect match
-                info!("📊 [INIT] next_expected_index matches Go Master: last_block_number={}, next_expected={}", 
+                info!("📊 [INIT] next_expected_index matches Go Master: last_global_exec_index={}, next_expected={}", 
                     last_global_exec_index, current_next_expected);
             }
         } else {
-            warn!("⚠️  [INIT] Could not determine last block number. Keeping current next_expected_index. Rust will continue sending blocks, Go will buffer and process sequentially.");
+            warn!("⚠️  [INIT] Could not determine last state. Keeping current metrics. Rust will continue sending blocks, Go will buffer and process sequentially.");
         }
 
         // ─── Readiness Signal ────────────────────────────────────────
         let final_next_expected = *self.next_expected_index.lock().await;
-        let go_conn_status = if last_global_exec_index_opt.is_some() {
+        let go_conn_status = if last_go_state_opt.is_some() {
             "connected"
         } else {
             "unknown"
@@ -382,7 +410,7 @@ impl ExecutorClient {
             "✅ [READY] Rust executor: go_connection={}, next_expected={}, go_last_block={}",
             go_conn_status,
             final_next_expected,
-            last_global_exec_index_opt.map_or("unknown".to_string(), |n| n.to_string())
+            last_go_state_opt.map_or("unknown".to_string(), |(_, n)| n.to_string())
         );
     }
 

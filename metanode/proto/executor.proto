@@ -36,5 +36,9 @@ message ExecutableBlock {
     // Sent directly from Rust to ensure deterministic leader assignment
     // Go MUST use this address directly instead of lookup when present
     bytes leader_address = 7;
+    // CRITICAL FORK-SAFETY: Explicit block number assigned by Rust consensus layer
+    // Go MUST use this block number to ensure all nodes agree on block heights,
+    // avoiding inflation from edge cases like repeated empty epoch boundary processing.
+    uint64 block_number = 8;
 }
 

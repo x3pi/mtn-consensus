@@ -54,7 +54,7 @@ pub async fn start_rust_sync_task_with_network(
     let go_last_block = executor_client
         .get_last_block_number()
         .await
-        .map(|(b, _)| b)
+        .map(|(b, _, _)| b)
         .unwrap_or(0);
     let initial_global_exec_index = go_last_block as u32 + 1;
 

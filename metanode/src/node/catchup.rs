@@ -125,7 +125,7 @@ impl CatchupManager {
         };
 
         let local_go_last_block = match self.executor_client.get_last_block_number().await {
-            Ok((block, _)) => block,
+            Ok((block, _, _)) => block,
             Err(e) => {
                 error!("🚨 [CATCHUP] Failed to get last block from Go: {}", e);
                 return Err(anyhow::anyhow!("Failed to get last block from Go: {}", e));
@@ -413,7 +413,7 @@ impl CatchupManager {
 
             // Get current Go block number
             let go_block = match self.executor_client.get_last_block_number().await {
-                Ok((b, _)) => b,
+                Ok((b, _, _)) => b,
                 Err(e) => {
                     warn!("⚠️ [EPOCH-CATCHUP] Failed to get Go block: {}", e);
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;

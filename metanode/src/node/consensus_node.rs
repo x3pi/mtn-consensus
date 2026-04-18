@@ -149,7 +149,7 @@ impl ConsensusNode {
 
             for attempt in 1..=max_retries {
                 match executor_client.get_last_block_number().await {
-                    Ok((n, _is_ready)) => {
+                    Ok((n, _, _is_ready)) => {
                         block_num = n;
                         if n > 0 || _is_ready {
                             info!(
@@ -747,10 +747,10 @@ impl ConsensusNode {
             return 0;
         }
 
-        let (local_go_block, _go_ready) = executor_client
+        let (local_go_block, _, _go_ready) = executor_client
             .get_last_block_number()
             .await
-            .unwrap_or((0, false));
+            .unwrap_or((0, 0, false));
         let local_go_gei = executor_client
             .get_last_global_exec_index()
             .await
@@ -1002,7 +1002,7 @@ impl ConsensusNode {
 
             // Step 1: Query Go Master's current block height
             let go_block = match executor_client_for_proc.get_last_block_number().await {
-                Ok((block, _)) => block,
+                Ok((block, _, _)) => block,
                 Err(e) => {
                     warn!("⚠️ [SYNC-FIRST] Could not query Go block height: {}. Proceeding without sync.", e);
                     0
@@ -1075,7 +1075,7 @@ impl ConsensusNode {
 
                 // Step 4: Verify Go caught up (blocks)
                 let new_go_block = executor_client_for_proc.get_last_block_number().await
-                    .map(|(b, _)| b).unwrap_or(go_block);
+                    .map(|(b, _, _)| b).unwrap_or(go_block);
                 let remaining_gap = peer_block.saturating_sub(new_go_block);
 
                 if remaining_gap <= 5 {
