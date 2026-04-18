@@ -64,6 +64,19 @@ impl Core {
             certified_commits_map.insert(c.index(), c.reference());
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // COLD-START DIGEST ALIGNMENT
+        // If we recently restored from a snapshot, DagState may have a synthetic
+        // last_commit with a CommitDigest::MIN to align the commit index globally.
+        // We must update the digest of this last_commit to match the actual
+        // previous_digest expected by the network, otherwise the locally linearized
+        // sub-dags will produce a different hash and fail the sanity check below.
+        // ═══════════════════════════════════════════════════════════════════════
+        if let Some(first_commit) = certified_commits.first() {
+            use crate::commit::CommitAPI;
+            self.dag_state.write().patch_synthetic_commit_digest(first_commit.index() - 1, first_commit.previous_digest());
+        }
+
         if !certified_commits.is_empty() {
             info!(
                 "Processing synced commits: {:?}",

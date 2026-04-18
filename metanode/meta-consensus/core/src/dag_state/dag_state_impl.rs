@@ -510,6 +510,34 @@ impl DagState {
 
         self.last_commit = Some(synthetic_commit);
     }
+
+    /// ═══════════════════════════════════════════════════════════════════
+    /// COLD-START DIGEST ALIGNMENT: Resolves hash discrepancy panics out of 
+    /// cold-start by patching the `MIN` digest on the synthetic commit.
+    /// ═══════════════════════════════════════════════════════════════════
+    pub fn patch_synthetic_commit_digest(&mut self, target_index: crate::commit::CommitIndex, real_digest: crate::commit::CommitDigest) {
+        if let Some(commit) = self.last_commit.as_ref() {
+            if commit.index() == target_index && self.last_commit_digest() == crate::commit::CommitDigest::MIN {
+                tracing::warn!(
+                    "🔧 [SYNC-FIRST DIGEST ALIGNMENT] Patching synthetic commit {} with real previous_digest",
+                    target_index
+                );
+                let patched_commit = TrustedCommit::new_for_test(
+                    target_index,
+                    real_digest,
+                    self.context.clock.timestamp_utc_ms(),
+                    BlockRef::new(
+                        0,
+                        consensus_config::AuthorityIndex::ZERO,
+                        consensus_types::block::BlockDigest::MIN,
+                    ),
+                    vec![],
+                    0, 
+                );
+                self.last_commit = Some(patched_commit);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
