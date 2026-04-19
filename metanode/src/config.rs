@@ -11,7 +11,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-
 /// Extended committee configuration with epoch timestamp and global execution index
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CommitteeConfig {

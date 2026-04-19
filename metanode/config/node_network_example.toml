@@ -3,9 +3,9 @@
 
 node_id = 0
 network_address = "192.168.1.100:9000"  # Public network address for consensus P2P
-protocol_key_path = "config/node_0_protocol_key.json"
-network_key_path = "config/node_0_network_key.json"
-storage_path = "config/storage/node_0"
+protocol_key_path = "../../../mtn-consensus/metanode/config/node_0_protocol_key.json"
+network_key_path = "../../../mtn-consensus/metanode/config/node_0_network_key.json"
+storage_path = "../../../mtn-consensus/metanode/config/storage/node_0"
 enable_metrics = true
 metrics_port = 9100
 speed_multiplier = 1.0

@@ -1,9 +1,9 @@
 node_id = 3
 rust_tx_socket_path = "/tmp/metanode-tx-3.sock"
 network_address = "127.0.0.1:9003"
-protocol_key_path = "config/node_3_protocol_key.json"
-network_key_path = "config/node_3_network_key.json"
-storage_path = "config/storage/node_3"
+protocol_key_path = "../../../mtn-consensus/metanode/config/node_3_protocol_key.json"
+network_key_path = "../../../mtn-consensus/metanode/config/node_3_network_key.json"
+storage_path = "../../../mtn-consensus/metanode/config/storage/node_3"
 enable_metrics = true
 metrics_port = 9103
 speed_multiplier = 1.0

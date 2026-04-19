@@ -395,7 +395,6 @@ pub async fn transition_mode_only(
         }
     }
 
-
     info!(
         "✅ [MODE TRANSITION] Successfully transitioned to Validator mode for epoch {}",
         epoch

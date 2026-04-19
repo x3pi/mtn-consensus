@@ -26,7 +26,7 @@ NC='\033[0m'
 # ── Find log files ────────────────────────────────────────────
 
 rust_log() {
-    echo "$LOGS_DIR/node_$1/rust.log"
+    echo "$LOGS_DIR/node_$1/go-master-stdout.log"
 }
 
 go_master_log() {

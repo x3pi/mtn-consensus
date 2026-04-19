@@ -51,8 +51,8 @@ impl LagMonitor {
             executor_client,
             shared_last_global_exec_index,
             lag_alert_sender,
-            moderate_lag_threshold: 100,  // Warn if Go is 100 blocks behind
-            severe_lag_threshold: 200,    // Critical alert if 200 blocks behind
+            moderate_lag_threshold: 100, // Warn if Go is 100 blocks behind
+            severe_lag_threshold: 200,   // Critical alert if 200 blocks behind
         }
     }
 
@@ -66,13 +66,19 @@ impl LagMonitor {
     /// Run the lag monitor loop. This is intended to be spawned as a tokio task.
     pub async fn run(self) {
         let mut interval = interval(Duration::from_secs(5));
-        
-        let mut last_go_gei = self.executor_client.get_last_global_exec_index().await.unwrap_or(0);
+
+        let mut last_go_gei = self
+            .executor_client
+            .get_last_global_exec_index()
+            .await
+            .unwrap_or(0);
         let mut last_check_time = tokio::time::Instant::now();
         let mut currently_lagging = false;
 
-        info!("🛡️ [LAG-MONITOR] Started with moderate_threshold={}, severe_threshold={}", 
-            self.moderate_lag_threshold, self.severe_lag_threshold);
+        info!(
+            "🛡️ [LAG-MONITOR] Started with moderate_threshold={}, severe_threshold={}",
+            self.moderate_lag_threshold, self.severe_lag_threshold
+        );
 
         loop {
             interval.tick().await;
@@ -81,16 +87,25 @@ impl LagMonitor {
             let rust_gei = *self.shared_last_global_exec_index.lock().await;
 
             // 2. Get current Go GEI (what Go has finished executing)
-            let go_gei = self.executor_client.get_last_global_exec_index().await.unwrap_or(0);
-            
+            let go_gei = self
+                .executor_client
+                .get_last_global_exec_index()
+                .await
+                .unwrap_or(0);
+
             // 2.5 Get current Go block number
-            let go_block_number = self.executor_client.get_last_block_number().await.map(|(n, _, _)| n).unwrap_or(0);
+            let go_block_number = self
+                .executor_client
+                .get_last_block_number()
+                .await
+                .map(|(n, _, _)| n)
+                .unwrap_or(0);
 
             // 3. Calculate metrics
             let gap = rust_gei.saturating_sub(go_gei);
             let now = tokio::time::Instant::now();
             let elapsed_secs = now.duration_since(last_check_time).as_secs_f64();
-            
+
             let go_rate = if elapsed_secs > 0.0 && go_gei >= last_go_gei {
                 (go_gei - last_go_gei) as f64 / elapsed_secs
             } else {
@@ -121,15 +136,16 @@ impl LagMonitor {
                     currently_lagging = true;
                 } else if currently_lagging && gap < (self.moderate_lag_threshold / 2) {
                     // RECOVERED (hysteresis: gap must drop to half the moderate threshold)
-                    let _ = self.lag_alert_sender.send(LagAlert::Recovered {
-                        rust_gei,
-                        go_gei,
-                    });
+                    let _ = self
+                        .lag_alert_sender
+                        .send(LagAlert::Recovered { rust_gei, go_gei });
                     currently_lagging = false;
                 } else {
                     // Healthy
-                    debug!("[LAG-MONITOR] Healthy: rust={}, go={}, gap={}, rate={:.1} blk/s", 
-                        rust_gei, go_gei, gap, go_rate);
+                    debug!(
+                        "[LAG-MONITOR] Healthy: rust={}, go={}, gap={}, rate={:.1} blk/s",
+                        rust_gei, go_gei, gap, go_rate
+                    );
                 }
             }
 

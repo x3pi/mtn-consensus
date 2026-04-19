@@ -19,8 +19,8 @@ pub mod persistence;
 mod rpc_queries;
 mod rpc_queries_epoch;
 pub mod socket_stream;
-mod transition_handoff;
 pub mod traits;
+mod transition_handoff;
 
 // Re-export public items from submodules
 pub use connection_pool::ConnectionPool;
@@ -143,13 +143,17 @@ impl ExecutorClient {
         info!("🔧 [EXECUTOR CLIENT] Creating executor client: send={}, receive={}, initial_next_expected={}, storage_path={:?}", 
             socket_address.as_str(), request_socket_address.as_str(), initial_next_expected, storage_path);
 
-        // Create connection pool for parallel RPC queries (pool_size=4, timeout=30s)
-        let request_pool = Arc::new(ConnectionPool::new(request_socket_address.clone(), 4, 30));
+        let is_ffi_mode = crate::ffi::GO_CALLBACKS.get().is_some();
+        let request_pool = if is_ffi_mode {
+            Arc::new(ConnectionPool::new_noop())
+        } else {
+            Arc::new(ConnectionPool::new(request_socket_address.clone(), 4, 30))
+        };
 
         let connection: Arc<Mutex<Option<SocketStream>>> = Arc::new(Mutex::new(None));
         let request_connection: Arc<Mutex<Option<SocketStream>>> = Arc::new(Mutex::new(None));
 
-        if enabled {
+        if enabled && !is_ffi_mode {
             let conn_arc = connection.clone();
             if tokio::runtime::Handle::try_current().is_ok() {
                 tokio::spawn(async move {
@@ -158,7 +162,12 @@ impl ExecutorClient {
                         ticker.tick().await;
                         let mut conn_guard = conn_arc.lock().await;
                         if let Some(ref mut stream) = *conn_guard {
-                            match tokio::time::timeout(std::time::Duration::from_secs(2), stream.writable()).await {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(2),
+                                stream.writable(),
+                            )
+                            .await
+                            {
                                 Ok(Ok(_)) => { /* healthy */ }
                                 _ => {
                                     tracing::warn!("🚨 [IPC-HEALTH] Send connection unhealthy/timeout, forcing reconnect");
@@ -311,7 +320,10 @@ impl ExecutorClient {
                 e
             }
             Err(e) => {
-                warn!("⚠️ [INIT] Failed to fetch current epoch: {}. Defaulting to 0.", e);
+                warn!(
+                    "⚠️ [INIT] Failed to fetch current epoch: {}. Defaulting to 0.",
+                    e
+                );
                 0
             }
         };
@@ -330,7 +342,7 @@ impl ExecutorClient {
                         warn!("⏳ [INIT] Go Master is connected but not fully ready (DB loading). Retrying in 1s...");
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
-                },
+                }
                 Err(e) => {
                     warn!("⚠️  [INIT] Failed to get state from Go Master: {}. Attempting to read persisted value.", e);
                     // Fallback to persisted last block number if available
@@ -373,7 +385,10 @@ impl ExecutorClient {
             {
                 let mut next_bn_guard = self.next_block_number.lock().await;
                 *next_bn_guard = last_block_number + 1;
-                info!("📊 [INIT] Initialized next_block_number to {}", *next_bn_guard);
+                info!(
+                    "📊 [INIT] Initialized next_block_number to {}",
+                    *next_bn_guard
+                );
             }
 
             // CRITICAL FIX: Sync with Go's state to prevent data loss or duplicate commits
@@ -427,124 +442,54 @@ impl ExecutorClient {
     /// Just connects, doesn't query Go - Rust sends blocks continuously, Go buffers and processes sequentially
     /// CRITICAL: Persistent connection - keeps trying until socket becomes available (Go Master starts)
     pub(crate) async fn connect(&self) -> Result<()> {
-        let mut conn_guard = self.connection.lock().await;
-
-        // Check if already connected and still valid
-        if let Some(ref mut stream) = *conn_guard {
-            // Try to peek at the stream to check if it's still alive
-            match stream.writable().await {
-                Ok(_) => {
-                    // Connection is still valid
-                    trace!(
-                        "🔌 [EXECUTOR] Reusing existing connection to {}",
-                        self.socket_address.as_str()
-                    );
-                    return Ok(());
-                }
-                Err(e) => {
-                    // Connection is dead, close it
-                    warn!(
-                        "⚠️  [EXECUTOR] Existing connection to {} is dead: {}, reconnecting...",
-                        self.socket_address.as_str(),
-                        e
-                    );
-                    *conn_guard = None;
-                }
-            }
-        }
-
-        // CRITICAL: Persistent connection with exponential backoff
-        // Keeps trying until Go Master creates the socket
-        let mut attempt: u32 = 0;
-        let mut delay = std::time::Duration::from_millis(500); // Start with 500ms
-        const MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5); // Cap at 5 seconds
-        const CONNECT_TIMEOUT_SECS: u64 = 30; // 30 seconds timeout for TCP connections
-
-        loop {
-            attempt += 1;
-
-            match SocketStream::connect(&self.socket_address, CONNECT_TIMEOUT_SECS).await {
-                Ok(stream) => {
-                    info!("🔌 [EXECUTOR] ✅ Connected to executor at {} (attempt {}, after {:.2}s waiting)",
-                        self.socket_address.as_str(), attempt, delay.as_secs_f32() * (attempt - 1) as f32);
-                    *conn_guard = Some(stream);
-                    return Ok(());
-                }
-                Err(e) => {
-                    // CRITICAL: Don't give up - keep trying with exponential backoff
-                    // This ensures Rust can connect even if Go Master starts later
-                    if attempt == 1 {
-                        info!("🔄 [EXECUTOR] Waiting for Go Master to create executor socket at {}...", self.socket_address.as_str());
-                    } else if attempt.is_multiple_of(10) {
-                        // Log every 10 attempts to avoid spam
-                        warn!("⏳ [EXECUTOR] Still waiting for Go Master socket {} (attempt {}, delay {}ms): {}",
-                            self.socket_address.as_str(), attempt, delay.as_millis(), e);
-                    }
-
-                    tokio::time::sleep(delay).await;
-
-                    // Exponential backoff: double delay, cap at MAX_DELAY
-                    delay = std::cmp::min(delay * 2, MAX_DELAY);
-                }
-            }
-        }
+        Ok(()) // FFI bypasses connections
     }
 
     /// Connect to Go request socket for request/response (lazy connection with retry)
     #[allow(dead_code)]
     pub(crate) async fn connect_request(&self) -> Result<()> {
-        let mut conn_guard = self.request_connection.lock().await;
+        Ok(()) // FFI bypasses connections
+    }
 
-        // Check if already connected and still valid
-        if let Some(ref mut stream) = *conn_guard {
-            match stream.writable().await {
-                Ok(_) => {
-                    trace!(
-                        "🔌 [EXECUTOR-REQ] Reusing existing request connection to {}",
-                        self.request_socket_address.as_str()
-                    );
-                    return Ok(());
-                }
-                Err(e) => {
-                    warn!("⚠️  [EXECUTOR-REQ] Existing request connection to {} is dead: {}, reconnecting...", 
-                        self.request_socket_address.as_str(), e);
-                    *conn_guard = None;
-                }
+    /// Execute an RPC request synchronously via CGo FFI
+    pub(crate) async fn execute_rpc_request(&self, request_buf: &[u8]) -> Result<Vec<u8>> {
+        if let Some(c_fn) = crate::ffi::GO_CALLBACKS
+            .get()
+            .and_then(|c| c.process_rpc_request)
+        {
+            let mut out_payload: *mut u8 = std::ptr::null_mut();
+            let mut out_len: usize = 0;
+
+            // Invoke the FFI method. It will mutate the ptr pointers to allocate protobuf bytes.
+            let success = c_fn(
+                request_buf.as_ptr(),
+                request_buf.len(),
+                &mut out_payload,
+                &mut out_len,
+            );
+
+            if !success {
+                return Err(anyhow::anyhow!("Go FFI process_rpc_request returned false"));
             }
-        }
-
-        // Connect to socket with retry logic
-        const MAX_RETRIES: u32 = 3;
-        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
-        const CONNECT_TIMEOUT_SECS: u64 = 30; // 30 seconds timeout for TCP connections
-
-        for attempt in 1..=MAX_RETRIES {
-            match SocketStream::connect(&self.request_socket_address, CONNECT_TIMEOUT_SECS).await {
-                Ok(stream) => {
-                    info!(
-                        "🔌 [EXECUTOR-REQ] Connected to Go request socket at {} (attempt {}/{})",
-                        self.request_socket_address.as_str(),
-                        attempt,
-                        MAX_RETRIES
-                    );
-                    *conn_guard = Some(stream);
-                    return Ok(());
-                }
-                Err(e) => {
-                    if attempt < MAX_RETRIES {
-                        warn!("⚠️  [EXECUTOR-REQ] Failed to connect to Go request socket at {} (attempt {}/{}): {}, retrying...", 
-                            self.request_socket_address.as_str(), attempt, MAX_RETRIES, e);
-                        tokio::time::sleep(RETRY_DELAY).await;
-                    } else {
-                        warn!("⚠️  [EXECUTOR-REQ] Failed to connect to Go request socket at {} after {} attempts: {}", 
-                            self.request_socket_address.as_str(), MAX_RETRIES, e);
-                        return Err(e);
-                    }
-                }
+            if out_payload.is_null() || out_len == 0 {
+                return Err(anyhow::anyhow!("Received null response from Go FFI"));
             }
-        }
 
-        unreachable!()
+            // Copy out data
+            let slice = unsafe { std::slice::from_raw_parts(out_payload, out_len) };
+            let response_buf = slice.to_vec();
+
+            // Free C allocator buffer using Go's free function
+            if let Some(free_fn) = crate::ffi::GO_CALLBACKS
+                .get()
+                .and_then(|c| c.free_go_buffer)
+            {
+                free_fn(out_payload);
+            }
+            Ok(response_buf)
+        } else {
+            Err(anyhow::anyhow!("FFI process_rpc_request not registered"))
+        }
     }
 }
 

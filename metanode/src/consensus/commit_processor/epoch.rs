@@ -1,7 +1,7 @@
 // Copyright (c) MetaNode Team
 // SPDX-License-Identifier: Apache-2.0
 
-use consensus_core::{CommittedSubDag, BlockAPI};
+use consensus_core::{BlockAPI, CommittedSubDag};
 use std::sync::Arc;
 use tracing::info;
 

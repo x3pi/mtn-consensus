@@ -35,37 +35,7 @@ impl ExecutorClient {
 
         let request_bytes = request.encode_to_vec();
 
-        let mut stream = SocketStream::connect(&self.request_socket_address, 5).await?;
-
-        let len_bytes = (request_bytes.len() as u32).to_be_bytes();
-        stream.write_all(&len_bytes).await?;
-        stream.write_all(&request_bytes).await?;
-        stream.flush().await?;
-
-        // Read response with 60s timeout (Go may take a while to read+marshal historical blocks)
-        let response_result = tokio::time::timeout(std::time::Duration::from_secs(60), async {
-            let mut len_buf = [0u8; 4];
-            stream.read_exact(&mut len_buf).await?;
-            let response_len = u32::from_be_bytes(len_buf) as usize;
-
-            let mut response_buf = vec![0u8; response_len];
-            stream.read_exact(&mut response_buf).await?;
-
-            Ok::<Vec<u8>, std::io::Error>(response_buf)
-        })
-        .await;
-
-        let response_buf = match response_result {
-            Ok(Ok(buf)) => buf,
-            Ok(Err(e)) => return Err(anyhow::anyhow!("UDS read error: {}", e)),
-            Err(_) => {
-                warn!(
-                    "⏱️ [BLOCK SYNC] Timeout (60s) reading blocks {}-{} from Go Master",
-                    from_block, to_block
-                );
-                return Err(anyhow::anyhow!("Timeout reading blocks from Go Master"));
-            }
-        };
+        let response_buf = self.execute_rpc_request(&request_bytes).await?;
 
         let response: proto::Response = proto::Response::decode(&*response_buf)?;
 
@@ -96,7 +66,10 @@ impl ExecutorClient {
     /// Sync AND EXECUTE blocks through NOMT on local Go Master
     /// Phase 1 fix: eliminates GEI inflation by executing blocks, not just storing.
     /// Returns (synced_count, last_block, last_executed_gei).
-    pub async fn sync_and_execute_blocks(&self, blocks: Vec<proto::BlockData>) -> Result<(u64, u64, u64)> {
+    pub async fn sync_and_execute_blocks(
+        &self,
+        blocks: Vec<proto::BlockData>,
+    ) -> Result<(u64, u64, u64)> {
         let (count, last_block) = self.sync_blocks_inner(blocks, true).await?;
         // last_executed_gei is embedded in last_block for execute mode
         // (the inner method returns it via the response)
@@ -104,7 +77,11 @@ impl ExecutorClient {
     }
 
     /// Internal: sync blocks with optional execute_mode flag
-    async fn sync_blocks_inner(&self, blocks: Vec<proto::BlockData>, execute_mode: bool) -> Result<(u64, u64)> {
+    async fn sync_blocks_inner(
+        &self,
+        blocks: Vec<proto::BlockData>,
+        execute_mode: bool,
+    ) -> Result<(u64, u64)> {
         if !self.is_enabled() {
             return Err(anyhow::anyhow!("Executor client is not enabled"));
         }
@@ -144,39 +121,7 @@ impl ExecutorClient {
 
             let request_bytes = request.encode_to_vec();
 
-            let mut stream = SocketStream::connect(&self.request_socket_address, 5).await?;
-
-            let len_bytes = (request_bytes.len() as u32).to_be_bytes();
-            stream.write_all(&len_bytes).await?;
-            stream.write_all(&request_bytes).await?;
-            stream.flush().await?;
-
-            // Execute mode needs longer timeout (NOMT state transitions take time)
-            let timeout_secs = if execute_mode { 120 } else { 60 };
-            let response_result = tokio::time::timeout(
-                std::time::Duration::from_secs(timeout_secs),
-                async {
-                    let mut len_buf = [0u8; 4];
-                    stream.read_exact(&mut len_buf).await?;
-                    let response_len = u32::from_be_bytes(len_buf) as usize;
-                    let mut response_buf = vec![0u8; response_len];
-                    stream.read_exact(&mut response_buf).await?;
-                    Ok::<Vec<u8>, std::io::Error>(response_buf)
-                },
-            )
-            .await;
-
-            let response_buf = match response_result {
-                Ok(Ok(buf)) => buf,
-                Ok(Err(e)) => return Err(anyhow::anyhow!("UDS read error: {}", e)),
-                Err(_) => {
-                    warn!(
-                        "⏱️ [BLOCK SYNC] Timeout ({}s) syncing blocks (mode={}) chunk {}-{}",
-                        timeout_secs, mode_str, chunk_idx, end_idx
-                    );
-                    return Err(anyhow::anyhow!("Timeout syncing blocks from Go Master"));
-                }
-            };
+            let response_buf = self.execute_rpc_request(&request_bytes).await?;
 
             let response: proto::Response = proto::Response::decode(&*response_buf)?;
 

@@ -34,8 +34,7 @@ fi
 # Build list of log files
 FILES=()
 
-# Rust log
-[ -f "$NODE_DIR/rust.log" ] && FILES+=("$NODE_DIR/rust.log")
+# Rust log is now combined into go-master-stdout.log
 
 # Go master — find latest epoch App.log, fallback to stdout
 GO_MASTER_LOG=$(ls -td "$NODE_DIR"/go-master/epoch_*/App.log 2>/dev/null | head -1 || true)

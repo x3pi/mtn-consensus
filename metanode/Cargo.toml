@@ -5,6 +5,11 @@ edition = "2021"
 authors = ["MetaNode Team"]
 license = "Apache-2.0"
 
+[lib]
+name = "metanode"
+path = "src/lib.rs"
+crate-type = ["staticlib", "rlib"]
+
 [workspace]
 members = [
     "meta-consensus/core",

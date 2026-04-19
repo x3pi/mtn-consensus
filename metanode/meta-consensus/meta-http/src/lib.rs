@@ -258,13 +258,18 @@ where
                     self.handle_incomming(io, remote_addr);
                 },
                 Some(maybe_connection) = self.pending_connections.join_next() => {
-                    // If a task panics, just propagate it
-                    let (io, remote_addr) = match maybe_connection.unwrap() {
-                        Ok((io, remote_addr)) => {
-                            (io, remote_addr)
-                        }
-                        Err(e) => {
-                            tracing::debug!(error = %e, "error accepting connection");
+                    let (io, remote_addr) = match maybe_connection {
+                        Ok(result) => match result {
+                            Ok((io, remote_addr)) => {
+                                (io, remote_addr)
+                            }
+                            Err(e) => {
+                                tracing::debug!(error = %e, "error accepting connection");
+                                continue;
+                            }
+                        },
+                        Err(join_err) => {
+                            tracing::error!("Connection task panicked: {:?}", join_err);
                             continue;
                         }
                     };
@@ -273,8 +278,12 @@ where
                     self.handle_connection(io, remote_addr);
                 },
                 Some(connection_handler_output) = self.connection_handlers.join_next() => {
-                    // If a task panics, just propagate it
-                    let _: () = connection_handler_output.unwrap();
+                    match connection_handler_output {
+                        Ok(()) => {},
+                        Err(join_err) => {
+                            tracing::error!("Connection handler task panicked: {:?}", join_err);
+                        }
+                    }
                 },
             }
         }

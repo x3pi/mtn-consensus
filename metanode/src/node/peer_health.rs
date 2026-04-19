@@ -19,7 +19,6 @@ struct PeerHealth {
     backoff_until: Option<Instant>,
 }
 
-
 /// Tracks health of peers with circuit breaker backoff
 pub struct PeerHealthTracker {
     peers: HashMap<u32, PeerHealth>,

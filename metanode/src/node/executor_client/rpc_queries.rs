@@ -45,154 +45,94 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self
-            .request_pool
-            .get_connection()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
-        if let Some(ref mut stream) = *conn_guard {
-            // Write 4-byte length prefix (big-endian)
-            let len = request_buf.len() as u32;
-            let len_bytes = len.to_be_bytes();
-            stream.write_all(&len_bytes).await?;
+        // FFI INTEGRATION: Send request directly via CGo callback
+        let response_buf = self.execute_rpc_request(&request_buf).await?;
 
-            // Write request data
-            stream.write_all(&request_buf).await?;
-            stream.flush().await?;
+        info!(
+            "📥 [EXECUTOR-REQ] Received {} bytes from Go FFI, decoding...",
+            response_buf.len()
+        );
 
-            info!("📤 [EXECUTOR-REQ] Sent GetValidatorsAtBlockRequest to Go for block {} (size: {} bytes)", 
-                block_number, request_buf.len());
-
-            // Read response (4-byte length prefix + response data)
-            use tokio::io::AsyncReadExt;
-            use tokio::time::{timeout, Duration};
-
-            // Set timeout for reading response (5 seconds)
-            let read_timeout = Duration::from_secs(5);
-
-            let mut len_buf = [0u8; 4];
-            timeout(read_timeout, stream.read_exact(&mut len_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response length: {}", e))??;
-            let response_len = u32::from_be_bytes(len_buf) as usize;
-
-            if response_len == 0 {
-                return Err(anyhow::anyhow!("Received zero-length response from Go"));
-            }
-            if response_len > 10_000_000 {
-                // 10MB limit
-                return Err(anyhow::anyhow!(
-                    "Response too large: {} bytes",
-                    response_len
-                ));
-            }
-
-            let mut response_buf = vec![0u8; response_len];
-            timeout(read_timeout, stream.read_exact(&mut response_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response data: {}", e))??;
-
-            info!(
-                "📥 [EXECUTOR-REQ] Received {} bytes from Go, decoding...",
+        // Decode response
+        let response = Response::decode(&response_buf[..]).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to decode response from Go: {}. Response length: {} bytes.",
+                e,
                 response_buf.len()
-            );
-            info!(
-                "🔍 [EXECUTOR-REQ] Raw response bytes (hex): {}",
-                hex::encode(&response_buf)
-            );
-            info!(
-                "🔍 [EXECUTOR-REQ] Raw response bytes (first 50): {:?}",
-                &response_buf[..response_buf.len().min(50)]
-            );
+            )
+        })?;
 
-            // Decode response
-            let response = Response::decode(&response_buf[..])
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to decode response from Go: {}. Response length: {} bytes. Response bytes (hex): {}. Response bytes (first 100): {:?}", 
-                        e,
-                        response_buf.len(),
-                        hex::encode(&response_buf),
-                        &response_buf[..response_buf.len().min(100)]
-                    )
-                })?;
+        info!("🔍 [EXECUTOR-REQ] Decoded response successfully");
+        info!(
+            "🔍 [EXECUTOR-REQ] Response payload type: {:?}",
+            response.payload
+        );
 
-            info!("🔍 [EXECUTOR-REQ] Decoded response successfully");
-            info!(
-                "🔍 [EXECUTOR-REQ] Response payload type: {:?}",
-                response.payload
-            );
-
-            // Debug: Check all possible payload types
-            match &response.payload {
-                Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
-                    warn!("🔍 [EXECUTOR-REQ] Payload is NotifyEpochChangeResponse (ignored in debug match)");
-                }
-                Some(proto::response::Payload::ValidatorInfoList(v)) => {
-                    info!(
-                        "🔍 [EXECUTOR-REQ] Payload is ValidatorInfoList with {} validators",
-                        v.validators.len()
-                    );
-                    // CRITICAL: Log each ValidatorInfo exactly as received from Go
-                    for (idx, validator) in v.validators.iter().enumerate() {
-                        let auth_key_preview = if validator.authority_key.len() > 50 {
-                            format!("{}...", &validator.authority_key[..50])
-                        } else {
-                            validator.authority_key.clone()
-                        };
-                        info!("📥 [RUST←GO] ValidatorInfo[{}]: address={}, stake={}, name={}, authority_key={}, protocol_key={}, network_key={}",
+        // Debug: Check all possible payload types
+        match &response.payload {
+            Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
+                warn!("🔍 [EXECUTOR-REQ] Payload is NotifyEpochChangeResponse (ignored in debug match)");
+            }
+            Some(proto::response::Payload::ValidatorInfoList(v)) => {
+                info!(
+                    "🔍 [EXECUTOR-REQ] Payload is ValidatorInfoList with {} validators",
+                    v.validators.len()
+                );
+                // CRITICAL: Log each ValidatorInfo exactly as received from Go
+                for (idx, validator) in v.validators.iter().enumerate() {
+                    let auth_key_preview = if validator.authority_key.len() > 50 {
+                        format!("{}...", &validator.authority_key[..50])
+                    } else {
+                        validator.authority_key.clone()
+                    };
+                    info!("📥 [RUST←GO] ValidatorInfo[{}]: address={}, stake={}, name={}, authority_key={}, protocol_key={}, network_key={}",
                             idx, validator.address, validator.stake, validator.name,
                             auth_key_preview, validator.protocol_key, validator.network_key);
-                    }
-                }
-                Some(proto::response::Payload::Error(e)) => {
-                    info!("🔍 [EXECUTOR-REQ] Payload is Error: {}", e);
-                }
-                Some(proto::response::Payload::ValidatorList(_)) => {
-                    warn!("🔍 [EXECUTOR-REQ] Payload is ValidatorList (not expected for this request)");
-                }
-                Some(proto::response::Payload::ServerStatus(_)) => {
-                    warn!(
-                        "🔍 [EXECUTOR-REQ] Payload is ServerStatus (not expected for this request)"
-                    );
-                }
-                Some(proto::response::Payload::LastBlockNumberResponse(_)) => {
-                    warn!("🔍 [EXECUTOR-REQ] Payload is LastBlockNumberResponse (not expected for GetValidatorsAtBlockRequest)");
-                }
-                Some(proto::response::Payload::GetCurrentEpochResponse(_)) => {
-                    info!("🔍 [EXECUTOR-REQ] Payload is GetCurrentEpochResponse (handled below)");
-                }
-                Some(proto::response::Payload::GetEpochStartTimestampResponse(_)) => {
-                    warn!("🔍 [EXECUTOR-REQ] Payload is GetEpochStartTimestampResponse (not expected for this request)");
-                }
-                Some(proto::response::Payload::AdvanceEpochResponse(_)) => {
-                    warn!("🔍 [EXECUTOR-REQ] Payload is AdvanceEpochResponse (not expected for this request)");
-                }
-                Some(proto::response::Payload::EpochBoundaryData(_)) => {
-                    warn!("🔍 [EXECUTOR-REQ] Payload is EpochBoundaryData (not expected for this request)");
-                }
-                Some(proto::response::Payload::SetConsensusStartBlockResponse(_))
-                | Some(proto::response::Payload::SetSyncStartBlockResponse(_))
-                | Some(proto::response::Payload::WaitForSyncToBlockResponse(_)) => {
-                    warn!("🔍 [EXECUTOR-REQ] Payload is Transition Handoff response (not expected for this request)");
-                }
-                Some(proto::response::Payload::ForceCommitResponse(_)) => {
-                    warn!("🔍 [EXECUTOR-REQ] Payload is ForceCommitResponse (not expected for this request)");
-                }
-                Some(proto::response::Payload::GetBlocksRangeResponse(_))
-                | Some(proto::response::Payload::SyncBlocksResponse(_)) => {
-                    warn!("🔍 [EXECUTOR-REQ] Payload is Block Sync response (not expected for this request)");
-                }
-                None => {
-                    warn!(
-                        "🔍 [EXECUTOR-REQ] Payload is None - response structure may be incorrect"
-                    );
-                    warn!("🔍 [EXECUTOR-REQ] Full response debug: {:?}", response);
                 }
             }
+            Some(proto::response::Payload::Error(e)) => {
+                info!("🔍 [EXECUTOR-REQ] Payload is Error: {}", e);
+            }
+            Some(proto::response::Payload::ValidatorList(_)) => {
+                warn!("🔍 [EXECUTOR-REQ] Payload is ValidatorList (not expected for this request)");
+            }
+            Some(proto::response::Payload::ServerStatus(_)) => {
+                warn!("🔍 [EXECUTOR-REQ] Payload is ServerStatus (not expected for this request)");
+            }
+            Some(proto::response::Payload::LastBlockNumberResponse(_)) => {
+                warn!("🔍 [EXECUTOR-REQ] Payload is LastBlockNumberResponse (not expected for GetValidatorsAtBlockRequest)");
+            }
+            Some(proto::response::Payload::GetCurrentEpochResponse(_)) => {
+                info!("🔍 [EXECUTOR-REQ] Payload is GetCurrentEpochResponse (handled below)");
+            }
+            Some(proto::response::Payload::GetEpochStartTimestampResponse(_)) => {
+                warn!("🔍 [EXECUTOR-REQ] Payload is GetEpochStartTimestampResponse (not expected for this request)");
+            }
+            Some(proto::response::Payload::AdvanceEpochResponse(_)) => {
+                warn!("🔍 [EXECUTOR-REQ] Payload is AdvanceEpochResponse (not expected for this request)");
+            }
+            Some(proto::response::Payload::EpochBoundaryData(_)) => {
+                warn!("🔍 [EXECUTOR-REQ] Payload is EpochBoundaryData (not expected for this request)");
+            }
+            Some(proto::response::Payload::SetConsensusStartBlockResponse(_))
+            | Some(proto::response::Payload::SetSyncStartBlockResponse(_))
+            | Some(proto::response::Payload::WaitForSyncToBlockResponse(_)) => {
+                warn!("🔍 [EXECUTOR-REQ] Payload is Transition Handoff response (not expected for this request)");
+            }
+            Some(proto::response::Payload::ForceCommitResponse(_)) => {
+                warn!("🔍 [EXECUTOR-REQ] Payload is ForceCommitResponse (not expected for this request)");
+            }
+            Some(proto::response::Payload::GetBlocksRangeResponse(_))
+            | Some(proto::response::Payload::SyncBlocksResponse(_)) => {
+                warn!("🔍 [EXECUTOR-REQ] Payload is Block Sync response (not expected for this request)");
+            }
+            None => {
+                warn!("🔍 [EXECUTOR-REQ] Payload is None - response structure may be incorrect");
+                warn!("🔍 [EXECUTOR-REQ] Full response debug: {:?}", response);
+            }
+        }
 
-            match response.payload {
+        match response.payload {
                 Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
                     Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
                 }
@@ -275,12 +215,9 @@ impl ExecutorClient {
                     ))
                 }
                 None => {
-                    Err(anyhow::anyhow!("Unexpected response type from Go. Response payload: None. Response bytes (hex): {}", hex::encode(&response_buf)))
+                    Err(anyhow::anyhow!("Unexpected response type from Go. Response payload: None"))
                 }
             }
-        } else {
-            Err(anyhow::anyhow!("Request connection is not available"))
-        }
     }
 
     /// Get last block number AND last global exec index from Go Master
@@ -309,111 +246,58 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self
-            .request_pool
-            .get_connection()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
-        if let Some(ref mut stream) = *conn_guard {
-            // Write 4-byte length prefix (big-endian)
-            let len = request_buf.len() as u32;
-            let len_bytes = len.to_be_bytes();
-            stream.write_all(&len_bytes).await?;
+        // FFI INTEGRATION: Send request directly via CGo callback
+        let response_buf = self.execute_rpc_request(&request_buf).await?;
 
-            // Write request data
-            stream.write_all(&request_buf).await?;
-            stream.flush().await?;
+        // HEX DUMP: Log raw proto bytes to diagnose gei=0 decode bug
+        let hex_preview: String = response_buf
+            .iter()
+            .take(64)
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        info!(
+            "📥 [EXECUTOR-REQ] Received {} bytes from Go FFI, hex={}, decoding...",
+            response_buf.len(),
+            hex_preview
+        );
 
-            info!(
-                "📤 [EXECUTOR-REQ] Sent GetLastBlockNumberRequest to Go (size: {} bytes)",
-                request_buf.len()
-            );
+        // Decode response
+        let response = Response::decode(&response_buf[..])
+            .map_err(|e| anyhow::anyhow!("Failed to decode response from Go: {}", e))?;
 
-            // Read response (4-byte length prefix + response data)
-            use tokio::io::AsyncReadExt;
-            use tokio::time::{timeout, Duration};
-
-            // Set timeout for reading response (5 seconds)
-            let read_timeout = Duration::from_secs(5);
-
-            let mut len_buf = [0u8; 4];
-            timeout(read_timeout, stream.read_exact(&mut len_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response length: {}", e))??;
-            let response_len = u32::from_be_bytes(len_buf) as usize;
-
-            if response_len == 0 {
-                return Err(anyhow::anyhow!("Received zero-length response from Go"));
+        match response.payload {
+            Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
+                Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
             }
-            if response_len > 10_000_000 {
-                // 10MB limit
-                return Err(anyhow::anyhow!(
-                    "Response too large: {} bytes",
-                    response_len
-                ));
-            }
+            Some(proto::response::Payload::LastBlockNumberResponse(res)) => {
+                let last_block_number = res.last_block_number;
+                let last_gei = res.last_global_exec_index;
+                let is_ready = res.is_ready;
+                info!(
+                    "✅ [EXECUTOR-REQ] Received LastBlockNumberResponse: block={}, gei={}, is_ready={}",
+                    last_block_number, last_gei, is_ready
+                );
 
-            let mut response_buf = vec![0u8; response_len];
-            timeout(read_timeout, stream.read_exact(&mut response_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response data: {}", e))??;
-
-            // HEX DUMP: Log raw proto bytes to diagnose gei=0 decode bug
-            let hex_preview: String = response_buf
-                .iter()
-                .take(64)
-                .map(|b| format!("{:02x}", b))
-                .collect::<Vec<_>>()
-                .join(" ");
-            info!(
-                "📥 [EXECUTOR-REQ] Received {} bytes from Go, hex={}, decoding...",
-                response_buf.len(),
-                hex_preview
-            );
-
-            // Decode response
-            let response = Response::decode(&response_buf[..])
-                .map_err(|e| anyhow::anyhow!("Failed to decode response from Go: {}", e))?;
-
-            match response.payload {
-                Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
-                    Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
-                }
-                Some(proto::response::Payload::LastBlockNumberResponse(res)) => {
-                    let last_block_number = res.last_block_number;
-                    let last_gei = res.last_global_exec_index;
-                    let is_ready = res.is_ready;
-                    info!(
-                        "✅ [EXECUTOR-REQ] Received LastBlockNumberResponse: block={}, gei={}, is_ready={}",
-                        last_block_number, last_gei, is_ready
-                    );
-
-                    // Persist for crash recovery
-                    if let Some(ref storage_path) = self.storage_path {
-                        if let Err(e) =
-                            persist_last_block_number(storage_path, last_block_number).await
-                        {
-                            warn!(
-                                "⚠️ [PERSIST] Failed to persist last block number {}: {}",
-                                last_block_number, e
-                            );
-                        }
+                // Persist for crash recovery
+                if let Some(ref storage_path) = self.storage_path {
+                    if let Err(e) = persist_last_block_number(storage_path, last_block_number).await
+                    {
+                        warn!(
+                            "⚠️ [PERSIST] Failed to persist last block number {}: {}",
+                            last_block_number, e
+                        );
                     }
+                }
 
-                    Ok((last_block_number, last_gei, is_ready))
-                }
-                Some(proto::response::Payload::Error(error_msg)) => {
-                    Err(anyhow::anyhow!("Go returned error: {}", error_msg))
-                }
-                _ => {
-                    Err(anyhow::anyhow!(
-                        "Unexpected response type from Go (expected LastBlockNumberResponse)"
-                    ))
-                }
+                Ok((last_block_number, last_gei, is_ready))
             }
-        } else {
-            Err(anyhow::anyhow!("Request connection is not available"))
+            Some(proto::response::Payload::Error(error_msg)) => {
+                Err(anyhow::anyhow!("Go returned error: {}", error_msg))
+            }
+            _ => Err(anyhow::anyhow!(
+                "Unexpected response type from Go (expected LastBlockNumberResponse)"
+            )),
         }
     }
 
@@ -440,74 +324,40 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self
-            .request_pool
-            .get_connection()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
-        if let Some(ref mut stream) = *conn_guard {
-            let len = request_buf.len() as u32;
-            let len_bytes = len.to_be_bytes();
-            stream.write_all(&len_bytes).await?;
-            stream.write_all(&request_buf).await?;
-            stream.flush().await?;
+        // FFI INTEGRATION: Send request directly via CGo callback
+        let response_buf = self.execute_rpc_request(&request_buf).await?;
 
-            use tokio::io::AsyncReadExt;
-            use tokio::time::{timeout, Duration};
-            let read_timeout = Duration::from_secs(5);
+        // HEX DUMP: Log raw proto bytes to diagnose gei=0 decode bug
+        let hex_preview: String = response_buf
+            .iter()
+            .take(64)
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        info!(
+            "📥 [EXECUTOR-REQ-GEI] Received {} bytes from Go FFI, hex={}",
+            response_buf.len(),
+            hex_preview
+        );
 
-            let mut len_buf = [0u8; 4];
-            timeout(read_timeout, stream.read_exact(&mut len_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response length: {}", e))??;
-            let response_len = u32::from_be_bytes(len_buf) as usize;
+        let response = Response::decode(&response_buf[..])
+            .map_err(|e| anyhow::anyhow!("Failed to decode response from Go: {}", e))?;
 
-            if response_len == 0 || response_len > 10_000_000 {
-                return Err(anyhow::anyhow!("Invalid response length: {}", response_len));
+        match response.payload {
+            Some(proto::response::Payload::LastBlockNumberResponse(res)) => {
+                let last_gei = res.last_global_exec_index;
+                info!(
+                    "✅ [EXECUTOR-REQ] Go last_global_exec_index={} (block={})",
+                    last_gei, res.last_block_number
+                );
+                Ok(last_gei)
             }
-
-            let mut response_buf = vec![0u8; response_len];
-            timeout(read_timeout, stream.read_exact(&mut response_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response data: {}", e))??;
-
-            // HEX DUMP: Log raw proto bytes to diagnose gei=0 decode bug
-            let hex_preview: String = response_buf
-                .iter()
-                .take(64)
-                .map(|b| format!("{:02x}", b))
-                .collect::<Vec<_>>()
-                .join(" ");
-            info!(
-                "📥 [EXECUTOR-REQ-GEI] Received {} bytes from Go, hex={}",
-                response_buf.len(),
-                hex_preview
-            );
-
-            let response = Response::decode(&response_buf[..])
-                .map_err(|e| anyhow::anyhow!("Failed to decode response from Go: {}", e))?;
-
-            match response.payload {
-                Some(proto::response::Payload::LastBlockNumberResponse(res)) => {
-                    let last_gei = res.last_global_exec_index;
-                    info!(
-                        "✅ [EXECUTOR-REQ] Go last_global_exec_index={} (block={})",
-                        last_gei, res.last_block_number
-                    );
-                    Ok(last_gei)
-                }
-                Some(proto::response::Payload::Error(error_msg)) => {
-                    Err(anyhow::anyhow!("Go returned error: {}", error_msg))
-                }
-                _ => {
-                    Err(anyhow::anyhow!(
-                        "Unexpected response type from Go (expected LastBlockNumberResponse)"
-                    ))
-                }
+            Some(proto::response::Payload::Error(error_msg)) => {
+                Err(anyhow::anyhow!("Go returned error: {}", error_msg))
             }
-        } else {
-            Err(anyhow::anyhow!("Request connection is not available"))
+            _ => Err(anyhow::anyhow!(
+                "Unexpected response type from Go (expected LastBlockNumberResponse)"
+            )),
         }
     }
 
@@ -574,9 +424,7 @@ impl ExecutorClient {
                 Some(proto::response::Payload::Error(error_msg)) => {
                     Err(anyhow::anyhow!("Go returned error: {}", error_msg))
                 }
-                _ => {
-                    Err(anyhow::anyhow!("Unexpected response type for ForceCommit"))
-                }
+                _ => Err(anyhow::anyhow!("Unexpected response type for ForceCommit")),
             }
         } else {
             Err(anyhow::anyhow!("Request connection is not available"))

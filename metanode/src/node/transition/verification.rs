@@ -206,7 +206,8 @@ pub(super) async fn sync_epoch_timestamp_from_go(
             Ok(go_timestamp) => {
                 // Validate timestamp is not from old epoch (should be close to expected)
                 // Timestamp should be within reasonable range of expected timestamp
-                let timestamp_diff = (go_timestamp as i64 - expected_timestamp as i64).unsigned_abs();
+                let timestamp_diff =
+                    (go_timestamp as i64 - expected_timestamp as i64).unsigned_abs();
 
                 if timestamp_diff > 10000 {
                     // 10 seconds tolerance

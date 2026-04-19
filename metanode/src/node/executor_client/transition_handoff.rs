@@ -93,102 +93,50 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self
-            .request_pool
-            .get_connection()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
-        if let Some(ref mut stream) = *conn_guard {
-            // Write 4-byte length prefix (big-endian)
-            let len = request_buf.len() as u32;
-            let len_bytes = len.to_be_bytes();
-            stream.write_all(&len_bytes).await?;
+        // FFI INTEGRATION: Send request directly via CGo callback
+        let response_buf = self.execute_rpc_request(&request_buf).await?;
 
-            // Write request data
-            stream.write_all(&request_buf).await?;
-            stream.flush().await?;
+        info!(
+            "📥 [EXECUTOR-REQ] Received {} bytes from Go FFI, decoding...",
+            response_buf.len()
+        );
 
-            info!("📤 [EXECUTOR-REQ] Sent AdvanceEpochRequest to Go (new_epoch={}, timestamp_ms={}, size: {} bytes)",
-                new_epoch, epoch_start_timestamp_ms, request_buf.len());
+        // Decode response
+        let response = Response::decode(&response_buf[..])
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to decode response from Go: {}. Response length: {} bytes. Response bytes (hex): {}. Response bytes (first 100): {:?}",
+                    e,
+                    response_buf.len(),
+                    hex::encode(&response_buf),
+                    &response_buf[..response_buf.len().min(100)]
+                )
+            })?;
 
-            // Read response (4-byte length prefix + response data)
-            use tokio::io::AsyncReadExt;
-            use tokio::time::{timeout, Duration};
+        info!("🔍 [EXECUTOR-REQ] Decoded response successfully");
+        info!(
+            "🔍 [EXECUTOR-REQ] Response payload type: {:?}",
+            response.payload
+        );
 
-            // Set timeout for reading response (5 seconds)
-            let read_timeout = Duration::from_secs(5);
-
-            let mut len_buf = [0u8; 4];
-            timeout(read_timeout, stream.read_exact(&mut len_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response length: {}", e))??;
-            let response_len = u32::from_be_bytes(len_buf) as usize;
-
-            if response_len == 0 {
-                return Err(anyhow::anyhow!("Received zero-length response from Go"));
+        match response.payload {
+            Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
+                Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
             }
-            if response_len > 10_000_000 {
-                // 10MB limit
-                return Err(anyhow::anyhow!(
-                    "Response too large: {} bytes",
-                    response_len
-                ));
+            Some(proto::response::Payload::AdvanceEpochResponse(_advance_epoch_response)) => {
+                info!(
+                    "✅ [EXECUTOR-REQ] Go successfully advanced to epoch {}",
+                    new_epoch
+                );
+                Ok(())
             }
-
-            let mut response_buf = vec![0u8; response_len];
-            timeout(read_timeout, stream.read_exact(&mut response_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response data: {}", e))??;
-
-            info!(
-                "📥 [EXECUTOR-REQ] Received {} bytes from Go, decoding...",
-                response_buf.len()
-            );
-
-            // Decode response
-            let response = Response::decode(&response_buf[..])
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to decode response from Go: {}. Response length: {} bytes. Response bytes (hex): {}. Response bytes (first 100): {:?}",
-                        e,
-                        response_buf.len(),
-                        hex::encode(&response_buf),
-                        &response_buf[..response_buf.len().min(100)]
-                    )
-                })?;
-
-            info!("🔍 [EXECUTOR-REQ] Decoded response successfully");
-            info!(
-                "🔍 [EXECUTOR-REQ] Response payload type: {:?}",
-                response.payload
-            );
-
-            match response.payload {
-                Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
-                    Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
-                }
-                Some(proto::response::Payload::AdvanceEpochResponse(_advance_epoch_response)) => {
-                    info!(
-                        "✅ [EXECUTOR-REQ] Go successfully advanced to epoch {}",
-                        new_epoch
-                    );
-                    Ok(())
-                }
-                Some(proto::response::Payload::Error(error_msg)) => {
-                    Err(anyhow::anyhow!(
-                        "Go returned error during epoch advance: {}",
-                        error_msg
-                    ))
-                }
-                _ => {
-                    Err(anyhow::anyhow!(
-                        "Unexpected response payload type for AdvanceEpoch"
-                    ))
-                }
-            }
-        } else {
-            Err(anyhow::anyhow!("Request connection is not available"))
+            Some(proto::response::Payload::Error(error_msg)) => Err(anyhow::anyhow!(
+                "Go returned error during epoch advance: {}",
+                error_msg
+            )),
+            _ => Err(anyhow::anyhow!(
+                "Unexpected response payload type for AdvanceEpoch"
+            )),
         }
     }
 
@@ -212,61 +160,25 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self
-            .request_pool
-            .get_connection()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
-        if let Some(ref mut stream) = *conn_guard {
-            let len = request_buf.len() as u32;
-            stream.write_all(&len.to_be_bytes()).await?;
-            stream.write_all(&request_buf).await?;
-            stream.flush().await?;
+        // FFI INTEGRATION: Send request directly via CGo callback
+        let response_buf = self.execute_rpc_request(&request_buf).await?;
 
-            info!(
-                "📤 [TRANSITION] Sent SetConsensusStartBlockRequest: block_number={}",
-                block_number
-            );
-
-            use tokio::io::AsyncReadExt;
-            use tokio::time::{timeout, Duration};
-            let read_timeout = Duration::from_secs(35); // Longer timeout for potential waiting
-
-            let mut len_buf = [0u8; 4];
-            timeout(read_timeout, stream.read_exact(&mut len_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response length: {}", e))??;
-            let response_len = u32::from_be_bytes(len_buf) as usize;
-
-            if response_len == 0 || response_len > 10_000_000 {
-                return Err(anyhow::anyhow!("Invalid response length: {}", response_len));
+        let response = Response::decode(&response_buf[..])?;
+        match response.payload {
+            Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
+                Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
             }
-
-            let mut response_buf = vec![0u8; response_len];
-            timeout(read_timeout, stream.read_exact(&mut response_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response data: {}", e))??;
-
-            let response = Response::decode(&response_buf[..])?;
-            match response.payload {
-                Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
-                    Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
-                }
-                Some(proto::response::Payload::SetConsensusStartBlockResponse(res)) => {
-                    info!(
-                        "✅ [TRANSITION] SetConsensusStartBlock response: success={}, last_sync_block={}, message={}",
-                        res.success, res.last_sync_block, res.message
-                    );
-                    Ok((res.success, res.last_sync_block, res.message))
-                }
-                Some(proto::response::Payload::Error(error_msg)) => {
-                    Err(anyhow::anyhow!("Go returned error: {}", error_msg))
-                }
-                _ => Err(anyhow::anyhow!("Unexpected response type from Go")),
+            Some(proto::response::Payload::SetConsensusStartBlockResponse(res)) => {
+                info!(
+                    "✅ [TRANSITION] SetConsensusStartBlock FFI response: success={}, last_sync_block={}, message={}",
+                    res.success, res.last_sync_block, res.message
+                );
+                Ok((res.success, res.last_sync_block, res.message))
             }
-        } else {
-            Err(anyhow::anyhow!("Request connection is not available"))
+            Some(proto::response::Payload::Error(error_msg)) => {
+                Err(anyhow::anyhow!("Go returned error: {}", error_msg))
+            }
+            _ => Err(anyhow::anyhow!("Unexpected response type from Go")),
         }
     }
 
@@ -291,61 +203,25 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self
-            .request_pool
-            .get_connection()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
-        if let Some(ref mut stream) = *conn_guard {
-            let len = request_buf.len() as u32;
-            stream.write_all(&len.to_be_bytes()).await?;
-            stream.write_all(&request_buf).await?;
-            stream.flush().await?;
+        // FFI INTEGRATION: Send request directly via CGo callback
+        let response_buf = self.execute_rpc_request(&request_buf).await?;
 
-            info!(
-                "📤 [TRANSITION] Sent SetSyncStartBlockRequest: last_consensus_block={}",
-                last_consensus_block
-            );
-
-            use tokio::io::AsyncReadExt;
-            use tokio::time::{timeout, Duration};
-            let read_timeout = Duration::from_secs(5);
-
-            let mut len_buf = [0u8; 4];
-            timeout(read_timeout, stream.read_exact(&mut len_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response length: {}", e))??;
-            let response_len = u32::from_be_bytes(len_buf) as usize;
-
-            if response_len == 0 || response_len > 10_000_000 {
-                return Err(anyhow::anyhow!("Invalid response length: {}", response_len));
+        let response = Response::decode(&response_buf[..])?;
+        match response.payload {
+            Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
+                Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
             }
-
-            let mut response_buf = vec![0u8; response_len];
-            timeout(read_timeout, stream.read_exact(&mut response_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response data: {}", e))??;
-
-            let response = Response::decode(&response_buf[..])?;
-            match response.payload {
-                Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
-                    Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
-                }
-                Some(proto::response::Payload::SetSyncStartBlockResponse(res)) => {
-                    info!(
-                        "✅ [TRANSITION] SetSyncStartBlock response: success={}, sync_start_block={}, message={}",
-                        res.success, res.sync_start_block, res.message
-                    );
-                    Ok((res.success, res.sync_start_block, res.message))
-                }
-                Some(proto::response::Payload::Error(error_msg)) => {
-                    Err(anyhow::anyhow!("Go returned error: {}", error_msg))
-                }
-                _ => Err(anyhow::anyhow!("Unexpected response type from Go")),
+            Some(proto::response::Payload::SetSyncStartBlockResponse(res)) => {
+                info!(
+                    "✅ [TRANSITION] SetSyncStartBlock FFI response: success={}, sync_start_block={}, message={}",
+                    res.success, res.sync_start_block, res.message
+                );
+                Ok((res.success, res.sync_start_block, res.message))
             }
-        } else {
-            Err(anyhow::anyhow!("Request connection is not available"))
+            Some(proto::response::Payload::Error(error_msg)) => {
+                Err(anyhow::anyhow!("Go returned error: {}", error_msg))
+            }
+            _ => Err(anyhow::anyhow!("Unexpected response type from Go")),
         }
     }
 
@@ -372,62 +248,25 @@ impl ExecutorClient {
         let mut request_buf = Vec::new();
         request.encode(&mut request_buf)?;
 
-        // Use connection pool for parallel RPC queries (IPC-2 optimization)
-        let (mut conn_guard, _slot) = self
-            .request_pool
-            .get_connection()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get pool connection: {}", e))?;
-        if let Some(ref mut stream) = *conn_guard {
-            let len = request_buf.len() as u32;
-            stream.write_all(&len.to_be_bytes()).await?;
-            stream.write_all(&request_buf).await?;
-            stream.flush().await?;
+        // FFI INTEGRATION: Send request directly via CGo callback
+        let response_buf = self.execute_rpc_request(&request_buf).await?;
 
-            info!(
-                "📤 [TRANSITION] Sent WaitForSyncToBlockRequest: target_block={}, timeout={}s",
-                target_block, timeout_seconds
-            );
-
-            use tokio::io::AsyncReadExt;
-            use tokio::time::{timeout, Duration};
-            // Timeout needs to be longer than the Go-side timeout
-            let read_timeout = Duration::from_secs(timeout_seconds + 10);
-
-            let mut len_buf = [0u8; 4];
-            timeout(read_timeout, stream.read_exact(&mut len_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response length: {}", e))??;
-            let response_len = u32::from_be_bytes(len_buf) as usize;
-
-            if response_len == 0 || response_len > 10_000_000 {
-                return Err(anyhow::anyhow!("Invalid response length: {}", response_len));
+        let response = Response::decode(&response_buf[..])?;
+        match response.payload {
+            Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
+                Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
             }
-
-            let mut response_buf = vec![0u8; response_len];
-            timeout(read_timeout, stream.read_exact(&mut response_buf))
-                .await
-                .map_err(|e| anyhow::anyhow!("Timeout reading response data: {}", e))??;
-
-            let response = Response::decode(&response_buf[..])?;
-            match response.payload {
-                Some(proto::response::Payload::NotifyEpochChangeResponse(_)) => {
-                    Err(anyhow::anyhow!("Unexpected NotifyEpochChangeResponse"))
-                }
-                Some(proto::response::Payload::WaitForSyncToBlockResponse(res)) => {
-                    info!(
-                        "✅ [TRANSITION] WaitForSyncToBlock response: reached={}, current_block={}, message={}",
-                        res.reached, res.current_block, res.message
-                    );
-                    Ok((res.reached, res.current_block, res.message))
-                }
-                Some(proto::response::Payload::Error(error_msg)) => {
-                    Err(anyhow::anyhow!("Go returned error: {}", error_msg))
-                }
-                _ => Err(anyhow::anyhow!("Unexpected response type from Go")),
+            Some(proto::response::Payload::WaitForSyncToBlockResponse(res)) => {
+                info!(
+                    "✅ [TRANSITION] WaitForSyncToBlock FFI response: reached={}, current_block={}, message={}",
+                    res.reached, res.current_block, res.message
+                );
+                Ok((res.reached, res.current_block, res.message))
             }
-        } else {
-            Err(anyhow::anyhow!("Request connection is not available"))
+            Some(proto::response::Payload::Error(error_msg)) => {
+                Err(anyhow::anyhow!("Go returned error: {}", error_msg))
+            }
+            _ => Err(anyhow::anyhow!("Unexpected response type from Go")),
         }
     }
 }

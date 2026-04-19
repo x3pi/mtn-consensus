@@ -62,7 +62,10 @@ impl ExecutorClient {
         let total_tx_before: usize = subdag.blocks.iter().map(|b| b.transactions().len()).sum();
 
         // T2-6: Unified batch_id for cross-process tracing (matches Go format)
-        let batch_id = format!("E{}C{}G{}", epoch, subdag.commit_ref.index, global_exec_index);
+        let batch_id = format!(
+            "E{}C{}G{}",
+            epoch, subdag.commit_ref.index, global_exec_index
+        );
 
         // 🔍 DIAGNOSTIC: Log ALL commits with transactions (not just trace level)
         if total_tx_before > 0 {
@@ -168,8 +171,7 @@ impl ExecutorClient {
             }
 
             // Recalculate fragments after dedup
-            let actual_fragments =
-                total_after_dedup.div_ceil(MAX_TXS_PER_GO_BLOCK);
+            let actual_fragments = total_after_dedup.div_ceil(MAX_TXS_PER_GO_BLOCK);
 
             for frag_idx in 0..actual_fragments {
                 let start = frag_idx * MAX_TXS_PER_GO_BLOCK;
@@ -185,7 +187,7 @@ impl ExecutorClient {
                         *last_ep = epoch;
                     }
                     // Since fragment total_tx_before > MAX_TXS_PER_GO_BLOCK, it definitely has txs > 0
-                    // unless somehow after dedup all fragments have 0 txs, which is handled above. 
+                    // unless somehow after dedup all fragments have 0 txs, which is handled above.
                     // So we always allocate a block number.
                     let bn = *next_bn;
                     *next_bn += 1;
@@ -255,11 +257,23 @@ impl ExecutorClient {
         // OPTIMIZATION: For empty commits (0 transactions), use fast-path that bypasses
         // the expensive per-tx hash/filter/sort logic in convert_to_protobuf
         let epoch_data_bytes = if total_tx_before == 0 {
-            self.convert_to_protobuf_empty(subdag, epoch, global_exec_index, leader_address, block_number)?
+            self.convert_to_protobuf_empty(
+                subdag,
+                epoch,
+                global_exec_index,
+                leader_address,
+                block_number,
+            )?
         } else {
             info!("🔍 [DIAG] Using FULL convert_to_protobuf path for global_exec_index={} (total_tx_before={})",
                 global_exec_index, total_tx_before);
-            self.convert_to_protobuf(subdag, epoch, global_exec_index, leader_address, block_number)?
+            self.convert_to_protobuf(
+                subdag,
+                epoch,
+                global_exec_index,
+                leader_address,
+                block_number,
+            )?
         };
 
         // Count total transactions after conversion (should match before)
@@ -492,71 +506,30 @@ impl ExecutorClient {
         let last_idx = batch[batch_size - 1].0;
         let last_commit_index = batch[batch_size - 1].3;
 
-        // Phase 2: Write all blocks to socket in a single batch (1 flush)
+        // Phase 2: Write all blocks to FFI in a single batch (1 flush)
         {
-            // Auto-reconnect if needed
-            {
-                let conn_check = self.connection.lock().await;
-                if conn_check.is_none() {
-                    drop(conn_check);
-                    self.connect().await?;
-                }
-            }
-
             let mut sent_count = 0usize;
-            {
-                let mut conn_guard = self.connection.lock().await;
-                if let Some(ref mut stream) = *conn_guard {
-                    use tokio::time::{timeout, Duration};
-
-                    for (idx, data, _, _) in &batch {
-                        let mut len_buf = Vec::new();
-                        write_uvarint(&mut len_buf, data.len() as u64)
-                            .map_err(std::io::Error::other)?;
-
-                        // Per-block write timeout: 10s per block (accounts for large TX blocks)
-                        let write_result = timeout(
-                            Duration::from_secs(10),
-                            async {
-                                stream.write_all(&len_buf).await?;
-                                stream.write_all(data).await?;
-                                stream.flush().await?;
-                                Ok::<(), std::io::Error>(())
-                            },
-                        ).await;
-
-                        match write_result {
-                            Ok(Ok(())) => {
-                                sent_count += 1;
-                            }
-                            Ok(Err(e)) => {
-                                warn!("⚠️  [BLOCK-SEND] Write failed at GEI={}: {}. Dropping connection.", idx, e);
-                                *conn_guard = None;
-                                break;
-                            }
-                            Err(_) => {
-                                warn!("⏱️  [BLOCK-SEND] Timeout writing GEI={} (10s). Dropping connection.", idx);
-                                *conn_guard = None;
-                                break;
-                            }
-                        }
+            if let Some(c_fn) = crate::ffi::GO_CALLBACKS.get().and_then(|c| c.execute_block) {
+                for (idx, data, _, _) in &batch {
+                    let success = c_fn(data.as_ptr(), data.len());
+                    if success {
+                        sent_count += 1;
+                    } else {
+                        warn!("⚠️  [BLOCK-SEND] FFI execute_block failed at GEI={}", idx);
+                        self.record_send_failure().await;
+                        break;
                     }
-                } else {
-                    self.record_send_failure().await;
-                    // Re-add all blocks
-                    let mut buffer = self.send_buffer.lock().await;
-                    for (idx, data, epoch, ci) in batch {
-                        buffer.insert(idx, (data, epoch, ci));
-                    }
-                    return Err(anyhow::anyhow!("Connection lost during batch send"));
                 }
-            } // Lock `conn_guard` is released here
+            } else {
+                warn!("⚠️  [BLOCK-SEND] FFI execute_block not registered");
+                self.record_send_failure().await;
+            }
 
             if sent_count > 0 {
                 self.record_send_success().await;
                 if batch_size > 1 && sent_count == batch_size {
                     info!(
-                        "[batch_id=G{}..{}] ⚡ [BATCH-SEND] Sent {} blocks sequentially in 1 batch run",
+                        "[batch_id=G{}..{}] ⚡ [BATCH-SEND] Sent {} blocks sequentially to Go FFI",
                         first_idx, last_idx, batch_size
                     );
                 }
@@ -568,9 +541,12 @@ impl ExecutorClient {
                 for (idx, data, epoch, ci) in batch.iter().skip(sent_count) {
                     buffer.insert(*idx, (data.clone(), *epoch, *ci));
                 }
-                warn!("🔄 [BLOCK-SEND] Re-buffered {} unsent blocks (sent {}/{})",
-                    batch_size - sent_count, sent_count, batch_size);
-                self.record_send_failure().await;
+                warn!(
+                    "🔄 [BLOCK-SEND] Re-buffered {} unsent blocks (sent {}/{})",
+                    batch_size - sent_count,
+                    sent_count,
+                    batch_size
+                );
                 if sent_count == 0 {
                     return Ok(());
                 }
@@ -768,118 +744,26 @@ impl ExecutorClient {
         // 🛡️ CIRCUIT BREAKER: Check if we are in Fast-Fail mode
         self.check_send_circuit_breaker().await?;
 
-        // Auto-reconnect if connection is None
-        {
-            let conn_check = self.connection.lock().await;
-            if conn_check.is_none() {
-                drop(conn_check);
-                info!("🔄 [EXECUTOR] Connection not established, connecting...");
-                self.connect().await?;
-            }
-        }
-
-        // Send via TCP/UDS with Uvarint length prefix (Go expects Uvarint)
-        let mut conn_guard = self.connection.lock().await;
-        if let Some(ref mut stream) = *conn_guard {
-            // Write Uvarint length prefix
-            let mut len_buf = Vec::new();
-            write_uvarint(&mut len_buf, epoch_data_bytes.len() as u64)?;
-
-            // Send with retry logic if write fails
-            // CRITICAL: Add timeout to prevent commit processor from getting stuck
-            use tokio::time::{timeout, Duration};
-            const SEND_TIMEOUT: Duration = Duration::from_secs(30);
-
-            let send_result = timeout(SEND_TIMEOUT, async {
-                stream.write_all(&len_buf).await?;
-                stream.write_all(epoch_data_bytes).await?;
-                stream.flush().await?;
-                Ok::<(), std::io::Error>(())
-            })
-            .await;
-
-            let send_result = match send_result {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => Err(e),
-                Err(_) => {
-                    // Timeout occurred
-                    warn!("⏱️  [EXECUTOR] Send timeout after {}s (global_exec_index={}, commit_index={}), closing connection", 
-                        SEND_TIMEOUT.as_secs(), global_exec_index, commit_index);
-                    *conn_guard = None; // Clear connection
-                    self.record_send_failure().await; // 🚨 Mark Failure
-                    return Err(anyhow::anyhow!("Send timeout"));
-                }
-            };
-
-            match send_result {
-                Ok(_) => {
-                    trace!("📤 [TX FLOW] Sent committed sub-DAG to Go executor: global_exec_index={}, commit_index={}, epoch={}, data_size={} bytes", 
-                        global_exec_index, commit_index, epoch, epoch_data_bytes.len());
-                    self.record_send_success().await; // ✅ Mark Success
-                    Ok(())
-                }
-                Err(e) => {
-                    warn!("⚠️  [EXECUTOR] Failed to send committed sub-DAG (global_exec_index={}, commit_index={}): {}, reconnecting...", 
-                        global_exec_index, commit_index, e);
-                    // Connection is dead, clear it so next send will reconnect
-                    *conn_guard = None;
-                    self.record_send_failure().await; // 🚨 Mark Failure for the first attempt
-
-                    // Retry send after reconnection
-                    drop(conn_guard);
-                    if let Err(reconnect_err) = self.connect().await {
-                        warn!(
-                            "⚠️  [EXECUTOR] Failed to reconnect after send error: {}",
-                            reconnect_err
-                        );
-                        self.record_send_failure().await; // 🚨 Mark Failure for reconnect error
-                        return Err(anyhow::anyhow!("Reconnection failed: {}", reconnect_err));
-                    }
-                    // Retry send with timeout
-                    let mut retry_guard = self.connection.lock().await;
-                    if let Some(ref mut retry_stream) = *retry_guard {
-                        let mut retry_len_buf = Vec::new();
-                        write_uvarint(&mut retry_len_buf, epoch_data_bytes.len() as u64)?;
-
-                        let retry_result = timeout(SEND_TIMEOUT, async {
-                            retry_stream.write_all(&retry_len_buf).await?;
-                            retry_stream.write_all(epoch_data_bytes).await?;
-                            retry_stream.flush().await?;
-                            Ok::<(), std::io::Error>(())
-                        })
-                        .await;
-
-                        match retry_result {
-                            Ok(Ok(())) => {
-                                trace!("✅ [EXECUTOR] Successfully sent committed sub-DAG after reconnection: global_exec_index={}, commit_index={}", 
-                                    global_exec_index, commit_index);
-                                self.record_send_success().await; // ✅ Mark Success on Retry
-                                Ok(())
-                            }
-                            Ok(Err(retry_err)) => {
-                                warn!("⚠️  [EXECUTOR] Retry send also failed: {}", retry_err);
-                                *retry_guard = None; // Clear connection for next attempt
-                                self.record_send_failure().await; // 🚨 Mark Failure on Retry
-                                Err(anyhow::anyhow!("Retry send failed: {}", retry_err))
-                            }
-                            Err(_) => {
-                                warn!("⏱️  [EXECUTOR] Retry send timeout after {}s (global_exec_index={}, commit_index={})", 
-                                    SEND_TIMEOUT.as_secs(), global_exec_index, commit_index);
-                                *retry_guard = None; // Clear connection
-                                self.record_send_failure().await; // 🚨 Mark Failure on Retry Timeout
-                                Err(anyhow::anyhow!("Retry send timeout"))
-                            }
-                        }
-                    } else {
-                        self.record_send_failure().await;
-                        Err(anyhow::anyhow!("Connection lost after reconnection"))
-                    }
-                }
+        // FFI INTEGRATION: Send directly to Go via CGo callback
+        if let Some(c_fn) = crate::ffi::GO_CALLBACKS.get().and_then(|c| c.execute_block) {
+            let success = c_fn(epoch_data_bytes.as_ptr(), epoch_data_bytes.len());
+            if success {
+                trace!("📤 [TX FLOW] Sent committed sub-DAG to Go executor via FFI: global_exec_index={}, commit_index={}, epoch={}, data_size={} bytes", 
+                    global_exec_index, commit_index, epoch, epoch_data_bytes.len());
+                self.record_send_success().await; // ✅ Mark Success
+                Ok(())
+            } else {
+                warn!(
+                    "⚠️  [EXECUTOR] Go FFI execute_block failed for global_exec_index={}",
+                    global_exec_index
+                );
+                self.record_send_failure().await; // 🚨 Mark Failure
+                Err(anyhow::anyhow!("Go FFI execute_block returned false"))
             }
         } else {
+            warn!("⚠️  [EXECUTOR] FFI GO_CALLBACKS not registered or execute_block is null");
             self.record_send_failure().await;
-            warn!("⚠️  [EXECUTOR] Executor connection lost, skipping send");
-            Err(anyhow::anyhow!("Connection lost"))
+            Err(anyhow::anyhow!("FFI execute_block not registered"))
         }
     }
 

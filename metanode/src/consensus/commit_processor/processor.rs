@@ -7,8 +7,8 @@ use mysten_metrics::monitored_mpsc::UnboundedReceiver;
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
- // [Added] Import Duration
- // [Added] Import sleep for retry mechanism
+// [Added] Import Duration
+// [Added] Import sleep for retry mechanism
 use tracing::{info, trace, warn};
 
 use crate::consensus::checkpoint::calculate_global_exec_index;
@@ -69,7 +69,11 @@ pub struct CommitProcessor {
     /// RS-2: Storage path for persisting cumulative_fragment_offset
     storage_path: Option<std::path::PathBuf>,
     /// Channel sender for emitting lag alerts
-    lag_alert_sender: Option<tokio::sync::mpsc::UnboundedSender<crate::consensus::commit_processor::lag_monitor::LagAlert>>,
+    lag_alert_sender: Option<
+        tokio::sync::mpsc::UnboundedSender<
+            crate::consensus::commit_processor::lag_monitor::LagAlert,
+        >,
+    >,
 }
 
 impl CommitProcessor {
@@ -225,7 +229,9 @@ impl CommitProcessor {
     /// Set a sender for lag alerts
     pub fn with_lag_alert_sender(
         mut self,
-        sender: tokio::sync::mpsc::UnboundedSender<crate::consensus::commit_processor::lag_monitor::LagAlert>,
+        sender: tokio::sync::mpsc::UnboundedSender<
+            crate::consensus::commit_processor::lag_monitor::LagAlert,
+        >,
     ) -> Self {
         self.lag_alert_sender = Some(sender);
         self
@@ -382,7 +388,10 @@ impl CommitProcessor {
                             epoch_base_index,
                             cumulative_fragment_offset
                         );
-                        info!("epoch_base_index for epoch {} is set to {}", current_epoch, epoch_base_index);
+                        info!(
+                            "epoch_base_index for epoch {} is set to {}",
+                            current_epoch, epoch_base_index
+                        );
 
                         let total_txs_in_commit = subdag
                             .blocks
@@ -550,10 +559,12 @@ impl CommitProcessor {
                         // SAFETY: Limit pending_commits size to prevent OOM
                         const MAX_PENDING_COMMITS: usize = 5000;
                         if pending_commits.len() >= MAX_PENDING_COMMITS {
-                            warn!("🚨 [COMMIT PROCESSOR] pending_commits at capacity ({})! \
+                            warn!(
+                                "🚨 [COMMIT PROCESSOR] pending_commits at capacity ({})! \
                                 Dropping out-of-order commit {} (expected {}). \
                                 This indicates severe downstream stall.",
-                                MAX_PENDING_COMMITS, commit_index, next_expected_index);
+                                MAX_PENDING_COMMITS, commit_index, next_expected_index
+                            );
                             continue;
                         }
                         warn!(
@@ -576,5 +587,4 @@ impl CommitProcessor {
         }
         Ok(())
     }
-
 }

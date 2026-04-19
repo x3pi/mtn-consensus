@@ -140,7 +140,9 @@ pub fn start_unified_epoch_monitor(
                 // This makes snapshot restore behave like a node restart:
                 // sync up → join consensus immediately.
                 // ═══════════════════════════════════════════════════════════
-                if matches!(_current_mode, crate::node::NodeMode::SyncOnly) || matches!(_current_mode, crate::node::NodeMode::SyncingUp) {
+                if matches!(_current_mode, crate::node::NodeMode::SyncOnly)
+                    || matches!(_current_mode, crate::node::NodeMode::SyncingUp)
+                {
                     // Check if this node should be a Validator
                     let own_protocol_pubkey = {
                         if let Some(node_arc) = crate::node::get_transition_handler_node().await {
@@ -243,7 +245,9 @@ pub fn start_unified_epoch_monitor(
             // SyncOnly nodes don't run full transitions, but Go must advance epoch
             // to serve blocks at the correct epoch to other nodes and to itself.
             // ═══════════════════════════════════════════════════════════════
-            if matches!(_current_mode, crate::node::NodeMode::SyncOnly) || matches!(_current_mode, crate::node::NodeMode::SyncingUp) {
+            if matches!(_current_mode, crate::node::NodeMode::SyncOnly)
+                || matches!(_current_mode, crate::node::NodeMode::SyncingUp)
+            {
                 // Skip if Go is already caught up
                 if local_go_epoch >= network_epoch {
                     continue;
@@ -440,11 +444,13 @@ pub fn start_unified_epoch_monitor(
                             // Try peer fallback
                             let mut peer_data: Option<(u64, u64, u64, u64)> = None;
                             for peer_addr in &peer_rpc {
-                                if let Ok(data) = crate::network::peer_rpc::query_peer_epoch_boundary_data(
-                                    peer_addr,
-                                    target_epoch,
-                                )
-                                .await {
+                                if let Ok(data) =
+                                    crate::network::peer_rpc::query_peer_epoch_boundary_data(
+                                        peer_addr,
+                                        target_epoch,
+                                    )
+                                    .await
+                                {
                                     peer_data = Some((
                                         data.epoch,
                                         data.timestamp_ms,
@@ -492,10 +498,17 @@ pub fn start_unified_epoch_monitor(
                                 Err(e) => {
                                     warn!("⚠️ [EPOCH MONITOR] sync_and_execute_blocks failed, falling back to sync_blocks: {}", e);
                                     // Fallback to store-only mode for backward compatibility
-                                    if let Ok(blocks_retry) = crate::network::peer_rpc::fetch_blocks_from_peer(
-                                        &peer_rpc, go_block + 1, boundary_block,
-                                    ).await {
-                                        if let Ok((synced, last)) = client_arc.sync_blocks(blocks_retry).await {
+                                    if let Ok(blocks_retry) =
+                                        crate::network::peer_rpc::fetch_blocks_from_peer(
+                                            &peer_rpc,
+                                            go_block + 1,
+                                            boundary_block,
+                                        )
+                                        .await
+                                    {
+                                        if let Ok((synced, last)) =
+                                            client_arc.sync_blocks(blocks_retry).await
+                                        {
                                             info!("✅ [EPOCH MONITOR] Fallback: synced {} blocks (store-only) for epoch {} (last: {})", synced, target_epoch, last);
                                         }
                                     }

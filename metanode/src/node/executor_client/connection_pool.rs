@@ -51,6 +51,18 @@ impl ConnectionPool {
         }
     }
 
+    /// Create a no-op pool that never makes connections (for FFI mode).
+    pub fn new_noop() -> Self {
+        info!("🏊 [CONN POOL] Created NO-OP pool (FFI mode — connections bypassed)");
+        Self {
+            connections: Vec::new(),
+            address: SocketAddress::Unix("/dev/null".to_string()),
+            next_index: AtomicUsize::new(0),
+            pool_size: 0,
+            connect_timeout_secs: 0,
+        }
+    }
+
     /// Get a healthy connection from the pool using round-robin selection.
     /// If the selected connection is dead or missing, reconnects automatically.
     /// Returns the connection guard and the slot index.

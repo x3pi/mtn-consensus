@@ -3,7 +3,7 @@
 
 pub mod epoch;
 pub mod executor;
-pub mod processor;
 pub mod lag_monitor;
+pub mod processor;
 
 pub use processor::CommitProcessor;

@@ -119,10 +119,8 @@ impl RpcServer {
                                             let tx_data = if body.starts_with("0x")
                                                 || body.chars().all(|c| c.is_ascii_hexdigit())
                                             {
-                                                hex::decode(
-                                                    body.trim().trim_start_matches("0x"),
-                                                )
-                                                .unwrap_or_else(|_| body.as_bytes().to_vec())
+                                                hex::decode(body.trim().trim_start_matches("0x"))
+                                                    .unwrap_or_else(|_| body.as_bytes().to_vec())
                                             } else {
                                                 body.trim().as_bytes().to_vec()
                                             };
@@ -135,10 +133,7 @@ impl RpcServer {
                                             )
                                             .await
                                             {
-                                                error!(
-                                                    "Failed to process HTTP transaction: {}",
-                                                    e
-                                                );
+                                                error!("Failed to process HTTP transaction: {}", e);
                                             }
                                         } else {
                                             let response = "HTTP/1.1 404 Not Found\r\n\r\n";

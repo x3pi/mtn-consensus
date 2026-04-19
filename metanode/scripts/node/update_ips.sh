@@ -62,7 +62,7 @@ RUST_RPC_PORTS=(10100 10101 10102 10103 10104)
 # Go Master connection ports per node
 GO_MASTER_CONN_PORTS=(4201 6201 6211 6221 6241)
 # Go Sub connection ports per node
-GO_SUB_CONN_PORTS=(4200 6200 6210 6220 6240)
+GO_SUB_CONN_PORTS=(4201 6201 6211 6221 6241)
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
 usage() {

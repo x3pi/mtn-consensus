@@ -617,7 +617,11 @@ where
         // First shutdown components calling into Core.
         if let Err(e) = self.synchronizer.stop().await {
             if e.is_panic() {
-                std::panic::resume_unwind(e.into_panic());
+                tracing::error!(
+                    "🚨 [AUTHORITY STOP] Synchronizer panicked during shutdown: {:?}",
+                    e
+                );
+                // Do NOT resume_unwind — that would propagate an abort() across FFI
             }
             // Cancellation can happen during an epoch transition where we intentionally abort in-flight tasks.
             // Keep it at DEBUG to avoid alarming operators.

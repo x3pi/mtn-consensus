@@ -590,7 +590,7 @@ pub async fn transition_to_epoch_from_system_tx(
                 node,
                 new_epoch,
                 epoch_boundary_block, // boundary_block from get_epoch_boundary_data
-                effective_synced, // synced_global_exec_index
+                effective_synced,     // synced_global_exec_index
                 config,
             )
             .await;
@@ -1100,7 +1100,8 @@ pub(super) async fn handle_deferred_epoch_transition(
                                             new_epoch,
                                             0,
                                         )
-                                        .await).err();
+                                        .await)
+                                        .err();
                                     if let Some(ref e) = err_str {
                                         warn!(
                                             "⚠️ [DEFERRED EPOCH] Re-sync failed for GEI {}: {}",

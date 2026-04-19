@@ -356,7 +356,10 @@ impl CatchupManager {
                         Ok(synced)
                     }
                     Err(e) => {
-                        warn!("⚠️ [CATCHUP SYNC] Failed to execute blocks to local Go: {}", e);
+                        warn!(
+                            "⚠️ [CATCHUP SYNC] Failed to execute blocks to local Go: {}",
+                            e
+                        );
                         Err(anyhow::anyhow!("Failed to execute blocks: {}", e))
                     }
                 }

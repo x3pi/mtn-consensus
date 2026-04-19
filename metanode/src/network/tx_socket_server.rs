@@ -1,790 +1,310 @@
-// Copyright (c) MetaNode Team
-// SPDX-License-Identifier: Apache-2.0
-
 use crate::consensus::tx_recycler::TxRecycler;
 use crate::node::tx_submitter::TransactionSubmitter;
 use crate::node::ConsensusNode;
 use anyhow::Result;
-use std::path::Path;
+use consensus_core;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
-/// Unix Domain Socket server for transaction submission
-/// Faster than HTTP for local IPC communication
 pub struct TxSocketServer {
-    socket_path: String,
     transaction_client: Arc<dyn TransactionSubmitter>,
-    /// Optional node reference for readiness checking
     node: Option<Arc<Mutex<ConsensusNode>>>,
-    /// Lock-free flag to check epoch transition status without acquiring node lock
     is_transitioning: Option<Arc<AtomicBool>>,
-    /// Direct access to the pending transactions queue for lock-free queuing during transitions
-    pending_transactions_queue: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
-    /// Storage path for persistence during lock-free queuing
-    storage_path: Option<std::path::PathBuf>,
-    /// Static peer RPC addresses for forwarding transactions (SyncOnly mode)
     peer_rpc_addresses: Vec<String>,
-    /// Dynamic peer addresses from PeerDiscoveryService (takes precedence if set)
     peer_discovery_addresses: Option<Arc<RwLock<Vec<String>>>>,
-    /// TX recycler for tracking submitted TXs and re-submitting stale ones
     tx_recycler: Option<Arc<TxRecycler>>,
 }
 
 impl TxSocketServer {
-    /// Create UDS server with node reference for readiness checking
     pub fn with_node(
-        socket_path: String,
         transaction_client: Arc<dyn TransactionSubmitter>,
-        node: Arc<Mutex<ConsensusNode>>,
-        is_transitioning: Arc<AtomicBool>,
-        pending_transactions_queue: Arc<Mutex<Vec<Vec<u8>>>>,
-        storage_path: std::path::PathBuf,
+        node: Option<Arc<Mutex<ConsensusNode>>>,
+        is_transitioning: Option<Arc<AtomicBool>>,
         peer_rpc_addresses: Vec<String>,
     ) -> Self {
         Self {
-            socket_path,
             transaction_client,
-            node: Some(node),
-            is_transitioning: Some(is_transitioning),
-            pending_transactions_queue: Some(pending_transactions_queue),
-            storage_path: Some(storage_path),
+            node,
+            is_transitioning,
             peer_rpc_addresses,
             peer_discovery_addresses: None,
             tx_recycler: None,
         }
     }
 
-    /// Set dynamic peer discovery addresses (takes precedence over static config)
     pub fn with_peer_discovery(mut self, addresses: Arc<RwLock<Vec<String>>>) -> Self {
         self.peer_discovery_addresses = Some(addresses);
         self
     }
 
-    /// Set TX recycler for tracking and re-submitting stale TXs
     pub fn with_tx_recycler(mut self, recycler: Arc<TxRecycler>) -> Self {
         self.tx_recycler = Some(recycler);
         self
     }
 
-    /// Start the UDS server
     pub async fn start(self) -> Result<()> {
-        // Remove old socket file if exists
-        if Path::new(&self.socket_path).exists() {
-            std::fs::remove_file(&self.socket_path)?;
+        let (ffi_tx_sender, mut ffi_tx_receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(1000);
+        if crate::ffi::FFI_TX_SENDER.set(ffi_tx_sender).is_err() {
+            warn!("⚠️ [FFI TX SENDER] Already initialized!");
         }
+        info!("🔌 FFI Transaction Receiver started in place of UDS server");
 
-        let listener = UnixListener::bind(&self.socket_path)?;
-        info!("🔌 Transaction UDS server started on {}", self.socket_path);
+        let client = self.transaction_client;
+        let node = self.node;
+        let is_transitioning = self.is_transitioning;
+        let peer_rpc_addresses = self.peer_rpc_addresses;
+        let peer_discovery_addresses = self.peer_discovery_addresses;
+        let tx_recycler = self.tx_recycler;
 
-        info!(
-            "🔌 UDS server waiting for connections on {}",
-            self.socket_path
-        );
+        while let Some(tx_data) = ffi_tx_receiver.recv().await {
+            let client_ref = client.clone();
+            let node_ref = node.clone();
+            let is_transitioning_ref = is_transitioning.clone();
+            let peer_rpc_addresses_ref = peer_rpc_addresses.clone();
+            let peer_discovery_addresses_ref = peer_discovery_addresses.clone();
+            let tx_recycler_ref = tx_recycler.clone();
 
-        // Set socket permissions (read/write for owner and group)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o660);
-            std::fs::set_permissions(&self.socket_path, perms)?;
+            tokio::spawn(async move {
+                Self::process_ffi_batch(
+                    tx_data,
+                    client_ref,
+                    node_ref,
+                    is_transitioning_ref,
+                    peer_rpc_addresses_ref,
+                    peer_discovery_addresses_ref,
+                    tx_recycler_ref,
+                )
+                .await;
+            });
         }
-
-        loop {
-            debug!("🔌 UDS server waiting for connections...");
-
-            match listener.accept().await {
-                Ok((stream, addr)) => {
-                    debug!(
-                        "🔌 [TX FLOW] ✅ ACCEPTED new UDS connection from client: {:?}",
-                        addr
-                    );
-
-                    // Tune UDS connection buffers
-                    let stream = match stream.into_std() {
-                        Ok(std_stream) => {
-                            let socket = socket2::Socket::from(std_stream);
-                            let _ = socket.set_recv_buffer_size(32 * 1024 * 1024);
-                            let _ = socket.set_send_buffer_size(32 * 1024 * 1024);
-                            match tokio::net::UnixStream::from_std(socket.into()) {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    error!("Failed to restore UnixStream: {}", e);
-                                    continue;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to convert to std stream: {}", e);
-                            continue;
-                        }
-                    };
-
-                    let client = self.transaction_client.clone();
-                    let node = self.node.clone();
-                    let is_transitioning = self.is_transitioning.clone();
-                    let pending_transactions_queue = self.pending_transactions_queue.clone();
-                    let storage_path = self.storage_path.clone();
-                    let peer_rpc_addresses = self.peer_rpc_addresses.clone();
-                    let peer_discovery_addresses = self.peer_discovery_addresses.clone();
-                    let tx_recycler = self.tx_recycler.clone();
-
-                    tokio::spawn(async move {
-                        debug!("🔌 Spawned handler for UDS connection");
-                        if let Err(e) = Self::handle_connection(
-                            stream,
-                            client,
-                            node,
-                            is_transitioning,
-                            pending_transactions_queue,
-                            storage_path,
-                            peer_rpc_addresses,
-                            peer_discovery_addresses,
-                            tx_recycler,
-                        )
-                        .await
-                        {
-                            error!("Error handling UDS connection: {}", e);
-                        }
-                    });
-                }
-                Err(e) => {
-                    error!("❌ [UDS ERROR] Failed to accept UDS connection: {}", e);
-                    // Continue loop instead of breaking
-                }
-            }
-        }
+        Ok(())
     }
 
-    async fn handle_connection(
-        mut stream: UnixStream,
+    async fn process_ffi_batch(
+        tx_data: Vec<u8>,
         client: Arc<dyn TransactionSubmitter>,
         node: Option<Arc<Mutex<ConsensusNode>>>,
         is_transitioning: Option<Arc<AtomicBool>>,
-        _pending_transactions_queue: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
-        _storage_path: Option<std::path::PathBuf>,
         peer_rpc_addresses: Vec<String>,
         peer_discovery_addresses: Option<Arc<RwLock<Vec<String>>>>,
         tx_recycler: Option<Arc<TxRecycler>>,
-    ) -> Result<()> {
-        // PERSISTENT CONNECTION: Xử lý multiple requests trên cùng một connection
-        // Điều này cho phép Go client gửi nhiều batches qua cùng một connection
-        // Tối ưu cho localhost với throughput cao
-        loop {
-            // Use the new codec module to read the length-prefixed frame
-            let tx_data_result =
-                crate::network::codec::read_length_prefixed_frame(&mut stream).await;
+    ) {
+        use prost::bytes::Buf;
+        let mut individual_txs = Vec::new();
+        let mut offset = 0;
+        let data_len = tx_data.len();
+        let mut parse_error = false;
 
-            let tx_data = match tx_data_result {
-                Ok(data) => data,
-                Err(e) => {
-                    // Check if it's EOF (connection closed by client)
-                    if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                        if io_err.kind() == std::io::ErrorKind::UnexpectedEof {
-                            info!("🔌 [TX FLOW] UDS connection closed by client (EOF)");
-                            return Ok(());
-                        }
-                    }
-                    // For other errors, send error response and close connection to prevent desync
-                    error!(
-                        "❌ [TX FLOW] Failed to read length-prefixed frame from UDS: {}",
-                        e
-                    );
-                    let error_response = format!(
-                        r#"{{"success":false,"error":"Failed to read frame: {}"}}"#,
-                        e
-                    );
-                    if let Err(send_err) =
-                        Self::send_response_string(&mut stream, &error_response).await
-                    {
-                        error!("❌ [TX FLOW] Failed to send error response: {}", send_err);
-                        return Err(send_err);
-                    }
-                    info!("🔌 [TX FLOW] Closing connection due to frame read error (Go will reconnect)");
-                    return Ok(()); // Đóng connection để Go client reconnect, tránh lỗi out-of-sync
+        // Zero-copy extraction
+        while offset < data_len {
+            let mut buf = &tx_data[offset..];
+            let initial_remaining = buf.remaining();
+
+            let tag = match prost::encoding::decode_varint(&mut buf) {
+                Ok(t) => t,
+                Err(_) => {
+                    parse_error = true;
+                    break;
                 }
             };
 
-            let data_len = tx_data.len();
+            let tag_len = initial_remaining - buf.remaining();
+            if tag_len == 0 {
+                parse_error = true;
+                break;
+            }
+            offset += tag_len;
 
-            // Batch-level logging only (per-TX hash logging removed for performance)
-            debug!(
-                "📥 [TX FLOW] Received transaction batch via UDS: size={} bytes",
-                data_len
-            );
+            let field_number = tag >> 3;
+            let wire_type = tag & 0x07;
 
-            // ═══════════════════════════════════════════════════════════════
-            // ZERO-COPY PROTOBUF EXTRACTION (TPS OPTIMIZATION)
-            // Go LUÔN gửi pb.Transactions (nhiều transactions).
-            // Thay vì dùng `Transactions::decode` tốn CPU để tạo Rust structs
-            // rồi lại `tx.encode` từng transaction thành byte array, chúng ta
-            // parse trực tiếp raw protobuf format để cắt (slice) byte arrays.
-            // Biến `pb.Transactions` có cấu trúc: repeated Transaction Transactions = 1;
-            // Tag cho struct này luôn là 0x0A (Field 1, Wire Type 2).
-            // ═══════════════════════════════════════════════════════════════
-            use prost::bytes::Buf;
-            let mut individual_txs = Vec::new();
-            let mut offset = 0;
-            let data_len = tx_data.len();
-            let mut parse_error = false;
-
-            while offset < data_len {
-                let mut buf = &tx_data[offset..];
-                let initial_remaining = buf.remaining();
-
-                // Read Tag (Varint)
-                let tag = match prost::encoding::decode_varint(&mut buf) {
-                    Ok(t) => t,
+            if field_number == 1 && wire_type == 2 {
+                let mut buf_val = &tx_data[offset..];
+                let init_rem = buf_val.remaining();
+                let length = match prost::encoding::decode_varint(&mut buf_val) {
+                    Ok(l) => l as usize,
                     Err(_) => {
                         parse_error = true;
-                        warn!("❌ [TX FLOW] Failed to decode tag at offset {}", offset);
                         break;
                     }
                 };
+                let length_varint_size = init_rem - buf_val.remaining();
+                offset += length_varint_size;
 
-                let tag_len = initial_remaining - buf.remaining();
-                if tag_len == 0 {
+                if offset + length <= data_len {
+                    individual_txs.push(tx_data[offset..offset + length].to_vec());
+                } else {
                     parse_error = true;
-                    warn!("❌ [TX FLOW] Zero tag length at offset {}", offset);
                     break;
                 }
-                offset += tag_len;
-
-                // Field 1, Length-Delimited (Wire Type 2) == 0x0A
-                if tag == 0x0A {
-                    let mut buf_len = &tx_data[offset..];
-                    let initial_remaining_len = buf_len.remaining();
-
-                    // Read Length (Varint)
-                    let tx_len = match prost::encoding::decode_varint(&mut buf_len) {
-                        Ok(l) => l as usize,
-                        Err(_) => {
-                            parse_error = true;
-                            warn!("❌ [TX FLOW] Failed to decode length at offset {}", offset);
-                            break;
-                        }
-                    };
-
-                    let len_len = initial_remaining_len - buf_len.remaining();
-                    if len_len == 0 {
-                        parse_error = true;
-                        warn!("❌ [TX FLOW] Invalid length varint at offset {}", offset);
-                        break;
+                offset += length;
+            } else {
+                match wire_type {
+                    0 => {
+                        let mut buf_varint = &tx_data[offset..];
+                        let init_rem = buf_varint.remaining();
+                        let _ = prost::encoding::decode_varint(&mut buf_varint).unwrap_or(0);
+                        offset += init_rem - buf_varint.remaining();
                     }
-                    offset += len_len;
-
-                    if offset + tx_len > data_len {
-                        parse_error = true;
-                        warn!("❌ [TX FLOW] Transaction length exceeds buffer");
-                        break;
-                    }
-
-                    // Slice the raw transaction bytes WITHOUT re-encoding
-                    individual_txs.push(tx_data[offset..offset + tx_len].to_vec());
-                    offset += tx_len;
-                } else {
-                    // Unknown field -> skip it
-                    let wire_type = tag & 0x07;
-                    match wire_type {
-                        0 => {
-                            // Varint
-                            let mut buf_varint = &tx_data[offset..];
-                            let init_rem = buf_varint.remaining();
-                            if prost::encoding::decode_varint(&mut buf_varint).is_err() {
+                    1 => offset += 8,
+                    2 => {
+                        let mut buf_len = &tx_data[offset..];
+                        let init_rem = buf_len.remaining();
+                        let skip_len = match prost::encoding::decode_varint(&mut buf_len) {
+                            Ok(l) => l as usize,
+                            Err(_) => {
                                 parse_error = true;
                                 break;
                             }
-                            offset += init_rem - buf_varint.remaining();
-                        }
-                        1 => offset += 8, // 64-bit
-                        2 => {
-                            // Length-delimited
-                            let mut buf_len = &tx_data[offset..];
-                            let init_rem = buf_len.remaining();
-                            let skip_len = match prost::encoding::decode_varint(&mut buf_len) {
-                                Ok(l) => l as usize,
-                                Err(_) => {
-                                    parse_error = true;
-                                    break;
-                                }
-                            };
-                            offset += (init_rem - buf_len.remaining()) + skip_len;
-                        }
-                        5 => offset += 4, // 32-bit
-                        _ => {
-                            parse_error = true;
-                            warn!("❌ [TX FLOW] Unknown wire type {}", wire_type);
-                            break;
-                        }
+                        };
+                        offset += (init_rem - buf_len.remaining()) + skip_len;
+                    }
+                    5 => offset += 4,
+                    _ => {
+                        parse_error = true;
+                        break;
                     }
                 }
             }
+        }
 
-            if parse_error || individual_txs.is_empty() {
-                error!(
-                    "❌ [TX FLOW] Failed to decode Transactions message from Go via UDS natively"
-                );
-                let error_response =
-                    r#"{"success":false,"error":"Invalid Transactions protobuf layout"}"#;
-                if let Err(e) = Self::send_response_string(&mut stream, error_response).await {
-                    error!("❌ [TX FLOW] Failed to send error response: {}", e);
-                    return Err(e);
-                }
-                continue;
-            }
+        if parse_error || individual_txs.is_empty() {
+            error!("❌ [FFI TX FLOW] Failed to decode Transactions message");
+            return;
+        }
 
-            info!(
-                "✅ [TX FLOW] Zero-copy extracted {} individual transactions via UDS",
-                individual_txs.len()
-            );
-            let transactions_to_submit = individual_txs;
+        debug!("✅ [FFI TX FLOW] Zero-copy extracted {} TXs", individual_txs.len());
+        let transactions_to_submit = individual_txs;
 
-            // LOCK-FREE CHECK: Fast path - reject during epoch transition.
-            // Go's channel_sender.go has built-in retry logic (30x × 2s) for
-            // "epoch transition" errors, so returning an error is safe and simple.
+        // RETRY LOOP FOR EPOCH TRANSITIONS
+        let mut attempt = 0;
+        let mut current_client = client;
+
+        loop {
+            // Lock-free transitioning check
             if let Some(ref transitioning) = is_transitioning {
                 if transitioning.load(Ordering::SeqCst) {
-                    warn!("⚡ [TX FLOW] Epoch transition in progress. Rejecting {} transactions (Go will retry).", transactions_to_submit.len());
-                    let error_response =
-                        r#"{"success":false,"error":"epoch transition in progress, please retry"}"#;
-                    if let Err(e) = Self::send_response_string(&mut stream, error_response).await {
-                        error!(
-                            "❌ [TX FLOW] Failed to send epoch transition response: {}",
-                            e
-                        );
-                        return Err(e);
+                    warn!("⚡ [FFI TX FLOW] Epoch transition in progress. Delaying {} TXs internally.", transactions_to_submit.len());
+                    attempt += 1;
+                    if attempt >= 120 {
+                        error!("❌ [FFI TX FLOW] Dropped {} TXs after 120 retries during transition", transactions_to_submit.len());
+                        return;
                     }
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     continue;
                 }
             }
 
-            // Check if node is ready (lock-free fast path already passed)
-            info!(
-                "🔍 [TX FLOW] Checking transaction acceptance for {} TXs",
-                transactions_to_submit.len()
-            );
-            if let Some(ref node) = node {
-                // FIX: Use SHORT timeout (200ms) instead of 30s.
-                // During normal block production, the ConsensusNode Mutex is held
-                // by the consensus engine continuously. The old 30s timeout meant
-                // ALL TX submissions were rejected during high block production.
-                // With 200ms timeout: if lock fails and we're NOT transitioning,
-                // skip the check and submit directly (TransactionSubmitter is thread-safe).
-                let lock_result =
-                    tokio::time::timeout(std::time::Duration::from_millis(200), node.lock()).await;
-
+            // Node acceptance check (takes node lock momentarily)
+            if let Some(ref node_arc) = node {
+                let lock_result = tokio::time::timeout(std::time::Duration::from_millis(200), node_arc.lock()).await;
                 match lock_result {
                     Ok(node_guard) => {
-                        let (should_accept, should_queue, reason) =
-                            node_guard.check_transaction_acceptance().await;
+                        let (should_accept, should_queue, reason) = node_guard.check_transaction_acceptance().await;
+                        
+                        // Update current_client just in case we transitioned recently
+                        if let Some(fresh_submitter) = node_guard.transaction_submitter() {
+                            current_client = fresh_submitter;
+                        }
 
                         if should_queue {
-                            // Queue transactions for next epoch
-                            debug!(
-                                "📨 [TX FLOW] Queueing {} transactions for next epoch: {}",
-                                transactions_to_submit.len(),
-                                reason
-                            );
-                            if let Err(e) = node_guard
-                                .queue_transactions_for_next_epoch(transactions_to_submit.clone())
-                                .await
-                            {
-                                error!("❌ [TX FLOW] Failed to queue transactions: {}", e);
-                            }
-                            drop(node_guard);
-
-                            // Send success response (transaction is queued, will be processed in next epoch)
-                            let success_response = format!(
-                                r#"{{"success":true,"queued":true,"message":"Transaction queued for next epoch: {}"}}"#,
-                                reason.replace('"', "\\\"")
-                            );
-                            if let Err(e) =
-                                Self::send_response_string(&mut stream, &success_response).await
-                            {
-                                error!("❌ [TX FLOW] Failed to send queue response: {}", e);
-                                return Err(e);
-                            }
-                            continue; // Tiếp tục xử lý request tiếp theo
+                            debug!("📨 [FFI TX FLOW] Queueing {} transactions for next epoch: {}", transactions_to_submit.len(), reason);
+                            let _ = node_guard.queue_transactions_for_next_epoch(transactions_to_submit.clone()).await;
+                            return; // Enqueued successfully
                         }
 
                         if !should_accept {
-                            // Check if this is SyncOnly mode (authority.is_none())
-                            // In SyncOnly mode, forward TX to validators instead of rejecting
                             let is_sync_only = reason.contains("Node is still initializing");
-
-                            let target_peers = if let Some(ref addrs) = peer_discovery_addresses {
-                                addrs.read().await.clone()
-                            } else {
-                                peer_rpc_addresses.clone()
-                            };
-
-                            if is_sync_only && !target_peers.is_empty() {
-                                // FIX: Do NOT forward transactions to validators.
-                                // During fresh restart, ALL validator nodes temporarily enter
-                                // "Node is still initializing" state, triggering this SyncOnly
-                                // forwarding path. This caused each node to forward ALL received
-                                // TXs to ALL other validators, creating massive TX duplication
-                                // (e.g., 280K TXs in blocks when only 100K were sent).
-                                //
-                                // The Go TX pool will retry sending TXs via UDS once the node
-                                // finishes initializing. The consensus DAG propagates committed
-                                // blocks to all validators, so explicit TX forwarding is not needed.
-                                warn!(
-                                    "⏳ [TX FLOW] Node is still initializing, rejecting {} TXs (Go TX pool will retry)",
-                                    transactions_to_submit.len()
-                                );
+                            if is_sync_only {
+                                warn!("⏳ [FFI TX FLOW] Node is catching up. Delaying {} TXs internally.", transactions_to_submit.len());
                                 drop(node_guard);
-
-                                let reject_response = r#"{"success":false,"error":"Node is still initializing, please retry"}"#;
-                                if let Err(e) =
-                                    Self::send_response_string(&mut stream, reject_response).await
-                                {
-                                    error!("❌ [TX FLOW] Failed to send reject response: {}", e);
-                                    return Err(e);
+                                attempt += 1;
+                                if attempt >= 300 { // Allow 5 minutes during boot
+                                    error!("❌ [FFI TX FLOW] Dropped {} TXs after timeout waiting for sync", transactions_to_submit.len());
+                                    return;
                                 }
-                                continue; // Continue to next request
+                                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                                continue;
                             }
 
-                            // Regular rejection
-                            warn!(
-                                "🚫 [TX FLOW] Rejecting {} transactions via UDS: {}",
-                                transactions_to_submit.len(),
-                                reason
-                            );
-                            drop(node_guard);
-                            let error_response = format!(
-                                r#"{{"success":false,"error":"Node not ready to accept transactions: {}"}}"#,
-                                reason.replace('"', "\\\"")
-                            );
-                            if let Err(e) =
-                                Self::send_response_string(&mut stream, &error_response).await
-                            {
-                                error!("❌ [TX FLOW] Failed to send error response: {}", e);
-                                return Err(e);
-                            }
-                            continue; // Tiếp tục xử lý request tiếp theo
+                            warn!("🚫 [FFI TX FLOW] Rejecting {} TXs: {}", transactions_to_submit.len(), reason);
+                            return; // Permanent failure
                         }
-
-                        drop(node_guard);
                     }
                     Err(_) => {
-                        // FIX: Lock timeout (200ms) - node is busy with consensus.
-                        // During NORMAL operation (not transitioning), this is expected
-                        // and safe to proceed with direct submission.
-                        // TransactionSubmitter.submit() is thread-safe and doesn't need the node lock.
+                        // Lock timeout. If transitioning, sleep and retry. Else proceed.
                         let is_epoch_transition = is_transitioning
                             .as_ref()
                             .is_some_and(|flag| flag.load(Ordering::SeqCst));
 
                         if is_epoch_transition {
-                            // During epoch transition, reject — Go will retry (30x × 2s)
-                            warn!("⏳ [TX FLOW] Lock timeout (200ms) during epoch transition. Rejecting {} TXs (Go will retry).",
-                                transactions_to_submit.len());
-                            let error_response = r#"{"success":false,"error":"epoch transition in progress, please retry"}"#;
-                            if let Err(e) =
-                                Self::send_response_string(&mut stream, error_response).await
-                            {
-                                error!(
-                                    "❌ [TX FLOW] Failed to send epoch transition response: {}",
-                                    e
-                                );
-                                return Err(e);
-                            }
+                            attempt += 1;
+                            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                             continue;
                         }
-
-                        // NORMAL OPERATION: Lock timeout is fine — consensus is just busy
-                        // producing blocks. Proceed directly to submission.
-                        debug!("⚡ [TX FLOW] Lock timeout (200ms) - consensus busy, proceeding with direct submission of {} TXs.",
-                            transactions_to_submit.len());
-                        // Fall through to submission code below
                     }
                 }
             }
 
-            // Submit transactions to consensus
-            debug!(
-                "📤 [TX FLOW] Submitting {} transaction(s) to consensus via UDS",
-                transactions_to_submit.len()
-            );
-
-            // FIX: Removed redundant double-check lock acquisition.
-            // The old code tried to acquire the ConsensusNode Mutex AGAIN (with 1s timeout)
-            // right before submission, causing ANOTHER timeout during normal operation.
-            // The is_transitioning atomic flag + initial check are sufficient.
-            // During epoch transition, TXs are already queued in the initial check above.
-            // Race condition is handled by the lock-free is_transitioning flag.
-            if let Some(ref transitioning) = is_transitioning {
-                if transitioning.load(Ordering::SeqCst) {
-                    // Epoch transition started between initial check and now — reject, Go will retry
-                    warn!("⚠️ [RACE CONDITION] Epoch transition detected before submission. Rejecting {} TXs (Go will retry).",
-                        transactions_to_submit.len());
-                    let error_response =
-                        r#"{"success":false,"error":"epoch transition in progress, please retry"}"#;
-                    if let Err(e) = Self::send_response_string(&mut stream, error_response).await {
-                        error!(
-                            "❌ [TX FLOW] Failed to send epoch transition response: {}",
-                            e
-                        );
-                        return Err(e);
-                    }
-                    continue;
-                }
-            }
-
-            // Submit transactions to consensus in sub-batches
-            // MetaNode: Increased to 60,000 to match config 60K max blocks (u16 limitation)
+            // Submission phase
             const MAX_BUNDLE_SIZE: usize = 60000;
             let total_tx_count = transactions_to_submit.len();
-
-            let mut all_succeeded = true;
             let mut total_submitted = 0usize;
-            let mut last_error = String::new();
 
-            // PERF: Fast path for single chunk (common case: ≤200K TXs)
-            // Avoids chunks().to_vec() clone by consuming transactions_to_submit directly
             let chunks_list: Vec<Vec<Vec<u8>>> = if total_tx_count <= MAX_BUNDLE_SIZE {
-                vec![transactions_to_submit]
+                vec![transactions_to_submit.clone()]
             } else {
-                transactions_to_submit
-                    .chunks(MAX_BUNDLE_SIZE)
-                    .map(|c| c.to_vec())
-                    .collect()
+                transactions_to_submit.chunks(MAX_BUNDLE_SIZE).map(|c| c.to_vec()).collect()
             };
 
+            let mut all_succeeded = true;
             for (chunk_idx, chunk_vec) in chunks_list.into_iter().enumerate() {
                 let chunk_len = chunk_vec.len();
-
-                debug!(
-                    "🚀 [TX FLOW] Submitting sub-batch {}: {} TXs (total progress: {}/{})",
-                    chunk_idx + 1,
-                    chunk_len,
-                    total_submitted,
-                    total_tx_count
-                );
-
-                // P1-1 FIX: Clone chunk_vec ONCE for SyncOnly retry path.
-                // Previously cloned twice (for submit + for status_receiver spawn).
-                // Common path (success) only uses the original — saves ~100MB per batch.
+                
                 if let Some(ref recycler) = tx_recycler {
                     recycler.track_submitted(&chunk_vec).await;
                 }
 
-                // Clone only for error recovery (SyncOnly→Validator retry needs the data)
-                let retry_chunk = chunk_vec.clone();
-                match client.submit_no_wait(chunk_vec).await {
+                match current_client.submit_no_wait(chunk_vec).await {
                     Ok(included_in_block_rx) => {
                         total_submitted += chunk_len;
-
                         tokio::spawn(async move {
-                            match included_in_block_rx.await {
-                                Ok((block_ref, _indices, status_receiver)) => {
-                                    info!(
-                                        "✅ [TX FLOW] Sub-batch included: {} TXs in block {:?}",
-                                        chunk_len, block_ref
-                                    );
-
-                                    tokio::spawn(async move {
-                                        match status_receiver.await {
-                                            Ok(consensus_core::BlockStatus::Sequenced(block)) => {
-                                                debug!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
-                                            }
-                                            Ok(consensus_core::BlockStatus::GarbageCollected(
-                                                gc_block,
-                                            )) => {
-                                                warn!("♻️ [TX STATUS] Block {:?} was Garbage Collected. TxRecycler will handle re-submission if necessary.", gc_block);
-                                            }
-                                            Err(e) => {
-                                                warn!("⚠️ [TX STATUS] Failed to receive block status: {}", e);
-                                            }
-                                        }
-                                    });
-                                }
-                                Err(e) => {
-                                    warn!("❌ [TX FLOW] Failed to receive inclusion ack: {}", e);
-                                }
+                            if let Ok((block_ref, _indices, status_receiver)) = included_in_block_rx.await {
+                                tokio::spawn(async move {
+                                    if let Ok(consensus_core::BlockStatus::GarbageCollected(gc_block)) = status_receiver.await {
+                                        warn!("♻️ [FFI TX STATUS] Block {:?} Garbage Collected.", gc_block);
+                                    }
+                                });
                             }
                         });
                     }
                     Err(e) => {
                         let err_str = e.to_string();
-                        // ═══════════════════════════════════════════════════════════════
-                        // FIX: Stale NoOpTransactionSubmitter after SyncOnly→Validator
-                        // transition. The TxSocketServer was created at startup with a
-                        // NoOp client (SyncOnly mode). After mode transition, the node
-                        // has a real TransactionClientProxy but TxSocketServer still
-                        // holds the old NoOp. Detect this and retry with the node's
-                        // current submitter.
-                        // ═══════════════════════════════════════════════════════════════
-                        if err_str.contains("SyncOnly node cannot submit") {
-                            let mut needs_forward = false;
-
-                            if let Some(ref node_arc) = node {
-                                if let Ok(node_guard) = tokio::time::timeout(
-                                    std::time::Duration::from_millis(500),
-                                    node_arc.lock(),
-                                )
-                                .await
-                                {
-                                    if let Some(real_submitter) = node_guard.transaction_submitter()
-                                    {
-                                        drop(node_guard);
-                                        debug!(
-                                            "🔄 [TX FLOW] Retrying sub-batch {} with live TransactionSubmitter (post SyncOnly→Validator transition)",
-                                            chunk_idx + 1
-                                        );
-                                        match real_submitter
-                                            .submit_no_wait(retry_chunk.clone())
-                                            .await
-                                        {
-                                            Ok(included_in_block_rx) => {
-                                                total_submitted += chunk_len;
-
-                                                if let Some(ref recycler) = tx_recycler {
-                                                    recycler.track_submitted(&retry_chunk).await;
-                                                }
-
-                                                tokio::spawn(async move {
-                                                    match included_in_block_rx.await {
-                                                        Ok((
-                                                            block_ref,
-                                                            _indices,
-                                                            status_receiver,
-                                                        )) => {
-                                                            debug!(
-                                                                "✅ [TX FLOW] Sub-batch included (retry): {} TXs in block {:?}",
-                                                                chunk_len, block_ref
-                                                            );
-                                                            tokio::spawn(async move {
-                                                                match status_receiver.await {
-                                                                    Ok(consensus_core::BlockStatus::Sequenced(block)) => {
-                                                                        debug!("✅ [TX STATUS] Block {:?} was sequenced and finalized.", block);
-                                                                    }
-                                                                    Ok(consensus_core::BlockStatus::GarbageCollected(gc_block)) => {
-                                                                        warn!("♻️ [TX STATUS] Block {:?} was Garbage Collected.", gc_block);
-                                                                    }
-                                                                    Err(e) => {
-                                                                        warn!("⚠️ [TX STATUS] Failed to receive block status: {}", e);
-                                                                    }
-                                                                }
-                                                            });
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("❌ [TX FLOW] Failed to receive inclusion ack on retry: {}", e);
-                                                        }
-                                                    }
-                                                });
-                                                continue; // Successfully retried, move to next chunk
-                                            }
-                                            Err(retry_err) => {
-                                                all_succeeded = false;
-                                                last_error = retry_err.to_string();
-                                                error!(
-                                                    "❌ [TX FLOW] Sub-batch {} retry also failed: {} TXs, error={}",
-                                                    chunk_idx + 1, chunk_len, retry_err
-                                                );
-                                            }
-                                        }
-                                    } else {
-                                        drop(node_guard);
-                                        needs_forward = true;
-                                    }
-                                } else {
-                                    needs_forward = true;
-                                }
-                            }
-
-                            if needs_forward {
-                                // FIX: Do NOT forward transactions to validators.
-                                // This forward path was triggering during node initialization,
-                                // causing transaction duplication across all validators.
-                                // The Go TX pool will retry sending TXs via UDS once the
-                                // node finishes initializing and joins consensus.
-                                all_succeeded = false;
-                                last_error = "Node is initializing, TX forwarding disabled to prevent duplication".to_string();
-                                warn!(
-                                    "⏳ [TX FLOW] Sub-batch {} not forwarded: node initializing ({} TXs will be retried by Go TX pool)",
-                                    chunk_idx + 1, chunk_len
-                                );
-                            }
-                        } else if err_str.contains("shutting down")
-                            || err_str.contains("channel closed")
-                        {
-                            // Epoch transition closed the consensus channel.
-                            // Return error — Go will retry after transition completes (30x × 2s).
-                            warn!(
-                                "♻️ [TX FLOW] Consensus shutting down during sub-batch {} submission. Rejecting {} TXs (Go will retry).",
-                                chunk_idx + 1, chunk_len
-                            );
+                        if err_str.contains("SyncOnly") || err_str.contains("shutting down") || err_str.contains("channel closed") {
+                            warn!("♻️ [FFI TX FLOW] Transition context loss. Delaying internally. Error: {}", err_str);
                             all_succeeded = false;
-                            last_error = "epoch transition in progress, please retry".to_string();
-                            // Break — all remaining sub-batches will also fail
                             break;
                         } else {
+                            error!("❌ [FFI TX FLOW] Submission failed fatally: {}", e);
                             all_succeeded = false;
-                            last_error = err_str;
-                            error!(
-                                "❌ [TX FLOW] Sub-batch {} submission failed: {} TXs, error={}",
-                                chunk_idx + 1,
-                                chunk_len,
-                                e
-                            );
-                            // Don't break — try remaining sub-batches
                         }
                     }
                 }
             }
 
             if all_succeeded {
-                let success_response = format!(r#"{{"success":true,"count":{}}}"#, total_submitted);
-                if let Err(e) = Self::send_response_string(&mut stream, &success_response).await {
-                    error!("❌ [TX FLOW] Failed to send success response: {}", e);
-                    return Err(e);
-                }
-            } else if total_submitted > 0 {
-                // Partial success
-                // P1-5 FIX: Truncate error to 512 chars to prevent unbounded JSON allocation
-                let truncated_error: String = last_error.chars().take(512).collect();
-                let response = format!(
-                    r#"{{"success":true,"partial":true,"submitted":{},"total":{},"error":"{}"}}"#,
-                    total_submitted,
-                    total_tx_count,
-                    truncated_error.replace('"', "\\\"")
-                );
-                if let Err(e) = Self::send_response_string(&mut stream, &response).await {
-                    error!("❌ [TX FLOW] Failed to send partial response: {}", e);
-                    return Err(e);
-                }
-            } else {
-                let truncated_error: String = last_error.chars().take(512).collect();
-                let error_response = format!(
-                    r#"{{"success":false,"error":"Transaction submission failed: {}"}}"#,
-                    truncated_error.replace('"', "\\\"")
-                );
-                if let Err(e) = Self::send_response_string(&mut stream, &error_response).await {
-                    error!("❌ [TX FLOW] Failed to send error response: {}", e);
-                    return Err(e);
-                }
+                return; // Everything submitted cleanly
             }
 
-            // Sau khi xử lý xong một request, tiếp tục loop để xử lý request tiếp theo
-            // Connection sẽ được giữ mở cho đến khi client đóng (EOF)
+            // If we broke out early due to transient transition error, sleep and retry
+            attempt += 1;
+            if attempt >= 120 {
+                error!("❌ [FFI TX FLOW] Dropped remaining TXs after Max Retries reached");
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         }
-    }
-
-    async fn send_response_string(stream: &mut UnixStream, response: &str) -> Result<()> {
-        let response_bytes = response.as_bytes();
-        let response_len = (response_bytes.len() as u32).to_be_bytes();
-
-        // Write length prefix
-        stream.write_all(&response_len).await?;
-        // Write response data
-        stream.write_all(response_bytes).await?;
-        stream.flush().await?;
-
-        Ok(())
     }
 }

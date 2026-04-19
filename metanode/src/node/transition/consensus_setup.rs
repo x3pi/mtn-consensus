@@ -89,7 +89,6 @@ pub(super) async fn setup_validator_consensus(
 
     processor = processor.with_epoch_eth_addresses(node.epoch_eth_addresses.clone());
 
-
     if let Some(c) = exec_client_proc {
         processor = processor.with_executor_client(c);
     }
@@ -213,7 +212,6 @@ pub(super) async fn setup_synconly_sync(
         .with_storage_path(node.storage_path.clone());
 
     processor = processor.with_epoch_eth_addresses(node.epoch_eth_addresses.clone());
-
 
     if let Some(c) = exec_client_proc {
         processor = processor.with_executor_client(c);

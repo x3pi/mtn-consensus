@@ -124,9 +124,9 @@ impl SocketStream {
                 // With these settings: detect dead connections within ~25 seconds.
                 let socket = socket2::Socket::from(stream.into_std()?);
                 let keepalive = socket2::TcpKeepalive::new()
-                    .with_time(std::time::Duration::from_secs(10))     // Start probing after 10s idle
-                    .with_interval(std::time::Duration::from_secs(5))  // Probe every 5s
-                    .with_retries(3);                                   // Give up after 3 failed probes
+                    .with_time(std::time::Duration::from_secs(10)) // Start probing after 10s idle
+                    .with_interval(std::time::Duration::from_secs(5)) // Probe every 5s
+                    .with_retries(3); // Give up after 3 failed probes
                 socket
                     .set_tcp_keepalive(&keepalive)
                     .map_err(|e| anyhow::anyhow!("Failed to set TCP keepalive: {}", e))?;

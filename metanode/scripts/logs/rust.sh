@@ -8,7 +8,7 @@
 NODE_ID="${1:?Usage: $0 <node_id> [lines|-f]}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 METANODE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-LOGFILE="$METANODE_ROOT/logs/node_${NODE_ID}/rust.log"
+LOGFILE="$METANODE_ROOT/logs/node_${NODE_ID}/go-master-stdout.log"
 ARG="${2:-50}"
 
 if [ ! -f "$LOGFILE" ]; then

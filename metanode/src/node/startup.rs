@@ -157,12 +157,9 @@ impl InitializedNode {
             };
 
             let mut uds_server = TxSocketServer::with_node(
-                socket_path.clone(),
                 tx_client_for_uds,
-                node_for_uds,
-                is_transitioning_for_uds,
-                pending_tx_queue,
-                storage_path,
+                Some(node_for_uds),
+                Some(is_transitioning_for_uds),
                 node_config.peer_rpc_addresses.clone(),
             );
 
@@ -182,10 +179,10 @@ impl InitializedNode {
 
             uds_server_handle = Some(tokio::spawn(async move {
                 if let Err(e) = uds_server.start().await {
-                    error!("UDS server error: {}", e);
+                    error!("FFI Transaction process error: {}", e);
                 }
             }));
-            info!("Unix Domain Socket server available at {}", socket_path);
+            info!("FFI transaction interface initialized");
         }
 
         if let Some(peer_port) = node_config.peer_rpc_port {
@@ -599,7 +596,8 @@ impl InitializedNode {
                 // Check if this is a snapshot-restore scenario (DAG was wiped)
                 let is_cold_start = {
                     let node_guard = self.node.lock().await;
-                    let epoch_db = node_guard.storage_path
+                    let epoch_db = node_guard
+                        .storage_path
                         .join("epochs")
                         .join(format!("epoch_{}", node_guard.current_epoch))
                         .join("consensus_db");
@@ -729,7 +727,8 @@ impl InitializedNode {
                                                 node_guard.current_epoch = net_epoch;
                                                 // CRITICAL: Store snapshot GEI for mode_transition.rs
                                                 // This is the GEI at snapshot time, NOT after peer sync
-                                                node_guard.cold_start_snapshot_gei = snapshot_gei_at_restore;
+                                                node_guard.cold_start_snapshot_gei =
+                                                    snapshot_gei_at_restore;
                                                 // NOTE: Do NOT reset cold_start here!
                                                 // mode_transition.rs needs cold_start=true to enable
                                                 // amnesia recovery (FetchOwnLastBlock). It will be
@@ -753,7 +752,8 @@ impl InitializedNode {
                                             node_guard.last_global_exec_index = net_commit;
                                             node_guard.current_epoch = net_epoch;
                                             // CRITICAL: Store snapshot GEI for mode_transition.rs
-                                            node_guard.cold_start_snapshot_gei = snapshot_gei_at_restore;
+                                            node_guard.cold_start_snapshot_gei =
+                                                snapshot_gei_at_restore;
                                             // NOTE: Do NOT reset cold_start here!
                                             // mode_transition.rs needs cold_start=true for amnesia recovery.
                                             info!(

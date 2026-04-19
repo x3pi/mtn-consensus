@@ -136,10 +136,12 @@ impl PeerRpcServer {
                                 if request_bytes.len() >= expected {
                                     break;
                                 }
-                            } else if request_bytes.len() > 4 && !request_bytes.starts_with(b"POST")
-                                && request_bytes.windows(4).any(|w| w == b"\r\n\r\n") {
-                                    break;
-                                }
+                            } else if request_bytes.len() > 4
+                                && !request_bytes.starts_with(b"POST")
+                                && request_bytes.windows(4).any(|w| w == b"\r\n\r\n")
+                            {
+                                break;
+                            }
                         }
                         Ok(Err(e)) => {
                             warn!("🌐 [PEER RPC] Failed to read from {}: {}", peer_addr, e);
