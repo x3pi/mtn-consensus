@@ -339,8 +339,8 @@ impl ExecutorClient {
                     if is_ready {
                         break Some((bn, gei));
                     } else {
-                        warn!("⏳ [INIT] Go Master is connected but not fully ready (DB loading). Retrying in 1s...");
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        warn!("⏳ [INIT] Go Master is connected but not fully ready (DB loading). Retrying in 200ms...");
+                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                     }
                 }
                 Err(e) => {

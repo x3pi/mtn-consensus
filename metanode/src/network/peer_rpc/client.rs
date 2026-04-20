@@ -99,8 +99,19 @@ pub async fn query_peer_epochs_network(
     let mut best_address = String::new();
     let mut best_global_exec_index = 0u64;
 
+    let mut futures_list = Vec::new();
     for peer_addr in peer_addresses {
-        match query_peer_info(peer_addr).await {
+        let peer_addr = peer_addr.clone();
+        futures_list.push(async move {
+            let res = query_peer_info(&peer_addr).await;
+            (peer_addr, res)
+        });
+    }
+
+    let results = futures::future::join_all(futures_list).await;
+
+    for (peer_addr, res) in results {
+        match res {
             Ok(info) => {
                 info!(
                     "🌐 [PEER RPC] Peer ({}): epoch={}, block={}, global_exec_index={}",

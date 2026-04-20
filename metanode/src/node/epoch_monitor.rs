@@ -58,7 +58,8 @@ pub fn start_unified_epoch_monitor(
         let normal_interval = Duration::from_secs(poll_interval_secs);
         let fast_interval = Duration::from_secs(1);
         let fast_cycles_max: u32 = 30; // Stay fast for 30 cycles (30s at 1s interval)
-        let mut fast_cycles_remaining: u32 = 0;
+        // Start in fast mode to quickly detect promotion for cold-start nodes
+        let mut fast_cycles_remaining: u32 = fast_cycles_max;
 
         loop {
             // T3-4: Use adaptive interval

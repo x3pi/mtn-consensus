@@ -1000,13 +1000,20 @@ impl ConsensusNode {
         // SAFETY: This runs BEFORE CommitProcessor::run() and ConsensusAuthority::start(),
         // so there are no race conditions between sync blocks and live commits.
         // ═══════════════════════════════════════════════════════════════════════════
-        if config.executor_read_enabled && !config.peer_rpc_addresses.is_empty() {
+        let is_cold_start_candidate = !dag_has_history && storage.is_in_committee && storage.current_epoch > 0;
+        if config.executor_read_enabled && !config.peer_rpc_addresses.is_empty() && !is_cold_start_candidate {
             info!(
                 "🔄 [SYNC-FIRST] Checking if Go Master needs catch-up before starting consensus..."
             );
 
             // Wait a moment for Go Master socket to be fully ready
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if crate::ffi::GO_CALLBACKS.get().is_none() {
+                // IPC socket mode: wait for Go Master to bind socket
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            } else {
+                // FFI mode: Go is in-process, no socket wait needed
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
 
             // Step 1: Query Go Master's current block height
             let go_block = match executor_client_for_proc.get_last_block_number().await {

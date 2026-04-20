@@ -669,13 +669,13 @@ impl InitializedNode {
                                 Ok((b, _, is_ready)) => {
                                     if !is_ready {
                                         info!("⏳ [COLD-START] Go Master DB is not yet ready. Waiting...");
-                                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                         continue;
                                     }
                                     b
                                 }
                                 Err(_) => {
-                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                     continue;
                                 }
                             };
@@ -769,7 +769,7 @@ impl InitializedNode {
                                     warn!("⚠️ [COLD-START SYNC] Peer query failed: {}", e);
                                 }
                             }
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         }
                     }
                 }
